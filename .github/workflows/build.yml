@@ -57,8 +57,9 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+      # 只安装默认依赖分组与 dev 分组；speedup 分组仅供本地性能分析，构建镜像不需要。
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --group dev
       - name: Resolve version
         id: version
         shell: bash
@@ -124,8 +125,9 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+      # 只安装默认依赖分组与 dev 分组；speedup 分组仅供本地性能分析，构建镜像不需要。
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --group dev
       - name: Resolve version
         id: version
         shell: bash
@@ -176,8 +178,9 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+      # 只安装默认依赖分组与 dev 分组；speedup 分组仅供本地性能分析，构建镜像不需要。
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --group dev
       - name: Resolve version
         id: version
         shell: bash
