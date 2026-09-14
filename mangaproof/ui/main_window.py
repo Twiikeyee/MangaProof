@@ -1698,17 +1698,20 @@ class MainWindow(QMainWindow):
                 self,
                 image_format=self.settings.report_image_format,
                 jpeg_quality=self.settings.report_jpeg_quality,
+                hide_clean_files=self.settings.report_hide_clean_files,
             )
             if dialog.exec() != ReportDialog.DialogCode.Accepted:
                 return
             name = dialog.report_name()
-            # 页面图像压缩选择记回设置（下次生成沿用同一选择）
+            # 生成选项（图片压缩 / 总览表隐藏干净页）记回设置，下次沿用
             if (
                 dialog.image_format() != self.settings.report_image_format
                 or dialog.jpeg_quality() != self.settings.report_jpeg_quality
+                or dialog.hide_clean_files() != self.settings.report_hide_clean_files
             ):
                 self.settings.report_image_format = dialog.image_format()
                 self.settings.report_jpeg_quality = dialog.jpeg_quality()
+                self.settings.report_hide_clean_files = dialog.hide_clean_files()
                 self.settings_manager.save()
 
         out_path = resolve_report_path(self._base_dir, name, default_name)
@@ -1745,6 +1748,7 @@ class MainWindow(QMainWindow):
             layer_cache=self._layer_cache,
             image_format=self.settings.report_image_format,
             image_quality=self.settings.report_jpeg_quality,
+            hide_clean_files=self.settings.report_hide_clean_files,
         )
         dialog = QProgressDialog("准备返修单…", "取消", 0, 1, self)
         dialog.setWindowTitle("生成返修单")

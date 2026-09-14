@@ -1073,6 +1073,57 @@ def test_settings_keybindings_subdialog() -> None:
     print("PASS test_settings_keybindings_subdialog")
 
 
+def test_report_dialog_hide_clean_option() -> None:
+    """生成对话框：总览隐藏干净页默认勾选；改选后写回设置并持久化。"""
+    from mangaproof.config.settings import Settings
+    from mangaproof.ui.dialogs import ReportDialog
+
+    assert Settings().report_hide_clean_files is True, "默认勾选"
+    dialog = ReportDialog("n", "task", False, None, hide_clean_files=True)
+    assert dialog.hide_clean_files() is True
+    dialog.hide_clean_check.setChecked(False)
+    assert dialog.hide_clean_files() is False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        sm = SettingsManager(root / "settings.json")
+        window = MainWindow(sm)
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        ids = window._layer_ids_by_file["001.psd"]
+        window.task.set_status("001.psd", ids[1], FAILED)
+        window.task.add_issue("001.psd", ids[1], "dialogue_01", "漏字", "", (10, 10, 40, 40))
+
+        def accept_and_uncheck(dialog_self):
+            assert dialog_self.hide_clean_check.isChecked(), "对话框应预填设置值"
+            dialog_self.hide_clean_check.setChecked(False)
+            return ReportDialog.DialogCode.Accepted
+
+        out = folder / "chapter01.pdf"
+        with patch.object(ReportDialog, "exec", accept_and_uncheck), patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window._generate_report(interactive=True)
+            assert window._report_worker is not None
+            _wait_for_report(window)
+
+        assert out.exists() and out.stat().st_size > 1000
+        assert window.settings.report_hide_clean_files is False, "选择应写回设置"
+        assert SettingsManager(root / "settings.json").settings.report_hide_clean_files is False
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_report_dialog_hide_clean_option")
+
+
 def test_issue_scope_setting_and_viewer() -> None:
     """问题红框显示范围：默认「当前页全部问题」，可切换为「仅当前图层」。"""
     from mangaproof.config.settings import DEFAULT_ISSUE_SCOPE, Settings

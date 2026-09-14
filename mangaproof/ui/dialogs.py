@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -103,10 +104,11 @@ class ReportDialog(QDialog):
         parent: Optional[QWidget] = None,
         image_format: str = DEFAULT_REPORT_IMAGE_FORMAT,
         jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+        hide_clean_files: bool = True,
     ):
         super().__init__(parent)
         self.setWindowTitle("生成 MangaProof 返修单")
-        self.resize(460, 240)
+        self.resize(470, 300)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -135,6 +137,15 @@ class ReportDialog(QDialog):
         form.addRow("JPEG 质量：", self.quality_combo)
         self.image_format_combo.currentIndexChanged.connect(self._sync_quality_enabled)
         self._sync_quality_enabled()
+
+        self.hide_clean_check = QCheckBox("总览表隐藏无问题的 PSD（全部图层通过）")
+        self.hide_clean_check.setChecked(bool(hide_clean_files))
+        self.hide_clean_check.setToolTip(
+            "勾选后，返修单的「PSD 总览」表只列出有问题或未完成的 PSD，\n"
+            "全部通过且无问题的页会被隐藏（表下注明隐藏数量），报告更聚焦；\n"
+            "未通过、未监制的 PSD 始终保留。"
+        )
+        form.addRow(self.hide_clean_check)
         layout.addLayout(form)
 
         note = "⚠ 任务尚未全部完成，返修单将标注「任务状态：未完成」。" if incomplete else ""
@@ -162,3 +173,6 @@ class ReportDialog(QDialog):
 
     def jpeg_quality(self) -> int:
         return int(self.quality_combo.currentData())
+
+    def hide_clean_files(self) -> bool:
+        return self.hide_clean_check.isChecked()

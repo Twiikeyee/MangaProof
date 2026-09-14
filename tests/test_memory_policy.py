@@ -226,3 +226,14 @@ def test_settings_report_image_format_invalid_falls_back(tmp_path):
     s = SettingsManager(path).settings
     assert s.report_image_format == DEFAULT_REPORT_IMAGE_FORMAT
     assert s.report_jpeg_quality == DEFAULT_JPEG_QUALITY
+
+
+def test_settings_report_hide_clean_files(tmp_path):
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    assert manager.settings.report_hide_clean_files is True, "默认勾选隐藏干净页"
+    manager.settings.report_hide_clean_files = False
+    manager.save()
+    assert SettingsManager(path).settings.report_hide_clean_files is False
+    path.write_text(json.dumps({"settings_version": 1}), encoding="utf-8")
+    assert SettingsManager(path).settings.report_hide_clean_files is True

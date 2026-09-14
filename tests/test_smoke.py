@@ -783,6 +783,59 @@ def test_report_groups_issues_by_page_and_compression():
         print(f"PDF 分页/压缩 OK：4 页；渐变图 JPEG {size_jpg}B vs PNG {size_png}B")
 
 
+def test_report_overview_hide_clean_files():
+    """总览表隐藏「全部通过且无问题」的 PSD；未通过/未监制页始终保留。"""
+    import tempfile
+
+    from mangaproof.report import generator as gen
+    from mangaproof.report.generator import _is_clean_file, _overview_rows
+
+    gen._register_fonts()   # 与 generate_report 一致：先注册字体再构建流式元素
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        docs = {p.name: PSDDocument(folder / p.name) for p in sorted(folder.glob("*.psd"))}
+        layer_ids = {p.name: [i.id for i in docs[p.name].layers]
+                     for p in sorted(folder.glob("*.psd"))}
+        ids1 = layer_ids["001.psd"]
+        ids2 = layer_ids["002.psd"]
+        # 001.psd：全部通过、无问题 → 干净页
+        for lid in ids1:
+            task.set_status("001.psd", lid, PASSED)
+        # 002.psd：一处问题
+        task.set_status("002.psd", ids2[1], FAILED)
+        task.add_issue("002.psd", ids2[1], "dialogue_01", "居中错误", "", (10, 10, 40, 40))
+        # 10.psd：未监制（不得被隐藏）
+        for lid in layer_ids["10.psd"][:1]:
+            task.set_status("10.psd", lid, PASSED)
+
+        rows_all, hidden_all = _overview_rows(task, layer_ids, hide_clean_files=False)
+        assert hidden_all == 0 and len(rows_all) == 3
+
+        rows, hidden = _overview_rows(task, layer_ids, hide_clean_files=True)
+        assert hidden == 1, hidden                      # 只有 001.psd 被隐藏
+        assert len(rows) == 2                            # 002.psd（有问题）+ 10.psd（未监制）
+        assert _is_clean_file(task.count_file("001.psd", ids1))          # 全部通过且无问题
+        assert not _is_clean_file(task.count_file("002.psd", ids2))       # 有问题
+        assert not _is_clean_file(task.count_file("10.psd", layer_ids["10.psd"]))  # 未监制
+
+        # 生成端到端：隐藏与不隐藏都能正常出报告，页数一致（总览仍是一页）
+        import re
+
+        def pages(raw):
+            return len(re.findall(rb"/Type\s*/Page[^s]", raw))
+
+        provider = lambda rel: PSDDocument(folder / rel)  # noqa: E731
+        a = folder / "overview_all.pdf"
+        b = folder / "overview_hidden.pdf"
+        generate_report(task, layer_ids, a, provider, hide_clean_files=False)
+        generate_report(task, layer_ids, b, provider, hide_clean_files=True)
+        # 封面 + 总览 + 1 个明细页（只有 002.psd 有问题）；两种设置页数一致
+        assert pages(a.read_bytes()) == pages(b.read_bytes()) == 3
+        print(f"总览隐藏 OK：全部 {len(rows_all)} 行 → 隐藏 {hidden} 个干净页后 {len(rows)} 行")
+
+
 def test_default_report_name_output_folder():
     """回归：output 固定路径格式下默认名取上一级文件夹名。"""
     from mangaproof.report.generator import default_report_name

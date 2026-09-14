@@ -223,6 +223,7 @@ def generate_report(
     progress_cb: Optional[ProgressCb] = None,
     image_format: str = "png",
     image_quality: int = 80,
+    hide_clean_files: bool = True,
 ) -> Path:
     """生成返修单。
 
@@ -232,7 +233,9 @@ def generate_report(
     progress_cb(done, total, message)：页面级进度（耗时步骤见下），
     回调内抛出 ReportCancelled 可中断生成；
     image_format："png"（无损，默认）或 "jpeg"（有损压缩，体积小），
-    image_quality：JPEG 质量 60～95。
+    image_quality：JPEG 质量 60～95；
+    hide_clean_files：PSD 总览表是否隐藏「全部通过且无问题」的页（默认隐藏，
+    表下会注明隐藏数量；未通过 / 未监制的页始终保留）。
 
     问题明细页按 PSD（页）合并：同一页的所有问题共用一张页面图像，
     按图层分组列在图像下方，不再「一个问题一张图/一页」。
@@ -264,7 +267,7 @@ def generate_report(
     _emit(progress_cb, 1, total_steps, "生成封面与总览…")
     story.extend(_build_cover(task, all_counts, complete))
     story.append(PageBreak())
-    story.extend(_build_overview(task, layer_ids_by_file))
+    story.extend(_build_overview(task, layer_ids_by_file, hide_clean_files))
     story.append(PageBreak())
 
     # ---- 问题明细（需求 §51.3、§52、§53）：最耗时的一步（提取 merged +
@@ -353,20 +356,49 @@ def _build_cover(task: TaskState, counts: dict, complete: bool):
     return story
 
 
-def _build_overview(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
-    story = [Paragraph(T.OVERVIEW_TITLE, _zh_style(18, 24)), Spacer(1, 5 * mm)]
+def _is_clean_file(counts: dict) -> bool:
+    """PSD 是否「全部通过且无问题」（总览表可隐藏的干净页）。"""
+    return (
+        counts["issues"] == 0
+        and counts["failed"] == 0
+        and counts["unreviewed"] == 0
+    )
 
-    data = [[T.COLUMN_FILE, T.COLUMN_PROGRESS, T.COLUMN_ISSUE_COUNT]]
+
+def _overview_rows(task: TaskState, layer_ids_by_file: Dict[str, List[str]],
+                   hide_clean_files: bool = False):
+    """PSD 总览表数据行 + 被隐藏的干净页数量。
+
+    干净页 = 全部图层通过且没有任何问题；未监制或存在未通过图层的页
+    始终保留（返修单需要如实反映未完成/待修内容）。
+    """
+    rows = []
+    hidden = 0
     for record in task.files:
         rel = record.relative_path
         ids = layer_ids_by_file.get(rel, [])
         counts = task.count_file(rel, ids)
-        reviewed = counts["reviewed"]
-        data.append([
+        if hide_clean_files and _is_clean_file(counts):
+            hidden += 1
+            continue
+        rows.append([
             Paragraph(record.file_name, _zh_style(11, 15)),
-            f"{reviewed}/{counts['total']}",
+            f"{counts['reviewed']}/{counts['total']}",
             str(counts["issues"]),
         ])
+    return rows, hidden
+
+
+def _build_overview(task: TaskState, layer_ids_by_file: Dict[str, List[str]],
+                    hide_clean_files: bool = False):
+    story = [Paragraph(T.OVERVIEW_TITLE, _zh_style(18, 24)), Spacer(1, 5 * mm)]
+
+    rows, hidden = _overview_rows(task, layer_ids_by_file, hide_clean_files)
+    if not rows:
+        story.append(Paragraph(T.OVERVIEW_ALL_CLEAN, _zh_style(12, 16)))
+        return story
+
+    data = [[T.COLUMN_FILE, T.COLUMN_PROGRESS, T.COLUMN_ISSUE_COUNT]] + rows
 
     table = Table(data, colWidths=[70 * mm, 40 * mm, 40 * mm])
     table.setStyle(TableStyle([
@@ -381,6 +413,15 @@ def _build_overview(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(table)
+    if hidden:
+        # 隐藏了干净页时如实说明，避免看报告的人以为漏页
+        story.append(Spacer(1, 3 * mm))
+        story.append(
+            Paragraph(
+                T.OVERVIEW_HIDDEN_FMT.format(hidden),
+                _zh_style(9, 12),
+            )
+        )
     return story
 
 

@@ -59,6 +59,7 @@ class ReportWorker(QThread):
         layer_cache=None,                           # 共享图层像素 LRU
         image_format: str = "png",                  # "png" 无损 / "jpeg" 压缩
         image_quality: int = 80,                    # JPEG 质量
+        hide_clean_files: bool = True,              # 总览表隐藏无问题的 PSD
         parent=None,
     ):
         super().__init__(parent)
@@ -70,6 +71,7 @@ class ReportWorker(QThread):
         self._layer_cache = layer_cache
         self._image_format = image_format
         self._image_quality = image_quality
+        self._hide_clean_files = hide_clean_files
         self._cancel = False
 
     def request_cancel(self) -> None:
@@ -87,6 +89,7 @@ class ReportWorker(QThread):
                 progress_cb=self._cb,
                 image_format=self._image_format,
                 image_quality=self._image_quality,
+                hide_clean_files=self._hide_clean_files,
             )
         except ReportCancelled:
             log.info("返修单生成已取消：%s", self._out_path)

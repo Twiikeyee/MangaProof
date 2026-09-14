@@ -298,6 +298,17 @@ class SettingsDialog(QDialog):
         self.report_quality_combo.setCurrentIndex(max(0, q_idx))
         self.report_quality_combo.setToolTip("仅 JPEG 压缩时生效：质量越低体积越小")
         report_form.addRow("JPEG 质量：", self.report_quality_combo)
+
+        self.report_hide_clean_check = QCheckBox(
+            "总览表隐藏无问题的 PSD（全部图层通过）"
+        )
+        self.report_hide_clean_check.setChecked(settings.report_hide_clean_files)
+        self.report_hide_clean_check.setToolTip(
+            "返修单的「PSD 总览」表默认只列出有问题或未完成的 PSD；\n"
+            "全部通过且无问题的页隐藏（表下注明隐藏数量）。\n"
+            "生成对话框（Ctrl+R）中可临时改选，选择会被记住。"
+        )
+        report_form.addRow(self.report_hide_clean_check)
         self.report_image_combo.currentIndexChanged.connect(
             self._update_report_quality_enabled
         )
@@ -383,6 +394,7 @@ class SettingsDialog(QDialog):
         self.report_image_combo.setCurrentIndex(max(0, idx))
         idx = self.report_quality_combo.findData(DEFAULT_JPEG_QUALITY)
         self.report_quality_combo.setCurrentIndex(max(0, idx))
+        self.report_hide_clean_check.setChecked(True)
         self._update_report_quality_enabled()
         # 快捷键同样复位：记录"应用默认"意图，OK 时写回默认值
         self._kb_dialog = None
@@ -399,6 +411,7 @@ class SettingsDialog(QDialog):
         settings.report_name = self.report_name_edit.text().strip()
         settings.report_image_format = str(self.report_image_combo.currentData())
         settings.report_jpeg_quality = int(self.report_quality_combo.currentData())
+        settings.report_hide_clean_files = self.report_hide_clean_check.isChecked()
         settings.hide_console = self.console_check.isChecked()
         settings.memory_policy = str(self.memory_policy_combo.currentData())
 

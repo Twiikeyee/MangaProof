@@ -19,6 +19,12 @@ STATUS_INCOMPLETE = "未完成"
 
 OVERVIEW_TITLE = "PSD 总览"
 DETAIL_TITLE = "问题明细"
+# 隐藏干净页（全部通过且无问题）时的说明 / 全部干净时的提示
+OVERVIEW_HIDDEN_FMT = (
+    "注：已隐藏 {0} 个无问题的 PSD（全部图层通过）；"
+    "未通过、未监制的 PSD 均如实列出。"
+)
+OVERVIEW_ALL_CLEAN = "本任务全部 PSD 均已通过且没有问题。"
 
 COLUMN_FILE = "文件"
 COLUMN_PROGRESS = "进度"

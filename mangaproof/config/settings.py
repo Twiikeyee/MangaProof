@@ -119,6 +119,8 @@ class Settings:
     # 返修单页面图像：png（无损）/ jpeg（压缩，体积小）+ JPEG 质量
     report_image_format: str = DEFAULT_REPORT_IMAGE_FORMAT
     report_jpeg_quality: int = DEFAULT_JPEG_QUALITY
+    # 返修单 PSD 总览表是否隐藏「全部通过且无问题」的页（默认隐藏）
+    report_hide_clean_files: bool = True
     hide_console: bool = True   # 打包产物隐藏控制台（直接运行 py 时始终显示）
     keybindings: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_KEYBINDINGS))
     issue_types: list[dict[str, str]] = field(
@@ -212,6 +214,7 @@ class SettingsManager:
         if not (60 <= quality <= 95):
             quality = DEFAULT_JPEG_QUALITY
         s.report_jpeg_quality = quality
+        s.report_hide_clean_files = bool(raw.get("report_hide_clean_files", True))
         s.hide_console = bool(raw.get("hide_console", True))
         s.custom_comment_key = str(
             raw.get("custom_comment_key", DEFAULT_KEYBINDINGS["custom_comment"])
@@ -264,6 +267,7 @@ class SettingsManager:
                     "report_name": self.settings.report_name,
                     "report_image_format": self.settings.report_image_format,
                     "report_jpeg_quality": self.settings.report_jpeg_quality,
+                    "report_hide_clean_files": self.settings.report_hide_clean_files,
                     "hide_console": self.settings.hide_console,
                     "custom_comment_key": self.settings.custom_comment_key,
                     "keybindings": self.settings.keybindings,
