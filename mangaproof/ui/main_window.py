@@ -13,7 +13,6 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDockWidget,
     QFileDialog,
     QLabel,
@@ -85,6 +84,7 @@ from mangaproof.ui.task_loader import (
     TaskLoadWorker,
 )
 from mangaproof.ui.viewer_widget import SOURCE_BG, SOURCE_MERGED, ViewerWidget
+from mangaproof.ui.widgets import NoWheelComboBox
 
 log = logging.getLogger("mangaproof.ui.main_window")
 
@@ -270,7 +270,8 @@ class MainWindow(QMainWindow):
         )
         toolbar.addSeparator()
         toolbar.addWidget(QLabel(" 显示比例 "))
-        self.ratio_combo = QComboBox()
+        # 不响应滚轮：工具栏上误滚会静默改掉显示比例，且不易察觉
+        self.ratio_combo = NoWheelComboBox()
         for r in DISPLAY_RATIOS:
             self.ratio_combo.addItem(f"{int(r * 100)}%", r)
         idx = self.ratio_combo.findData(self.settings.layer_display_ratio)

@@ -22,8 +22,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QColor, QWheelEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QColor, QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QMessageBox,
@@ -1690,13 +1690,14 @@ def test_layer_outline_paint_path() -> None:
 
 
 def test_settings_dialog_scroll_area() -> None:
-    """设置对话框：分组可滚动、底部按钮常驻，滚动区下拉框不抢滚轮。
+    """设置对话框：分组可滚动、底部按钮常驻；下拉框聚焦与否都不响应滚轮。
 
     历史问题：分组全部平铺，minimumSizeHint 高达 717px，768p 笔记本上
     按钮会被挤出屏幕且无法缩小。
     """
     from mangaproof.config.settings import Settings
-    from mangaproof.ui.settings_dialog import SettingsDialog, WheelSafeComboBox
+    from mangaproof.ui.settings_dialog import SettingsDialog
+    from mangaproof.ui.widgets import NoWheelComboBox
 
     dlg = SettingsDialog(Settings())
     dlg.resize(560, 480)
@@ -1732,24 +1733,31 @@ def test_settings_dialog_scroll_area() -> None:
     vp = sa.viewport()
     assert 0 <= dlg.wheel_mode_combo.mapTo(vp, QPoint(0, 0)).y() < vp.height()
 
-    # 4) 下拉框不抢滚轮：未聚焦时忽略（原生 QComboBox 会直接改值）
-    def wheel_event() -> QWheelEvent:
+    # 4) 下拉框不响应滚轮：聚焦与否都不改值（原生 QComboBox 会直接改值）
+    def wheel_event(dy: int = -120) -> QWheelEvent:
         p = QPointF(10.0, 10.0)
         return QWheelEvent(
-            p, p, QPoint(0, 0), QPoint(0, -120),
+            p, p, QPoint(0, 0), QPoint(0, dy),
             Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
             Qt.ScrollPhase.NoScrollPhase, False,
         )
 
-    assert isinstance(dlg.ratio_combo, WheelSafeComboBox)
+    assert isinstance(dlg.ratio_combo, NoWheelComboBox)
     combo = dlg.issue_scope_combo
-    combo.clearFocus()
-    assert not combo.hasFocus()
-    before = combo.currentIndex()
-    ev = wheel_event()
-    QApplication.sendEvent(combo, ev)
-    assert not ev.isAccepted(), "未聚焦时应忽略滚轮，交回滚动区"
-    assert combo.currentIndex() == before
+    for focused in (False, True):
+        if focused:
+            combo.setFocus()
+            app.processEvents()
+        else:
+            combo.clearFocus()
+            app.processEvents()
+        assert combo.hasFocus() is focused
+        before = combo.currentIndex()
+        for dy in (-120, 120):          # 两个方向都不动
+            ev = wheel_event(dy)
+            QApplication.sendEvent(combo, ev)
+            assert not ev.isAccepted(), f"应忽略滚轮（focused={focused}）"
+            assert combo.currentIndex() == before, (focused, dy)
 
     # 对照：原生 QComboBox 未聚焦也会被滚轮改值（说明该保护确有作用）
     from PySide6.QtWidgets import QComboBox as _QComboBox
@@ -1761,19 +1769,82 @@ def test_settings_dialog_scroll_area() -> None:
     QApplication.sendEvent(plain, ev)
     assert ev.isAccepted() and plain.currentIndex() == 1
 
-    # 聚焦后仍可用滚轮快速改值
+    # 键盘仍可正常改值（禁用滚轮不等于禁用该控件）
     combo.setFocus()
     app.processEvents()
-    assert combo.hasFocus()
     before = combo.currentIndex()
-    ev = wheel_event()
-    QApplication.sendEvent(combo, ev)
-    assert ev.isAccepted() and combo.currentIndex() != before
+    QApplication.sendEvent(
+        combo,
+        QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier),
+    )
+    app.processEvents()
+    assert combo.currentIndex() != before, "键盘方向键应仍可改值"
 
     dlg.close()
     app.processEvents()
 
     print("PASS test_settings_dialog_scroll_area")
+
+
+def test_no_wheel_combo_app_wide() -> None:
+    """全应用下拉框统一禁用滚轮改值：问题类型 / 返修单选项 / 主界面显示比例。"""
+    from mangaproof.ui.dialogs import IssueDialog, ReportDialog
+    from mangaproof.ui.widgets import NoWheelComboBox
+
+    def wheel(combo, dy: int = -120) -> QWheelEvent:
+        p = QPointF(10.0, 10.0)
+        ev = QWheelEvent(
+            p, p, QPoint(0, 0), QPoint(0, dy),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        )
+        QApplication.sendEvent(combo, ev)
+        return ev
+
+    def assert_wheel_inert(combo, focused: bool) -> None:
+        if focused:
+            combo.window().raise_()
+            combo.window().activateWindow()
+            app.processEvents()
+            combo.setFocus()
+        else:
+            combo.clearFocus()
+        app.processEvents()
+        assert combo.hasFocus() is focused
+        before = combo.currentIndex()
+        for dy in (-120, 120):
+            assert not wheel(combo, dy).isAccepted(), (type(combo).__name__, focused, dy)
+            assert combo.currentIndex() == before, (type(combo).__name__, focused, dy)
+
+    issue_dlg = IssueDialog(["漏字", "错字", "其他"])
+    report_dlg = ReportDialog("返修单", "chapter01", False)
+    issue_dlg.show()
+    report_dlg.show()
+    app.processEvents()
+    assert isinstance(issue_dlg.type_combo, NoWheelComboBox)
+    assert isinstance(report_dlg.image_format_combo, NoWheelComboBox)
+    assert isinstance(report_dlg.quality_combo, NoWheelComboBox)
+    for combo in (issue_dlg.type_combo, report_dlg.image_format_combo):
+        assert_wheel_inert(combo, focused=False)
+        assert_wheel_inert(combo, focused=True)
+    issue_dlg.close()
+    report_dlg.close()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        window = MainWindow(SettingsManager(Path(tmp) / "settings.json"))
+        window.show()
+        app.processEvents()
+        ratio = window.ratio_combo   # 工具栏「显示比例」
+        assert isinstance(ratio, NoWheelComboBox)
+        ratio.setEnabled(True)       # 未开任务时该控件是禁用的，这里只测焦点行为
+        saved = window.settings.layer_display_ratio
+        assert_wheel_inert(ratio, focused=False)
+        assert_wheel_inert(ratio, focused=True)
+        assert window.settings.layer_display_ratio == saved, "滚轮不得改动设置值"
+        window.close()
+        app.processEvents()
+
+    print("PASS test_no_wheel_combo_app_wide")
 
 
 def test_issue_panel_long_layer_name() -> None:

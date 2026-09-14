@@ -20,7 +20,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -55,6 +54,7 @@ from mangaproof.config.settings import (
     JPEG_QUALITY_CHOICES,
     Settings,
 )
+from mangaproof.ui.widgets import NoWheelComboBox
 
 CORE_ACTION_LABELS: Dict[str, str] = {
     "prev_psd": "上一个 PSD",
@@ -72,21 +72,6 @@ CORE_ACTION_LABELS: Dict[str, str] = {
     "generate_report": "生成返修单",
     "redraw_mode": "红框模式",
 }
-
-
-class WheelSafeComboBox(QComboBox):
-    """滚动区内的下拉框：未获得焦点时忽略滚轮。
-
-    Fusion 风格默认允许滚轮直接改下拉框的值（SH_ComboBox_AllowWheelScrolling），
-    放进滚动区后会导致"滚页面顺手改掉设置"。忽略后事件冒泡给滚动区正常滚动；
-    需要改值时先点击聚焦（或键盘操作），语义更明确。
-    """
-
-    def wheelEvent(self, event) -> None:   # noqa: N802（Qt 命名）
-        if self.hasFocus():
-            super().wheelEvent(event)
-        else:
-            event.ignore()
 
 
 class KeybindingsDialog(QDialog):
@@ -218,7 +203,7 @@ class SettingsDialog(QDialog):
         # ---- 显示 ----
         display_group = QGroupBox("显示")
         display_form = QFormLayout(display_group)
-        self.ratio_combo = WheelSafeComboBox()
+        self.ratio_combo = NoWheelComboBox()
         for r in DISPLAY_RATIOS:
             self.ratio_combo.addItem(f"{int(r * 100)}%", r)
         current_ratio = settings.layer_display_ratio
@@ -228,7 +213,7 @@ class SettingsDialog(QDialog):
         self.ratio_combo.setCurrentIndex(max(0, idx))
         display_form.addRow("图层自动显示比例：", self.ratio_combo)
 
-        self.issue_scope_combo = WheelSafeComboBox()
+        self.issue_scope_combo = NoWheelComboBox()
         self.issue_scope_combo.addItem("当前页全部问题（默认，跨图层显示红框）", "page")
         self.issue_scope_combo.addItem("仅当前图层的问题（旧版行为）", "layer")
         scope_idx = self.issue_scope_combo.findData(settings.issue_scope)
@@ -254,14 +239,14 @@ class SettingsDialog(QDialog):
         # ---- 自动对比 ----
         compare_group = QGroupBox("自动对比")
         compare_form = QFormLayout(compare_group)
-        self.compare_mode_combo = WheelSafeComboBox()
+        self.compare_mode_combo = NoWheelComboBox()
         self.compare_mode_combo.addItem("自动切换（定时来回闪切）", "auto")
         self.compare_mode_combo.addItem("手动切换（按一下切一次）", "manual")
         mode_idx = self.compare_mode_combo.findData(settings.compare_mode)
         self.compare_mode_combo.setCurrentIndex(max(0, mode_idx))
         compare_form.addRow("对比模式：", self.compare_mode_combo)
 
-        self.compare_speed_combo = WheelSafeComboBox()
+        self.compare_speed_combo = NoWheelComboBox()
         for hz, name in COMPARE_SPEED_TIERS:
             self.compare_speed_combo.addItem(
                 f"{name} · {hz} 次/秒（每张 {hz_to_interval_ms(hz)}ms）", hz
@@ -305,7 +290,7 @@ class SettingsDialog(QDialog):
         task_form.addRow(self.console_check)
 
         # 内存回收策略（三档：宽松/平衡/激进），运行时热应用
-        self.memory_policy_combo = WheelSafeComboBox()
+        self.memory_policy_combo = NoWheelComboBox()
         self.memory_policy_combo.addItem("宽松（LRU 768MB，bg 预生成池 768MB）", "relaxed")
         self.memory_policy_combo.addItem("平衡（LRU 512MB，bg 预生成池 512MB）", "balanced")
         self.memory_policy_combo.addItem("激进（LRU 256MB，bg 预生成仅留 2 张）", "aggressive")
@@ -334,7 +319,7 @@ class SettingsDialog(QDialog):
         self.report_name_edit.setPlaceholderText("留空使用默认名称（PSD 名 / 文件夹名）")
         report_form.addRow("返修单名称：", self.report_name_edit)
 
-        self.report_image_combo = WheelSafeComboBox()
+        self.report_image_combo = NoWheelComboBox()
         self.report_image_combo.addItem("PNG 无损（默认，体积大）", "png")
         self.report_image_combo.addItem("JPEG 压缩（体积小，有损）", "jpeg")
         fmt_idx = self.report_image_combo.findData(settings.report_image_format)
@@ -347,7 +332,7 @@ class SettingsDialog(QDialog):
         )
         report_form.addRow("页面图像：", self.report_image_combo)
 
-        self.report_quality_combo = WheelSafeComboBox()
+        self.report_quality_combo = NoWheelComboBox()
         for q in JPEG_QUALITY_CHOICES:
             self.report_quality_combo.addItem(
                 f"{q}%" + ("（默认）" if q == DEFAULT_JPEG_QUALITY else ""), q
@@ -376,7 +361,7 @@ class SettingsDialog(QDialog):
         # ---- 快捷键（入口按钮 → 独立子对话框）----
         shortcut_group = QGroupBox("快捷键与滚轮")
         shortcut_form = QFormLayout(shortcut_group)
-        self.wheel_mode_combo = WheelSafeComboBox()
+        self.wheel_mode_combo = NoWheelComboBox()
         self.wheel_mode_combo.addItem("上下移动视图（默认）", "pan")
         self.wheel_mode_combo.addItem("缩放视图", "zoom")
         wheel_idx = self.wheel_mode_combo.findData(settings.wheel_mode)

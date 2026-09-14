@@ -6,7 +6,6 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -23,6 +22,7 @@ from mangaproof.config.settings import (
     JPEG_QUALITY_CHOICES,
 )
 from mangaproof.review.issue import Issue
+from mangaproof.ui.widgets import NoWheelComboBox
 
 
 class IssueDialog(QDialog):
@@ -50,7 +50,7 @@ class IssueDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.type_combo = QComboBox()
+        self.type_combo = NoWheelComboBox()
         self.type_combo.addItems(issue_types)
         if default_type is not None and default_type in issue_types:
             self.type_combo.setCurrentText(default_type)
@@ -115,7 +115,7 @@ class ReportDialog(QDialog):
         self.name_edit = QLineEdit(default_name)
         form.addRow("返修单名称：", self.name_edit)
 
-        self.image_format_combo = QComboBox()
+        self.image_format_combo = NoWheelComboBox()
         self.image_format_combo.addItem("PNG 无损（默认，体积大）", "png")
         self.image_format_combo.addItem("JPEG 压缩（体积小，有损）", "jpeg")
         fmt_idx = self.image_format_combo.findData(image_format)
@@ -128,7 +128,7 @@ class ReportDialog(QDialog):
         )
         form.addRow("页面图像：", self.image_format_combo)
 
-        self.quality_combo = QComboBox()
+        self.quality_combo = NoWheelComboBox()
         for q in JPEG_QUALITY_CHOICES:
             self.quality_combo.addItem(f"{q}%" + ("（默认）" if q == DEFAULT_JPEG_QUALITY else ""), q)
         q_idx = self.quality_combo.findData(jpeg_quality)
