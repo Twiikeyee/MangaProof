@@ -271,6 +271,12 @@ class SettingsDialog(QDialog):
         report_form = QFormLayout(report_group)
         self.pdf_check = QCheckBox("完成监制后自动生成返修单")
         self.pdf_check.setChecked(settings.generate_pdf_on_complete)
+        self.pdf_check.setToolTip(
+            "勾选（默认）：所有图层检查完毕时自动生成返修单——使用上面的名称、\n"
+            "页面图像格式与「总览表隐藏无问题 PSD」选项，同一次完成只生成一次；\n"
+            "之后又补加/修改问题再完成时会重新生成。\n"
+            "关闭后不会自动生成，可随时用「生成返修单」(Ctrl+R) 手动生成。"
+        )
         report_form.addRow(self.pdf_check)
         self.report_name_edit = QLineEdit(settings.report_name)
         self.report_name_edit.setPlaceholderText("留空使用默认名称（PSD 名 / 文件夹名）")

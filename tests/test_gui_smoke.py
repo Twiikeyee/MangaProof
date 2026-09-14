@@ -1124,6 +1124,132 @@ def test_report_dialog_hide_clean_option() -> None:
     print("PASS test_report_dialog_hide_clean_option")
 
 
+def _open_and_prepare_completion(window: MainWindow):
+    """打开夹具并把除最后一个图层外的所有图层标记通过，返回 (rel, layer_id)。"""
+    ids = window._layer_ids_by_file
+    pending = [(rel, lid) for rel, lids in ids.items() for lid in lids]
+    last_rel, last_lid = pending[-1]
+    for rel, lid in pending[:-1]:
+        window.task.set_status(rel, lid, PASSED)
+    window._switch_file(last_rel)
+    _wait_for_file(window, last_rel)
+    index = window._layer_ids_by_file[last_rel].index(last_lid)
+    window._select_layer_internal(index)
+    window._refresh_all_panels()
+    assert window._all_reviewed() is False
+    return last_rel, last_lid
+
+
+def test_completion_auto_report_once() -> None:
+    """全部监制完成后按设置自动生成返修单：默认开、只触发一次、改动后可再次触发。"""
+    from mangaproof.config.settings import Settings
+
+    assert Settings().generate_pdf_on_complete is True, "默认要自动生成"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        _open_and_prepare_completion(window)
+
+        calls: list = []
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ) as info, patch.object(
+            window, "_generate_report",
+            side_effect=lambda interactive: calls.append(interactive),
+        ):
+            # Enter（mark_pass）完成最后一个图层 → 提示一次 + 自动生成一次（非交互）
+            window.mark_pass()
+            app.processEvents()
+            assert info.call_count == 1, info.call_count
+            assert calls == [False], calls
+
+            # 再按 Enter：不重复弹窗、不重复生成
+            window.mark_pass()
+            app.processEvents()
+            assert info.call_count == 1 and calls == [False]
+
+            # 内容又变了（补问题）→ 复位，再完成时重新生成
+            window._commit_new_issue("漏字", "补一条", (10, 10, 40, 40))
+            window.mark_pass()
+            app.processEvents()
+            assert info.call_count == 2 and calls == [False, False]
+
+            # 设置关闭 → 只提示完成，不生成
+            window.settings.generate_pdf_on_complete = False
+            window._commit_new_issue("漏字", "再来一条", (20, 20, 40, 40))
+            window.mark_pass()
+            app.processEvents()
+            assert info.call_count == 3 and calls == [False, False]
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_completion_auto_report_once")
+
+
+def test_completion_paths_from_panel_and_fail() -> None:
+    """完成监制的各条路径：面板「通过」按钮同样触发；「/」只提示不打断标注。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+
+        def titles(mock) -> list:
+            return [c.args[1] for c in mock.call_args_list if len(c.args) > 1]
+
+        calls: list = []
+        with patch.object(window, "_generate_report",
+                          side_effect=lambda interactive: calls.append(interactive)):
+            # 1) 最后一个图层用「/」标记未通过 → 不弹完成提示（继续拖框批注），
+            #    只给状态栏提示；随后 Enter 才完成
+            _open_and_prepare_completion(window)
+            with patch.object(
+                QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+            ) as info:
+                window.mark_fail()
+                app.processEvents()
+                assert "监制完成" not in titles(info), "未通过时不应立即弹完成提示"
+                assert "所有图层已检查" in window.statusBar().currentMessage()
+                window.mark_pass()
+                app.processEvents()
+                assert "监制完成" in titles(info), titles(info)
+                assert calls == [False], calls
+
+            # 2) 面板「✓ 通过」按钮完成最后一个图层 → 同样触发完成 + 自动生成
+            window._on_status_change_requested(UNREVIEWED)   # 复位该图层
+            assert not window._all_reviewed()
+            with patch.object(
+                QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+            ) as info2:
+                window._on_status_change_requested(PASSED)
+                app.processEvents()
+                assert "监制完成" in titles(info2), "面板通过按钮也应触发完成提示"
+                assert calls == [False, False], calls
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_completion_paths_from_panel_and_fail")
+
+
 def test_issue_scope_setting_and_viewer() -> None:
     """问题红框显示范围：默认「当前页全部问题」，可切换为「仅当前图层」。"""
     from mangaproof.config.settings import DEFAULT_ISSUE_SCOPE, Settings

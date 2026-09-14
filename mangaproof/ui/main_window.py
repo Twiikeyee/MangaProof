@@ -142,6 +142,10 @@ class MainWindow(QMainWindow):
         self._numbering_worker = None
         self._numbering_dialog = None
 
+        # 「全部监制完成」是否已提示/已自动生成返修单（同一次完成只做一次；
+        # 之后再改动内容会复位，下次完成/Enter 时重新生成）
+        self._completion_announced = False
+
         # PSD 预加载线程（切换大文件不卡顿）
         self._preload = PreloadWorker(lambda rel: self._docs.get(rel), self)
         self._preload.task_done.connect(self._on_preload_done)
@@ -684,6 +688,10 @@ class MainWindow(QMainWindow):
         self._current_file = ""
         self._current_index = -1
 
+        # 打开时任务若已完成，视为「已提示过」：不因重新打开而自动生成返修单
+        # （需要时按 Ctrl+R 手动生成）
+        self._completion_announced = False
+
         # 兜底：补齐未扫描的 PSD 图层树（每个 PSD 只解析一次，需求 §59）
         for record in task.files:
             rel = record.relative_path
@@ -698,6 +706,8 @@ class MainWindow(QMainWindow):
                 self._layer_names_by_file[rel] = [info.name for info in doc.layers]
             except (PSDReadError, OSError) as exc:
                 log.warning("解析失败 %s：%s", rel, exc)
+
+        self._completion_announced = self._all_reviewed()
 
         self.file_panel.set_task_info(task.task_name, task.task_type)
         self.file_panel.set_files([r.relative_path for r in task.files])
@@ -1239,6 +1249,7 @@ class MainWindow(QMainWindow):
         self._compare.interrupt()
         info = self.current_doc.layers[self._current_index]
         self.task.set_status(self._current_file, info.id, FAILED)
+        self._completion_announced = False   # 内容还会变（拖框批注）→ 允许再次触发
         self.issue_panel.set_hint(
             "已标记 ✗ 未通过 — 可拖框添加问题或输入自定义批注；"
             f"{self._display_key(self.settings.binding('pass_layer') or 'Return')} 跳到下一个未监制图层。"
@@ -1246,6 +1257,7 @@ class MainWindow(QMainWindow):
         self._refresh_all_panels()
         self._mark_dirty()
         self.viewer.setFocus()
+        self._hint_if_all_reviewed()
         log.info("图层未通过：%s/%s", self._current_file, info.id)
 
     def _on_status_change_requested(self, status: str) -> None:
@@ -1258,6 +1270,12 @@ class MainWindow(QMainWindow):
         self._refresh_viewer_issues()
         self._mark_dirty()
         self.viewer.setFocus()
+        if status == FAILED:
+            # 未通过通常紧接着拖框/写批注：只提示，不弹窗、不提前生成
+            self._completion_announced = False
+            self._hint_if_all_reviewed()
+        else:
+            self._on_all_reviewed()
 
     def _advance_to_next_unreviewed(self) -> None:
         """Enter 后的自动跳转（需求 §15、§44）。"""
@@ -1292,14 +1310,45 @@ class MainWindow(QMainWindow):
 
         self._on_all_reviewed()
 
+    def _all_reviewed(self) -> bool:
+        """任务是否所有可监制图层都已检查（需求 §44）。"""
+        if self.task is None:
+            return False
+        counts = self.task.count_all(
+            {rel: len(ids) for rel, ids in self._layer_ids_by_file.items()}
+        )
+        return counts["total"] > 0 and counts["unreviewed"] == 0
+
     def _on_all_reviewed(self) -> None:
-        """全部图层已检查（需求 §44）。"""
+        """全部图层已检查（需求 §44、§46）。
+
+        - 同一次「完成」只提示一次、只自动生成一次返修单：连按 Enter 不会
+          反复弹窗、反复生成；
+        - 之后若又改动了内容（补问题、改状态等），标志复位，下次完成时会
+          重新提示并按设置重新生成；
+        - 是否自动生成返修单由设置「完成监制后自动生成返修单」控制（默认开）。
+        """
+        if not self._all_reviewed():
+            self._completion_announced = False      # 有图层回到未监制 → 复位
+            return
+        if self._completion_announced:
+            return
+        self._completion_announced = True
         self.issue_panel.set_hint("")
         QMessageBox.information(
-            self, "监制完成", "所有图层已经检查。\n\n任务：%s" % (self.task.task_name if self.task else "")
+            self,
+            "监制完成",
+            "所有图层已经检查。\n\n任务：%s" % (self.task.task_name if self.task else ""),
         )
-        if self.settings.generate_pdf_on_complete and self.task is not None:
+        if self.settings.generate_pdf_on_complete:
             self._generate_report(interactive=False)
+
+    def _hint_if_all_reviewed(self) -> None:
+        """刚标记未通过时通常还要拖框批注：只给状态栏提示，不弹窗打断。"""
+        if not self._all_reviewed():
+            return
+        tail = "按 Enter 结束并生成返修单" if self.settings.generate_pdf_on_complete else "按 Enter 结束"
+        self.statusBar().showMessage(f"所有图层已检查 — {tail}", 5000)
 
     # ================================================================= 自动对比（需求 §21～§26）
 
@@ -1447,6 +1496,7 @@ class MainWindow(QMainWindow):
         self._refresh_all_panels()
         self._refresh_viewer_issues()
         self._mark_dirty()
+        self._completion_announced = False   # 内容已变：允许再次触发自动生成
         self.viewer.setFocus()
 
     def _on_edit_issue(self, issue_id: str) -> None:
@@ -1463,6 +1513,7 @@ class MainWindow(QMainWindow):
             self._refresh_all_panels()
             self._refresh_viewer_issues()
             self._mark_dirty()
+            self._completion_announced = False
 
     def _on_delete_issue(self, issue_id: str) -> None:
         if self.task is None:
@@ -1471,6 +1522,7 @@ class MainWindow(QMainWindow):
         self._refresh_all_panels()
         self._refresh_viewer_issues()
         self._mark_dirty()
+        self._completion_announced = False
 
     # ================================================================= 问题编号检查/重排
 
