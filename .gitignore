@@ -10,6 +10,8 @@ __pycache__/
 
 # 运行时产物
 settings.json
+recent.json
+recent.json.tmp
 logs/
 *.mangaproof.json
 *.mangaproof.json.tmp

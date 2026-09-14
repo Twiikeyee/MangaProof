@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from mangaproof import APP_NAME, __version__
 from mangaproof.camera.centering import auto_box_rect, layer_visual_bounds
 from mangaproof.compare.controller import BG_ONLY, ORIGINAL, CompareController, hz_to_interval_ms
+from mangaproof.config.recent import RecentManager
 from mangaproof.config.settings import (
     DISPLAY_RATIOS,
     Settings,
@@ -117,6 +118,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings_manager = settings_manager
         self.settings: Settings = settings_manager.settings
+        # 最近打开记录：独立 recent.json（与 settings.json 同目录，见 config/recent.py）
+        self.recent_manager = RecentManager(
+            settings_manager.recent_path,
+            legacy_paths=settings_manager.legacy_recent_paths,
+        )
 
         self.task: Optional[TaskState] = None
         self._base_dir: Optional[Path] = None
@@ -318,6 +324,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_open_psd)
         file_menu.addAction(self.action_open_folder)
         self.recent_menu = file_menu.addMenu("最近打开")
+        # 启动即填充：旧版要等本次会话打开过一次任务才出现记录（菜单恒为空）
+        self._rebuild_recent_menu()
         file_menu.addSeparator()
         file_menu.addAction(self.action_save)
         file_menu.addAction(self.action_renumber)
@@ -357,19 +365,28 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _rebuild_recent_menu(self) -> None:
+        """按 recent.json 重建「最近打开」子菜单。
+
+        QAction 一律挂在子菜单下（而非主窗口），这样 clear() 会连同旧项
+        一起销毁——否则每重建一次都会在窗口上留下永不回收的孤儿 action。
+        """
         self.recent_menu.clear()
-        recent = self.settings.recent_paths
+        recent = self.recent_manager.paths
         if not recent:
-            empty = QAction("（无记录）", self)
+            empty = QAction("（无记录）", self.recent_menu)
             empty.setEnabled(False)
             self.recent_menu.addAction(empty)
             return
         for path_str in recent:
-            action = QAction(path_str, self)
+            action = QAction(path_str, self.recent_menu)
             action.triggered.connect(
                 lambda _=False, p=path_str: self._open_recent(p)
             )
             self.recent_menu.addAction(action)
+        self.recent_menu.addSeparator()
+        clear_action = QAction("清除最近打开记录", self.recent_menu)
+        clear_action.triggered.connect(self._clear_recent)
+        self.recent_menu.addAction(clear_action)
 
     def _open_recent(self, path_str: str) -> None:
         path = Path(path_str)
@@ -378,8 +395,20 @@ class MainWindow(QMainWindow):
         elif path.is_file():
             self.open_single(path)
         else:
-            QMessageBox.warning(self, "最近打开", f"路径不存在：\n{path_str}")
+            # 失效记录：提示的同时直接移除，不然每次点到都弹一次同样的框
+            self.recent_manager.remove(path_str)
             self._rebuild_recent_menu()
+            QMessageBox.warning(
+                self, "最近打开",
+                f"路径已不存在，已从「最近打开」中移除：\n{path_str}",
+            )
+
+    def _clear_recent(self) -> None:
+        if self.recent_manager.is_empty():
+            return
+        self.recent_manager.clear()
+        self._rebuild_recent_menu()
+        self.statusBar().showMessage("已清除最近打开记录", 3000)
 
     # 常用键的友好显示名（与设置对话框的 Qt 键名对应）
     _DISPLAY_KEY_MAP = {
@@ -688,7 +717,7 @@ class MainWindow(QMainWindow):
             layer_names_by_file=result.layer_names_by_file,
             docs=result.docs,
         )
-        self.settings_manager.add_recent(str(self._load_path))
+        self.recent_manager.add(self._load_path)
         self._rebuild_recent_menu()
         if result.file_errors:
             QMessageBox.warning(

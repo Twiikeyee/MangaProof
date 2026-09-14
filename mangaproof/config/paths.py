@@ -1,7 +1,7 @@
 """统一程序路径服务（需求 §56、§57）。
 
-所有程序级资源（settings.json、logs/ 等）统一通过 get_app_dir() 获得。
-其他模块不得自行判断程序目录。
+所有程序级资源（settings.json、recent.json、logs/ 等）统一通过
+get_app_dir() 获得。其他模块不得自行判断程序目录。
 """
 
 from __future__ import annotations
@@ -40,6 +40,15 @@ def get_app_dir() -> Path:
 def settings_path() -> Path:
     """settings.json 的完整路径（程序目录下）。"""
     return get_app_dir() / "settings.json"
+
+
+# 最近打开记录：与 settings.json 同级但独立成文件（见 config/recent.py）
+RECENT_FILE_NAME = "recent.json"
+
+
+def recent_paths_path() -> Path:
+    """recent.json 的完整路径（程序目录下）。"""
+    return get_app_dir() / RECENT_FILE_NAME
 
 
 def logs_dir() -> Path:

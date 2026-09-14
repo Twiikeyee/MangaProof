@@ -2,6 +2,10 @@
 
 软件级设置全部落在 程序目录/settings.json，与任务数据（.mangaproof.json）
 彻底分离（需求 §58）。
+
+注意：**最近打开记录不在这里**——它存在同目录的独立文件 recent.json
+（见 config/recent.py）。settings.json 一旦载入旧版残留的 recent_paths，
+只做一次性迁移读取，之后不再写回。
 """
 
 from __future__ import annotations
@@ -243,7 +247,6 @@ class Settings:
         default_factory=lambda: [dict(t) for t in DEFAULT_ISSUE_TYPES]
     )
     custom_comment_key: str = "Ctrl+Return"
-    recent_paths: list[str] = field(default_factory=list)
     # 内存回收策略：aggressive（激进）/ balanced（平衡）/ relaxed（宽松）
     memory_policy: str = DEFAULT_MEMORY_POLICY
 
@@ -332,7 +335,20 @@ class SettingsManager:
     def __init__(self, path: Path | None = None):
         self._path = path if path is not None else paths.settings_path()
         self._lock = threading.Lock()
+        # 旧版残留的最近打开记录（settings.json 里的 recent_paths）：
+        # 只读一次，交给 RecentManager 迁移到 recent.json，见 config/recent.py
+        self._legacy_recent_paths: list[str] = []
         self.settings = self._load()
+
+    @property
+    def recent_path(self) -> Path:
+        """最近打开记录文件：与 settings.json 同目录的独立 recent.json。"""
+        return self._path.with_name(paths.RECENT_FILE_NAME)
+
+    @property
+    def legacy_recent_paths(self) -> list[str]:
+        """旧版混在 settings.json 里的最近打开记录（新装程序为空）。"""
+        return list(self._legacy_recent_paths)
 
     # -- 读写 --------------------------------------------------------------
 
@@ -436,9 +452,13 @@ class SettingsManager:
         s._migrate_issue_types(types_version)
         s._heal_shortcut_conflicts()
 
+        # 兼容旧版：最近打开原本混存在 settings.json（现为独立 recent.json）。
+        # 这里只读不写——迁移由 config/recent.py 完成，之后该键自然消失。
         recent = raw.get("recent_paths", [])
         if isinstance(recent, list):
-            s.recent_paths = [str(p) for p in recent if isinstance(p, str)][:10]
+            self._legacy_recent_paths = [
+                str(p) for p in recent if isinstance(p, str) and p.strip()
+            ][:10]
 
         policy = raw.get("memory_policy", DEFAULT_MEMORY_POLICY)
         s.memory_policy = policy if policy in MEMORY_POLICIES else DEFAULT_MEMORY_POLICY
@@ -468,7 +488,6 @@ class SettingsManager:
                     "keybindings": self.settings.keybindings,
                     "issue_types": self.settings.issue_types,
                     "issue_types_version": ISSUE_TYPES_VERSION,
-                    "recent_paths": self.settings.recent_paths,
                     "memory_policy": self.settings.memory_policy,
                 }
                 tmp = self._path.with_suffix(".json.tmp")
@@ -477,12 +496,3 @@ class SettingsManager:
                 tmp.replace(self._path)
             except OSError as exc:
                 log.warning("写入 settings.json 失败：%s", exc)
-
-    def add_recent(self, path_str: str) -> None:
-        recent = self.settings.recent_paths
-        if path_str in recent:
-            recent.remove(path_str)
-        recent.insert(0, path_str)
-        del recent[10:]
-        self.settings.recent_paths = recent
-        self.save()
