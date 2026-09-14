@@ -43,6 +43,7 @@ from mangaproof.report.generator import (
     resolve_report_path,
 )
 from mangaproof.review import navigator, persistence
+from mangaproof.review.numbering import apply_numbering
 from mangaproof.review.persistence import (
     backup_progress_file,
     progress_path_for_folder,
@@ -59,6 +60,10 @@ from mangaproof.ui.file_panel import FilePanel
 from mangaproof.ui.issue_panel import IssuePanel
 from mangaproof.ui.layer_panel import LayerPanel
 from mangaproof.ui.license_dialog import LicenseDialog
+from mangaproof.ui.numbering_worker import (
+    KIND_CANCELLED as NUMBERING_CANCELLED,
+    NumberingWorker,
+)
 from mangaproof.ui.preloader import (
     KIND_EXTRA,
     KIND_OPEN,
@@ -131,6 +136,10 @@ class MainWindow(QMainWindow):
         # 后台生成返修单状态（进度框 + 防 GUI 卡死）
         self._report_worker = None
         self._report_dialog = None
+
+        # 后台问题编号检查状态（进度框 + 防 GUI 卡死）
+        self._numbering_worker = None
+        self._numbering_dialog = None
 
         # PSD 预加载线程（切换大文件不卡顿）
         self._preload = PreloadWorker(lambda rel: self._docs.get(rel), self)
@@ -232,6 +241,13 @@ class MainWindow(QMainWindow):
         )
         toolbar.addSeparator()
         self.action_save = self._add_tool_action(toolbar, "保存", "Ctrl+S", self.save_task)
+        self.action_renumber = self._add_tool_action(
+            toolbar, "检查问题编号", "", self.check_issue_numbers
+        )
+        self.action_renumber.setToolTip(
+            "按 PSD / 图层顺序检查并重排问题编号\n"
+            "（修正删除问题、回头补问题造成的空号/跳号；显式触发，不影响标记性能）"
+        )
         self.action_report = self._add_tool_action(
             toolbar, "生成返修单", "Ctrl+R", self.generate_report_dialog
         )
@@ -293,6 +309,7 @@ class MainWindow(QMainWindow):
         self.recent_menu = file_menu.addMenu("最近打开")
         file_menu.addSeparator()
         file_menu.addAction(self.action_save)
+        file_menu.addAction(self.action_renumber)
         file_menu.addAction(self.action_report)
         file_menu.addSeparator()
         quit_action = QAction("退出", self)
@@ -1441,6 +1458,116 @@ class MainWindow(QMainWindow):
         self._refresh_viewer_issues()
         self._mark_dirty()
 
+    # ================================================================= 问题编号检查/重排
+
+    def check_issue_numbers(self) -> None:
+        """按 PSD / 图层顺序检查并重排问题编号（显式触发，不在标记时维护）。
+
+        编号在新增时取「最大值 + 1」：删除问题、或回头给前面的 PSD 补问题
+        会造成空号/跳号，红框徽标与问题面板的 #编号看起来就不对。这里按
+        文档顺序重排为 1..N，扫描过程在后台线程执行（进度框，界面不卡死），
+        结果回主线程一次性写回并立即保存。
+        """
+        if self.task is None:
+            QMessageBox.information(self, "检查问题编号", "请先打开 PSD 或文件夹。")
+            return
+        if self._numbering_worker is not None:
+            # 上一轮仍在进行（或结果尚未处理）→ 忽略重复请求
+            self.statusBar().showMessage("正在检查问题编号…", 3000)
+            return
+        if not self.task.issues:
+            self.statusBar().showMessage("当前任务没有问题，无需检查编号", 3000)
+            return
+
+        self._autosave_timer.stop()   # 避免与重排后的保存交错
+        worker = NumberingWorker(self.task, dict(self._layer_ids_by_file))
+        dialog = QProgressDialog("准备检查…", "取消", 0, 1, self)
+        dialog.setWindowTitle("检查问题编号")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setMinimumWidth(460)
+        dialog.setAutoClose(True)
+        # 与「打开任务」一致：autoReset 会在值到达 100% 时触发 reset 并连带
+        # canceled 信号，由 _close_numbering_ui 统一关闭。
+        dialog.setAutoReset(False)
+
+        worker.progress.connect(self._on_numbering_progress)
+        worker.succeeded.connect(self._on_numbering_finished)
+        worker.failed.connect(self._on_numbering_failed)
+        dialog.canceled.connect(worker.request_cancel)
+
+        self._numbering_worker = worker
+        self._numbering_dialog = dialog
+        self.action_renumber.setEnabled(False)
+        dialog.show()
+        worker.start()
+
+    def _on_numbering_progress(self, done: int, total: int, message: str) -> None:
+        dialog = self._numbering_dialog
+        if dialog is None:
+            return
+        dialog.setMaximum(max(total, 1))
+        dialog.setValue(min(done, total))
+        # 模态进度框的 setValue 内部会 pump 事件循环，可能重入导致对话框
+        # 已被关闭（self._numbering_dialog 置 None），需复查后再更新文案。
+        if self._numbering_dialog is dialog:
+            dialog.setLabelText(message)
+
+    def _close_numbering_ui(self) -> None:
+        self.action_renumber.setEnabled(self.task is not None)
+        if self._numbering_dialog is not None:
+            # 先断开 canceled：close() 可能触发该信号导致重入
+            try:
+                self._numbering_dialog.canceled.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._numbering_dialog.close()
+            self._numbering_dialog.deleteLater()
+            self._numbering_dialog = None
+        if self._numbering_worker is not None:
+            worker = self._numbering_worker
+            self._numbering_worker = None
+            worker.deleteLater()
+
+    def _on_numbering_failed(self, message: str) -> None:
+        self._close_numbering_ui()
+        QMessageBox.critical(
+            self,
+            "检查问题编号",
+            f"检查问题编号失败：\n{message}\n\n详情见 logs/mangaproof.log。",
+        )
+
+    def _on_numbering_finished(self, result) -> None:
+        self._close_numbering_ui()
+        if result.kind == NUMBERING_CANCELLED:
+            self.statusBar().showMessage("已取消检查问题编号", 3000)
+            return
+        plan = result.plan
+        apply_numbering(self.task, plan)
+        self._refresh_all_panels()
+        self._refresh_viewer_issues()
+        self.save_task()      # 编号已变更：立即落盘（不等防抖）
+
+        if plan.changed:
+            lines = [
+                "问题编号已按 PSD / 图层顺序重排：",
+                f"　问题总数：{plan.total}",
+                f"　修正编号：{plan.fixed}",
+            ]
+            if plan.orphans:
+                lines.append(
+                    f"　归属不明：{plan.orphans}（所属 PSD / 图层已不存在，已排在最后）"
+                )
+            QMessageBox.information(self, "检查问题编号", "\n".join(lines))
+        else:
+            self.statusBar().showMessage(
+                f"问题编号检查完成：{plan.total} 个编号已连续，无需调整", 5000
+            )
+        log.info(
+            "问题编号检查完成：共 %d 个，修正 %d 个，归属不明 %d 个",
+            plan.total, plan.fixed, plan.orphans,
+        )
+
     def toggle_redraw_mode(self) -> None:
         if self.task is None or self.current_doc is None:
             return
@@ -1760,6 +1887,7 @@ class MainWindow(QMainWindow):
     def _refresh_enabled_state(self) -> None:
         has_task = self.task is not None
         self.action_save.setEnabled(has_task)
+        self.action_renumber.setEnabled(has_task)
         self.action_report.setEnabled(has_task)
         self.action_redraw.setEnabled(has_task)
         self.action_compare.setEnabled(has_task)
@@ -1794,6 +1922,10 @@ class MainWindow(QMainWindow):
         if self._report_worker is not None and self._report_worker.isRunning():
             self._report_worker.request_cancel()
             self._report_worker.wait(5000)
+        # 问题编号检查仍在进行 → 请求取消并等待
+        if self._numbering_worker is not None and self._numbering_worker.isRunning():
+            self._numbering_worker.request_cancel()
+            self._numbering_worker.wait(5000)
         self._preload.stop()
         self._preload.wait(8000)
         if self.task is not None:

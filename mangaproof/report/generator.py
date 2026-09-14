@@ -221,7 +221,7 @@ def generate_report(
     回调内抛出 ReportCancelled 可中断生成。
     """
     # 进度步数：准备 1 步 + 封面/总览 1 步 + 每个问题明细页 1 步 + 写入 PDF 1 步
-    failed_layers = _collect_failed_layers(task)
+    failed_layers = _collect_failed_layers(task, layer_ids_by_file)
     total_steps = 3 + len(failed_layers)
 
     _emit(progress_cb, 0, total_steps, "准备返修单…")
@@ -364,17 +364,32 @@ def _build_overview(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
     return story
 
 
-def _collect_failed_layers(task: TaskState):
-    """收集 (rel_path, layer_id, [issues])，按文件顺序、图层顺序排列。"""
+def _collect_failed_layers(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
+    """收集 (rel_path, layer_id, [issues])，按文件顺序、图层顺序排列。
+
+    页面顺序固定跟随文档顺序（PSD 顺序 → 图层顺序），与问题编号是否
+    已经检查/重排无关；编号仅用于同一图层内的问题排序。
+    """
     grouped: Dict[str, List] = {}
     for issue in task.issues:
         grouped.setdefault((issue.file, issue.layer_id, issue.layer_name), []).append(issue)
-    order = {
-        (issue.file, issue.layer_id): idx
-        for idx, issue in enumerate(task.issues)
+
+    file_rank = {r.relative_path: idx for idx, r in enumerate(task.files)}
+    layer_rank = {
+        rel: {lid: idx for idx, lid in enumerate(ids)}
+        for rel, ids in layer_ids_by_file.items()
     }
-    items = list(grouped.items())
-    items.sort(key=lambda kv: min(i.issue_no for i in kv[1]))
+    missing = 1 << 30
+
+    def sort_key(kv):
+        (rel, layer_id, _name), issues = kv
+        return (
+            file_rank.get(rel, missing),
+            layer_rank.get(rel, {}).get(layer_id, missing),
+            min(i.issue_no for i in issues),
+        )
+
+    items = sorted(grouped.items(), key=sort_key)
     return [(k[0], k[1], v) for k, v in items]
 
 

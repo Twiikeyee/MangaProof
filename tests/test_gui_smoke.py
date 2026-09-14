@@ -254,6 +254,146 @@ def _pump_until(cond, timeout_s: float = 30.0) -> bool:
     return bool(cond())
 
 
+def _wait_for_numbering(window: MainWindow, timeout_s: float = 60.0) -> None:
+    """问题编号检查为后台流程（进度框 + 防 GUI 卡死）。"""
+    deadline = time.time() + timeout_s
+    while window._numbering_worker is not None and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert window._numbering_worker is None, "编号检查超时（后台 worker 未完成）"
+    assert window._numbering_dialog is None, "编号检查进度框未关闭"
+
+
+def test_numbering_worker() -> None:
+    """后台编号 worker：正常产出方案；先请求取消 → 不改动任务。"""
+    from mangaproof.review.numbering import apply_numbering
+    from mangaproof.ui.numbering_worker import KIND_CANCELLED, KIND_OK, NumberingWorker
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        files = sorted(folder.glob("*.psd"))
+        task, _ = persistence.create_task_folder(folder, files)
+        from mangaproof.psd.document import PSDDocument
+
+        layer_ids = {
+            p.name: [i.id for i in PSDDocument(folder / p.name).layers] for p in files
+        }
+        ids1 = layer_ids["001.psd"]
+        a = task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误", "", (0, 0, 1, 1))
+        task.add_issue("10.psd", layer_ids["10.psd"][1], "dialogue_01", "漏字", "", (0, 0, 1, 1))
+        task.remove_issue(a.issue_id)          # 制造空号
+        task.add_issue("001.psd", ids1[1], "dialogue_01", "居中错误", "", (0, 0, 1, 1))
+        assert [i.issue_no for i in task.issues] == [2, 3]
+
+        # 1) 正常：产出方案（不修改任务），进度推进到结束
+        messages = []
+        results = []
+        worker = NumberingWorker(task, layer_ids)
+        worker.progress.connect(lambda d, t, m: messages.append((d, t, m)))
+        worker.succeeded.connect(lambda r: results.append(r))
+        worker.start()
+        _pump_until(lambda: bool(results))
+        assert results and results[0].kind == KIND_OK
+        plan = results[0].plan
+        # 001.psd 的问题排在 10.psd 之前：#2（10.psd）保持 2，#3（001.psd）改为 1
+        assert plan.total == 2 and plan.fixed == 1
+        assert [i.issue_no for i in task.issues] == [2, 3], "worker 不应直接修改任务"
+        assert messages[-1][0] == messages[-1][1]
+        assert messages[-1][2] == "编号检查完成"
+        apply_numbering(task, plan)
+        assert [i.issue_no for i in task.issues] == [1, 2]
+
+        # 2) 取消：先请求取消 → 第一次进度回调即中断，任务不变
+        task.issues[0].issue_no = 42
+        results2 = []
+        worker2 = NumberingWorker(task, layer_ids)
+        worker2.succeeded.connect(lambda r: results2.append(r))
+        worker2.request_cancel()
+        worker2.start()
+        _pump_until(lambda: bool(results2))
+        assert results2 and results2[0].kind == KIND_CANCELLED
+        assert task.issues[0].issue_no == 42, "取消后任务不应被改动"
+
+    print("PASS test_numbering_worker")
+
+
+def test_check_issue_numbers_workflow() -> None:
+    """主界面「检查问题编号」：进度框 → 编号按文档顺序重排 → 立即保存。"""
+    from mangaproof.review.state import FAILED
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+
+        # 无任务时按钮禁用；打开任务后可用
+        assert window.action_renumber.isEnabled()
+
+        ids = window._layer_ids_by_file["001.psd"]
+        ids10 = window._layer_ids_by_file["10.psd"]
+        first = window.task.add_issue("001.psd", ids[1], "dialogue_01", "字体选择错误",
+                                      "", (10, 10, 50, 50))
+        removed = window.task.add_issue("001.psd", ids[1], "dialogue_01", "漏字",
+                                        "", (60, 60, 50, 50))
+        last = window.task.add_issue("10.psd", ids10[1], "dialogue_01", "居中错误",
+                                     "", (10, 10, 50, 50))
+        window.task.remove_issue(removed.issue_id)
+        back = window.task.add_issue("001.psd", ids[1], "dialogue_01", "原文字擦除错误",
+                                     "", (120, 120, 50, 50))   # 回头补问题 → 编号最大
+        for issue in (first, last, back):
+            window.task.set_status(issue.file, issue.layer_id, FAILED)
+        # 问题面板显示「当前图层」的问题 → 切到放了问题的图层
+        window._select_layer_internal(1)
+        window._refresh_all_panels()
+        window._refresh_viewer_issues()
+        window._mark_dirty()
+        assert [i.issue_no for i in window.task.issues] == [1, 3, 4]
+
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ) as info:
+            window.check_issue_numbers()
+            assert window._numbering_worker is not None, "编号检查未走后台线程"
+            assert window._numbering_dialog is not None, "未显示编号检查进度框"
+            assert not window.action_renumber.isEnabled(), "检查期间按钮应禁用"
+            _wait_for_numbering(window)
+            assert info.called, "有编号被修正时应给出结果提示"
+
+        # 文档顺序：001.psd（按创建顺序）→ 10.psd，编号连续
+        assert [i.issue_id for i in window.task.issues] == [
+            first.issue_id, back.issue_id, last.issue_id
+        ]
+        assert [i.issue_no for i in window.task.issues] == [1, 2, 3]
+        # 问题面板同步显示新编号
+        assert window.issue_panel.issue_list.item(0).text().startswith("#1")
+        assert window.issue_panel.issue_list.item(1).text().startswith("#2")
+        # 立即落盘：重新读取进度文件编号已修正
+        saved = persistence.load_task(window.progress_file_path())
+        assert [i.issue_no for i in saved.issues] == [1, 2, 3]
+
+        # 再次检查：编号已连续 → 只给状态栏提示，不再弹结果框
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ) as info2:
+            window.check_issue_numbers()
+            _wait_for_numbering(window)
+            assert not info2.called, "无需调整时不应弹结果提示"
+        assert "无需调整" in window.statusBar().currentMessage()
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_check_issue_numbers_workflow")
+
+
 def test_report_worker() -> None:
     """后台返修单 worker：进度信号推进到完成；请求取消后不落盘。"""
     from mangaproof.psd.document import PSDDocument

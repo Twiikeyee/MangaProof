@@ -603,6 +603,102 @@ def test_report_font_fallback(monkeypatch):
         print("PDF 字体回退 OK：CID 宋体 + Helvetica-Bold")
 
 
+def test_issue_numbering_check_and_renumber():
+    """问题编号检查/重排：删除问题、回头补问题造成的空号与乱序被修正。
+
+    复现用户场景：先监制完后面的 PSD，再回到前面的 PSD 补问题；中途删除过
+    问题 → 编号出现空号且新问题编号最大。显式检查后应按文档顺序排成 1..N。
+    """
+    import tempfile
+
+    from mangaproof.review.numbering import apply_numbering, plan_numbering
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        files = sorted(folder.glob("*.psd"))          # 001 / 002 / 10（自然顺序）
+        task, _ = persistence.create_task_folder(folder, files)
+        layer_ids = {
+            p.name: [i.id for i in PSDDocument(folder / p.name).layers] for p in files
+        }
+        ids1 = layer_ids["001.psd"]
+        ids2 = layer_ids["002.psd"]
+        ids3 = layer_ids["10.psd"]
+
+        # 001.psd：#1、#2（#2 稍后删除）
+        first = task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误", "", (0, 0, 10, 10))
+        removed = task.add_issue("001.psd", ids1[1], "dialogue_01", "漏字", "", (0, 0, 10, 10))
+        # 监制完后面的 PSD：#3（10.psd 最后）、#4（002.psd 中间）
+        last = task.add_issue("10.psd", ids3[1], "dialogue_01", "居中错误", "", (0, 0, 10, 10))
+        middle = task.add_issue("002.psd", ids2[1], "dialogue_01", "字号错误", "", (0, 0, 10, 10))
+        task.remove_issue(removed.issue_id)           # 删除 → 编号空号
+        # 回到前面的 PSD 再补一个问题 → 编号最大（用户报告的第二个场景）
+        back = task.add_issue("001.psd", ids1[1], "dialogue_01", "原文字擦除错误", "", (0, 0, 10, 10))
+        assert [i.issue_no for i in task.issues] == [1, 3, 4, 5], "前置条件：存在空号与乱序"
+
+        steps: list = []
+        plan = plan_numbering(
+            task, layer_ids, progress_cb=lambda d, t, m: steps.append((d, t, m))
+        )
+        assert plan.total == 4
+        assert plan.fixed == 3          # first=1 保持不变；last/middle/back 均需修正
+        assert plan.orphans == 0
+        assert steps[0][0] == 0 and steps[-1][0] == steps[-1][1]
+        assert [d for d, _, _ in steps] == sorted(d for d, _, _ in steps)
+        assert any("001.psd" in m for _, _, m in steps)
+
+        assert apply_numbering(task, plan) == 3
+        # 文档顺序：001.psd（同图层按创建顺序）→ 002.psd → 10.psd，编号连续 1..N
+        assert [i.issue_id for i in task.issues] == [
+            first.issue_id, back.issue_id, middle.issue_id, last.issue_id
+        ]
+        assert [i.issue_no for i in task.issues] == [1, 2, 3, 4]
+
+        # 幂等：再检查一次无需调整
+        again = plan_numbering(task, layer_ids)
+        assert again.fixed == 0 and not again.changed
+        print("问题编号重排 OK：空号与乱序已按文档顺序修正为 1..N")
+
+
+def test_issue_numbering_orphans_and_progress():
+    """归属不明的问题（图层已不存在 / PSD 已移出任务）保留并排在最后。"""
+    import tempfile
+
+    from mangaproof.review.issue import Issue
+    from mangaproof.review.numbering import apply_numbering, plan_numbering
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        files = sorted(folder.glob("*.psd"))
+        task, _ = persistence.create_task_folder(folder, files)
+        layer_ids = {
+            p.name: [i.id for i in PSDDocument(folder / p.name).layers] for p in files
+        }
+        ids1 = layer_ids["001.psd"]
+        kept = task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误", "", (0, 0, 1, 1))
+        # 图层已不存在（PSD 被改动）与 PSD 已移出任务的历史问题
+        ghost_layer = Issue(file="001.psd", layer_id="99.99", layer_name="gone",
+                            type="其他", issue_no=7)
+        ghost_file = Issue(file="999.psd", layer_id="0", layer_name="gone",
+                           type="其他", issue_no=8)
+        task.issues.extend([ghost_layer, ghost_file])
+
+        plan = plan_numbering(task, layer_ids)
+        assert plan.total == 3 and plan.orphans == 2
+        assert [issue.issue_id for issue, _ in plan.entries] == [
+            kept.issue_id, ghost_layer.issue_id, ghost_file.issue_id
+        ]
+        assert [no for _, no in plan.entries] == [1, 2, 3]
+        apply_numbering(task, plan)
+        assert [i.issue_no for i in task.issues] == [1, 2, 3]
+        assert task.issues[-1] is ghost_file
+
+        # 没有问题时：方案为空且无变化
+        empty, _ = persistence.create_task_folder(folder, files)
+        plan_empty = plan_numbering(empty, layer_ids)
+        assert plan_empty.total == 0 and not plan_empty.changed
+        print("问题编号归属不明 OK：保留问题并排在最后")
+
+
 def test_default_report_name_output_folder():
     """回归：output 固定路径格式下默认名取上一级文件夹名。"""
     from mangaproof.report.generator import default_report_name
