@@ -35,6 +35,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.lib.utils import ImageReader
 
 try:  # reportlab >= 5
@@ -82,6 +83,65 @@ def _emit(
     """上报进度（progress_cb 未提供时为无操作）。"""
     if progress_cb is not None:
         progress_cb(done, total, message)
+
+
+class _BookmarkParagraph(Paragraph):
+    """带书签/目录信息的段落。
+
+    afterFlowable 只拿到绘制完的 flowable，因此把「书签键 / 目录标题 / 层级 /
+    是否进目录」挂在段落对象上；页码由文档模板按**实际落页**回填，而不是
+    预先估算——内容自动换页后页码依然准确。
+    """
+
+    def __init__(
+        self,
+        text: str,
+        style: ParagraphStyle,
+        bookmark_key: str = "",
+        bookmark_title: str = "",
+        bookmark_level: int = 0,
+        in_toc: bool = True,
+    ):
+        super().__init__(text, style)
+        self.bookmark_key = bookmark_key
+        self.bookmark_title = bookmark_title or text
+        self.bookmark_level = int(bookmark_level)
+        self.bookmark_in_toc = in_toc
+
+
+class ReportDocTemplate(SimpleDocTemplate):
+    """返修单文档模板：构建时收集目录条目 + 写入 PDF 书签（大纲）。
+
+    目录页码来自 afterFlowable（flowable 真正绘制完成之后），配合 multiBuild
+    反复排版直到目录稳定：内容变长自动换页、目录本身占页变化都不会错位。
+    """
+
+    def afterFlowable(self, flowable) -> None:
+        key = getattr(flowable, "bookmark_key", "")
+        if not key:
+            return
+        title = getattr(flowable, "bookmark_title", "") or key
+        level = int(getattr(flowable, "bookmark_level", 0))
+        self.canv.bookmarkPage(key)
+        self.canv.addOutlineEntry(title, key, level=level, closed=(level > 0))
+        if getattr(flowable, "bookmark_in_toc", True):
+            self.notify("TOCEntry", (level, title, self.page, key))
+
+
+def _build_toc() -> TableOfContents:
+    """目录 flowable（样式跟正文一致，使用当前中文字体）。"""
+    toc = TableOfContents(dotsMinLevel=0)
+    toc.levelStyles = [
+        ParagraphStyle(
+            "toc0", fontName=ZH_FONT, fontSize=12, leading=21,
+            spaceBefore=3, leftIndent=0, firstLineIndent=0,
+        ),
+        ParagraphStyle(
+            "toc1", fontName=ZH_FONT, fontSize=10.5, leading=18,
+            spaceBefore=0, leftIndent=14, firstLineIndent=0,
+        ),
+    ]
+    return toc
 
 
 def _register_fonts() -> None:
@@ -252,7 +312,7 @@ def generate_report(
     all_counts = task.count_all(layer_counts)
     complete = all_counts["unreviewed"] == 0
 
-    doc = SimpleDocTemplate(
+    doc = ReportDocTemplate(
         str(report_path),
         pagesize=A4,
         rightMargin=15 * mm,
@@ -263,10 +323,25 @@ def generate_report(
     )
     story = []
 
-    # ---- 首页 + PSD 总览（需求 §51.1、§51.2） ----
+    # ---- 首页（需求 §51.1） ----
     _emit(progress_cb, 1, total_steps, "生成封面与总览…")
     story.extend(_build_cover(task, all_counts, complete))
     story.append(PageBreak())
+
+    # ---- 目录（需求 §52 定位）：有明细页时才插入；页码由 multiBuild 回填 ----
+    if detail_pages:
+        story.append(
+            _BookmarkParagraph(
+                T.TOC_TITLE, _zh_style(18, 24), bookmark_key="toc", in_toc=False
+            )
+        )
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(T.TOC_HINT, _zh_style(9, 12)))
+        story.append(Spacer(1, 4 * mm))
+        story.append(_build_toc())
+        story.append(PageBreak())
+
+    # ---- PSD 总览（需求 §51.2） ----
     story.extend(_build_overview(task, layer_ids_by_file, hide_clean_files))
     story.append(PageBreak())
 
@@ -294,13 +369,15 @@ def generate_report(
             story.extend(
                 _build_page_detail_page(
                     rel_path, layer_groups, page_issues, image_provider,
-                    image_format, image_quality,
+                    image_format, image_quality, page_index=i,
                 )
             )
 
     # ---- 写入 PDF（reportlab 一次性落盘，中途不打断，避免半成品文件） ----
+    # multiBuild：目录页码来自实际落页，需多次排版直到条目与页码稳定
+    #（内容自动换页 / 目录自身占页变化都能收敛）；无目录时为单趟。
     _emit(progress_cb, total_steps - 1, total_steps, f"写入 PDF：{report_path.name}")
-    doc.build(story)
+    doc.multiBuild(story)
     _emit(progress_cb, total_steps, total_steps, "生成完成")
     return report_path
 
@@ -391,7 +468,12 @@ def _overview_rows(task: TaskState, layer_ids_by_file: Dict[str, List[str]],
 
 def _build_overview(task: TaskState, layer_ids_by_file: Dict[str, List[str]],
                     hide_clean_files: bool = False):
-    story = [Paragraph(T.OVERVIEW_TITLE, _zh_style(18, 24)), Spacer(1, 5 * mm)]
+    story = [
+        _BookmarkParagraph(
+            T.OVERVIEW_TITLE, _zh_style(18, 24), bookmark_key="overview"
+        ),
+        Spacer(1, 5 * mm),
+    ]
 
     rows, hidden = _overview_rows(task, layer_ids_by_file, hide_clean_files)
     if not rows:
@@ -481,6 +563,7 @@ def _build_page_detail_page(
     image_provider,
     image_format: str = "png",
     image_quality: int = 80,
+    page_index: int = 0,
 ):
     """单 PSD（页）问题明细：一张页面图像 + 全部红框 + 按图层分组的问题列表。
 
@@ -492,7 +575,15 @@ def _build_page_detail_page(
         f"{rel_path}　—　{T.LABEL_ISSUES} {len(page_issues)} 处"
         + (f"　·　{layer_count} 个图层" if layer_count > 1 else "")
     )
-    story = [Paragraph(header, _zh_style(14, 18)), Spacer(1, 4 * mm)]
+    story = [
+        _BookmarkParagraph(
+            header,
+            _zh_style(14, 18),
+            bookmark_key=f"page-{page_index}",
+            bookmark_title=f"{rel_path}（{T.LABEL_ISSUES} {len(page_issues)} 处）",
+        ),
+        Spacer(1, 4 * mm),
+    ]
 
     # ---- 图像 + 红框矢量图（自定义 Flowable 直接绘制，需求 §52） ----
     annotated = AnnotatedPageFlowable(
@@ -512,7 +603,13 @@ def _build_page_detail_page(
                 else Spacer(1, 3 * mm)
             )
             story.append(
-                Paragraph(f"{T.LAYER_LABEL}：{layer_name}", _zh_style(12, 16))
+                _BookmarkParagraph(
+                    f"{T.LAYER_LABEL}：{layer_name}",
+                    _zh_style(12, 16),
+                    bookmark_key=f"page-{page_index}-layer-{number}",
+                    bookmark_title=f"{T.LAYER_LABEL}：{layer_name}",
+                    bookmark_level=1,
+                )
             )
         for issue in issues:
             number += 1

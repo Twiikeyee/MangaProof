@@ -406,6 +406,87 @@ def _inflate_stream(body: bytes) -> bytes:
     return b""
 
 
+def _pdf_objects(raw: bytes) -> dict:
+    """{对象号: 对象体}（简易解析，够用于 reportlab 生成的 PDF）。"""
+    import re
+
+    return {
+        int(m.group(1)): m.group(2)
+        for m in re.finditer(rb"(?m)^(\d+) 0 obj(.*?)endobj", raw, re.S)
+    }
+
+
+def _pdf_page_objects(raw: bytes) -> list:
+    """按页面树顺序返回页对象号（目录/书签页码的权威依据）。"""
+    import re
+
+    kids = re.search(rb"/Kids \[([^\]]*)\]", raw)
+    assert kids is not None, "未找到页面树"
+    return [int(n) for n in re.findall(rb"(\d+) 0 R", kids.group(1))]
+
+
+def _pdf_object_stream(raw: bytes, obj: int) -> bytes:
+    """取对象的内容流（已解压）。"""
+    import re
+
+    objs = _pdf_objects(raw)
+    m = re.search(rb"stream\r?\n(.*?)endstream", objs.get(obj, b""), re.S)
+    assert m is not None, f"对象 {obj} 没有流"
+    return _inflate_stream(m.group(1).strip())
+
+
+def _pdf_literal(text: bytes) -> str:
+    """解码 PDF 字面字符串（八进制转义 + UTF-16BE BOM）。"""
+    body = text
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i:i + 1]
+        if ch == b"\\":
+            nxt = body[i + 1:i + 2]
+            if nxt.isdigit():
+                out += bytes([int(body[i + 1:i + 4], 8)])
+                i += 4
+                continue
+            out += {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b",
+                    b"f": b"\f", b"(": b"(", b")": b")", b"\\": b"\\"}.get(nxt, nxt)
+            i += 2
+            continue
+        out += ch
+        i += 1
+    data = bytes(out)
+    if data.startswith(b"\xfe\xff"):
+        return data[2:].decode("utf-16-be", "replace")
+    return data.decode("latin-1")
+
+
+def _pdf_outline_entries(raw: bytes):
+    """返回 PDF 书签（大纲）[(标题, 页码)]，按大纲顺序。"""
+    import re
+
+    order = _pdf_page_objects(raw)
+    page_no = {obj: i + 1 for i, obj in enumerate(order)}
+    entries = []
+    for _num, body in _pdf_objects(raw).items():
+        title = re.search(rb"/Title \(((?:[^()\\]|\\.)*)\)", body)
+        dest = re.search(rb"/Dest \[ (\d+) 0 R", body)
+        if title is not None and dest is not None:
+            entries.append((_pdf_literal(title.group(1)), page_no.get(int(dest.group(1)), -1)))
+    return entries
+
+
+def _pdf_toc_page_numbers(raw: bytes):
+    """目录页上实际印出的页码（点线串尾部的数字，按目录顺序）。"""
+    import re
+
+    order = _pdf_page_objects(raw)
+    objs = _pdf_objects(raw)
+    toc_obj = order[1]                      # 第 2 页 = 目录页
+    contents = int(re.search(rb"/Contents (\d+) 0 R", objs[toc_obj]).group(1))
+    data = _pdf_object_stream(raw, contents).decode("latin-1")
+    return [int(m.group(1)) for m in re.finditer(r"\([ .]*?(\d+)\) Tj", data)]
+
+
 def _pdf_text_fonts(raw: bytes) -> set:
     """返回 PDF 中真正用于绘制文本的字体（BaseFont 名集合）。
 
@@ -744,8 +825,8 @@ def test_report_groups_issues_by_page_and_compression():
         png_path = folder / "grouped_png.pdf"
         generate_report(task, layer_ids, png_path, provider)
         raw_png = png_path.read_bytes()
-        # 封面 + 总览 + 2 个明细页（同一 PSD 的 3 个图层共用一页）
-        assert page_count(raw_png) == 4, page_count(raw_png)
+        # 封面 + 目录 + 总览 + 2 个明细页（同一 PSD 的 3 个图层共用一页）
+        assert page_count(raw_png) == 5, page_count(raw_png)
         assert b"/DCTDecode" not in raw_png
 
         streams = _decode_pdf_streams(raw_png)
@@ -766,7 +847,7 @@ def test_report_groups_issues_by_page_and_compression():
                         image_format="jpeg", image_quality=60)
         raw_jpg = jpg_path.read_bytes()
         assert b"/DCTDecode" in raw_jpg, "JPEG 压缩未生效"
-        assert page_count(raw_jpg) == 4
+        assert page_count(raw_jpg) == 5
         assert sum(s.count(b" re S") for s in _decode_pdf_streams(raw_jpg)) == sum(
             s.count(b" re S") for s in streams
         ), "压缩不应影响矢量红框"
@@ -831,9 +912,83 @@ def test_report_overview_hide_clean_files():
         b = folder / "overview_hidden.pdf"
         generate_report(task, layer_ids, a, provider, hide_clean_files=False)
         generate_report(task, layer_ids, b, provider, hide_clean_files=True)
-        # 封面 + 总览 + 1 个明细页（只有 002.psd 有问题）；两种设置页数一致
-        assert pages(a.read_bytes()) == pages(b.read_bytes()) == 3
+        # 封面 + 目录 + 总览 + 1 个明细页（只有 002.psd 有问题）；两种设置页数一致
+        assert pages(a.read_bytes()) == pages(b.read_bytes()) == 4
         print(f"总览隐藏 OK：全部 {len(rows_all)} 行 → 隐藏 {hidden} 个干净页后 {len(rows)} 行")
+
+
+def test_report_toc_and_bookmarks():
+    """PDF 目录 + 书签：页码按实际落页回填，明细列表自动换页也不错位。
+
+    构造「001.psd 明细列表溢出到多页」的场景，验证：
+    - PDF 含书签（大纲）与目录页，条目覆盖目录 / PSD 总览 / 每个 PSD（含图层子项）；
+    - 目录印出的页码 == 书签目标页 == 实际落页；
+    - 后面的 PSD 页码把前面明细溢出占用的额外页算进去（不会少算一页）。
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        docs = {p.name: PSDDocument(folder / p.name) for p in sorted(folder.glob("*.psd"))}
+        layer_ids = {p.name: [i.id for i in docs[p.name].layers]
+                     for p in sorted(folder.glob("*.psd"))}
+        # 001.psd：3 个图层 × 12 条长批注 → 清单必然溢出到后续页
+        for n, lid in enumerate(layer_ids["001.psd"][:3]):
+            task.set_status("001.psd", lid, FAILED)
+            for k in range(12):
+                task.add_issue("001.psd", lid, f"layer_{n}", "漏字",
+                               "批注内容" * 6, (10 + k, 10, 40, 40))
+        # 002.psd：1 条（应排在 001.psd 占用的所有页之后）
+        task.set_status("002.psd", layer_ids["002.psd"][1], FAILED)
+        task.add_issue("002.psd", layer_ids["002.psd"][1], "dialogue_01",
+                       "居中错误", "", (10, 10, 40, 40))
+
+        out = folder / "toc.pdf"
+        generate_report(task, layer_ids, out,
+                        lambda rel: PSDDocument(folder / rel))
+        raw = out.read_bytes()
+
+        entries = _pdf_outline_entries(raw)
+        titles = [t for t, _ in entries]
+        assert "目录" in titles, titles
+        assert "PSD 总览" in titles, titles
+        first = next((t, p) for t, p in entries if t.startswith("001.psd"))
+        second = next((t, p) for t, p in entries if t.startswith("002.psd"))
+        overview_page = next(p for t, p in entries if t == "PSD 总览")
+        layer_pages = [p for t, p in entries if t.startswith("图层：")]
+
+        assert overview_page == 2 + 1, "封面=1、目录=2，总览应为第 3 页"
+        assert first[1] == overview_page + 1
+        # 关键回归：001.psd 明细溢出到多页 → 002.psd 必须排在其占用的全部页之后
+        assert second[1] > first[1] + 1, (first, second)
+        assert second[1] == len(_pdf_page_objects(raw)), "最后一页应是 002.psd 明细"
+        assert layer_pages == sorted(layer_pages)
+        assert first[1] <= min(layer_pages) and max(layer_pages) < second[1]
+
+        # 目录印出的页码与书签（= 实际落页）完全一致（目录自身不进目录）
+        printed = _pdf_toc_page_numbers(raw)
+        assert printed == [p for t, p in entries if t != "目录"], (printed, entries)
+        print(f"PDF 目录/书签 OK：总览 p{overview_page}、001.psd p{first[1]}"
+              f"（清单溢出）、002.psd p{second[1]}")
+
+
+def test_report_toc_skipped_without_issues():
+    """没有任何问题时不插目录页（省页），书签仍可用。"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        out = folder / "clean.pdf"
+        generate_report(task, {"001.psd": [], "002.psd": [], "10.psd": []}, out,
+                        lambda rel: PSDDocument(folder / rel))
+        raw = out.read_bytes()
+        # 封面 + 总览 + 「本任务暂无未通过问题」页；不插目录页（省一页）
+        assert len(_pdf_page_objects(raw)) == 3
+        titles = [t for t, _ in _pdf_outline_entries(raw)]
+        assert "目录" not in titles and "PSD 总览" in titles, titles
+        print("PDF 目录 OK：无问题时跳过目录页")
 
 
 def test_default_report_name_output_folder():

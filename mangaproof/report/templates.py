@@ -17,6 +17,9 @@ LABEL_STATUS = "任务状态"
 STATUS_COMPLETE = "已完成"
 STATUS_INCOMPLETE = "未完成"
 
+TOC_TITLE = "目录"
+TOC_HINT = "点击目录条目或使用阅读器书签（大纲）可直接跳转到对应 PSD 页。"
+
 OVERVIEW_TITLE = "PSD 总览"
 DETAIL_TITLE = "问题明细"
 # 隐藏干净页（全部通过且无问题）时的说明 / 全部干净时的提示
