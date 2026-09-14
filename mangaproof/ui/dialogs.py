@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -23,7 +23,27 @@ from mangaproof.config.settings import (
     JPEG_QUALITY_CHOICES,
 )
 from mangaproof.review.issue import Issue
+from mangaproof.ui.theme import COLOR_TEXT_DIM
 from mangaproof.ui.widgets import NoWheelComboBox
+
+
+class _CommentEdit(QTextEdit):
+    """批注输入框：Enter = 确认，Shift+Enter = 换行。
+
+    标注流程是「框选 → 选类型 → 写批注 → 确认」的纯键盘流：Enter 直接
+    确认可以省掉一次点击；需要多行批注时按 Shift+Enter（对话框里有提示）。
+    """
+
+    submitted = Signal()
+
+    def keyPressEvent(self, event) -> None:   # noqa: N802（Qt 命名）
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                super().keyPressEvent(event)   # Shift+Enter 插入换行
+            else:
+                self.submitted.emit()          # Enter 等同按下「确定」
+            return
+        super().keyPressEvent(event)
 
 
 class IssueDialog(QDialog):
@@ -71,9 +91,11 @@ class IssueDialog(QDialog):
         if default_type is not None and default_type in issue_types:
             self.type_combo.setCurrentText(default_type)
 
-        self.comment_edit = QTextEdit()
+        self.comment_edit = _CommentEdit()
         self.comment_edit.setPlaceholderText("自定义批注（可留空），例如：这里应该使用 Bold，而不是 Regular。")
         self.comment_edit.setMinimumHeight(120)
+        # 键盘流：Enter 直接确认，Shift+Enter 才换行（见 _CommentEdit）
+        self.comment_edit.submitted.connect(self.accept)
 
         if issue is not None:
             if issue.type in issue_types:
@@ -91,7 +113,16 @@ class IssueDialog(QDialog):
 
         form.addRow("问题类型：", self.type_combo)
         form.addRow("红框位置：", self.rect_label)
-        form.addRow("批注：", self.comment_edit)
+
+        comment_box = QWidget()
+        comment_layout = QVBoxLayout(comment_box)
+        comment_layout.setContentsMargins(0, 0, 0, 0)
+        comment_layout.setSpacing(2)
+        comment_layout.addWidget(self.comment_edit)
+        self.comment_hint = QLabel("Enter 确认　Shift+Enter 换行")
+        self.comment_hint.setStyleSheet(f"color: {COLOR_TEXT_DIM};")
+        comment_layout.addWidget(self.comment_hint)
+        form.addRow("批注：", comment_box)
         layout.addLayout(form)
 
         self.button_box = QDialogButtonBox(

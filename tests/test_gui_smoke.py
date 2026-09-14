@@ -2600,6 +2600,102 @@ def test_auto_box_type_picker_dialog() -> None:
     print("PASS test_auto_box_type_picker_dialog")
 
 
+def test_issue_dialog_enter_submits_shift_enter_newline() -> None:
+    """批注框：Enter 等同「确定」，Shift+Enter 才换行（键盘流快速标注）。"""
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QDialog
+
+    from mangaproof.ui.dialogs import IssueDialog
+
+    # 1) 组件级：Enter 直接确认
+    dlg = IssueDialog(["居中错误", "漏字", "其他"])
+    dlg.show()
+    app.processEvents()
+    dlg.comment_edit.setFocus()
+    app.processEvents()
+    assert "Enter 确认" in dlg.comment_hint.text()
+    assert "Shift+Enter 换行" in dlg.comment_hint.text()
+    QTest.keyClicks(dlg.comment_edit, "typo here")
+    app.processEvents()
+    assert dlg.result() != QDialog.DialogCode.Accepted, "打字过程中不应确认"
+    QTest.keyClick(dlg.comment_edit, Qt.Key.Key_Return)
+    app.processEvents()
+    assert dlg.result() == QDialog.DialogCode.Accepted, "Enter 应等同确定"
+    assert dlg.result_values() == ("居中错误", "typo here")
+    dlg.close()
+
+    # 2) 组件级：Shift+Enter 换行且不确认；小键盘 Enter 同样确认
+    dlg2 = IssueDialog(["居中错误", "漏字"])
+    dlg2.show()
+    app.processEvents()
+    dlg2.comment_edit.setFocus()
+    app.processEvents()
+    QTest.keyClicks(dlg2.comment_edit, "line1")
+    QTest.keyClick(
+        dlg2.comment_edit, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier
+    )
+    app.processEvents()
+    QTest.keyClicks(dlg2.comment_edit, "line2")
+    app.processEvents()
+    assert dlg2.result() != QDialog.DialogCode.Accepted, "Shift+Enter 不应确认"
+    assert dlg2.comment_edit.toPlainText() == "line1\nline2"
+    QTest.keyClick(dlg2.comment_edit, Qt.Key.Key_Enter)     # 小键盘 Enter
+    app.processEvents()
+    assert dlg2.result() == QDialog.DialogCode.Accepted
+    assert dlg2.result_values()[1] == "line1\nline2", "批注保留换行"
+    dlg2.close()
+
+    # 3) 端到端：框选流程里 Enter 确认后，多行批注原样入库
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+
+        def fake_exec(self):
+            """真实对话框 + 真实按键：Shift+Enter 换行，Enter 确认。"""
+            self.show()
+            app.processEvents()
+            app.processEvents()
+            self.comment_edit.setFocus()
+            app.processEvents()
+            QTest.keyClicks(self.comment_edit, "line1")
+            QTest.keyClick(
+                self.comment_edit, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier
+            )
+            app.processEvents()
+            QTest.keyClicks(self.comment_edit, "line2")
+            QTest.keyClick(self.comment_edit, Qt.Key.Key_Return)   # 直接确认
+            app.processEvents()
+            self.close()
+            return self.result()
+
+        with patch.object(mw.IssueDialog, "exec", fake_exec):
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            QTest.keyClick(window, Qt.Key.Key_A)      # 自动框选 → 弹类型对话框
+            app.processEvents()
+            assert len(window.task.issues) == 1
+            issue = window.task.issues[0]
+            assert issue.comment == "line1\nline2", repr(issue.comment)
+            # 一标一退：Enter 确认后模式同样自动退出
+            assert window.viewer.redraw_mode is False
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_issue_dialog_enter_submits_shift_enter_newline")
+
+
 def test_issue_panel_long_layer_name() -> None:
     """当前图层问题面板：超长图层名单行省略显示（不撑宽、不换行）。"""
     from mangaproof.ui.issue_panel import IssuePanel
