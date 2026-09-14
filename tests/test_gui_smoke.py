@@ -26,6 +26,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import mangaproof.ui.main_window as mw
 from mangaproof.config.settings import SettingsManager
 from mangaproof.review import persistence
 from mangaproof.review.state import FAILED, PARTIAL, PASSED, UNREVIEWED, TaskState
@@ -1845,6 +1847,320 @@ def test_no_wheel_combo_app_wide() -> None:
         app.processEvents()
 
     print("PASS test_no_wheel_combo_app_wide")
+
+
+def test_all_default_shortcuts_fire() -> None:
+    """快捷键全量体检：默认键位全部真的绑上、互不冲突、按下就对得上动作。
+
+    历史缺陷：①「红框模式 R」与问题类型「漏字 R」撞车 → Qt 判歧义，
+    两个都不触发（用户按 R 完全没反应）；②工具栏上印着 Ctrl+O /
+    Ctrl+Shift+O / Ctrl+R 的按钮其实只写了文本、没绑快捷键。
+    """
+    from collections import defaultdict
+
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtTest import QTest
+
+    from mangaproof.config.settings import (
+        DEFAULT_ISSUE_TYPES,
+        DEFAULT_KEYBINDINGS,
+        shortcut_conflicts,
+    )
+
+    # 1) 默认配置自身零冲突
+    assert DEFAULT_KEYBINDINGS["redraw_mode"] == "R", "红框模式应保持 R"
+    assert shortcut_conflicts(DEFAULT_KEYBINDINGS, DEFAULT_ISSUE_TYPES) == {}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+
+        # 2) 结构：每个默认键位都必须绑上，且没有重复序列
+        groups: dict = defaultdict(list)
+        for sc in window._shortcuts:
+            groups[sc.key().toString()].append(sc)
+        duplicates = {k: len(v) for k, v in groups.items() if len(v) > 1}
+        assert duplicates == {}, f"存在同键多绑（Qt 会判歧义）: {duplicates}"
+
+        expected = set(DEFAULT_KEYBINDINGS.values()) | {
+            t["key"] for t in DEFAULT_ISSUE_TYPES if t["key"]
+        }
+        missing = expected - set(groups)
+        assert missing == set(), f"这些默认快捷键没有绑定：{sorted(missing)}"
+        # 按钮上印出来的快捷键必须真的可用（不能只印不绑）
+        for action in ("open_psd", "open_folder", "generate_report", "save_task"):
+            seq = DEFAULT_KEYBINDINGS[action]
+            assert seq in groups, f"按钮标注了 {seq}（{action}）却没有绑定"
+
+        # 3) 逐个真按：只有对应序列触发 activated，绝不出现歧义
+        fired: list = []
+        for sc in window._shortcuts:
+            seq = sc.key().toString()
+            sc.activated.connect(lambda s=seq: fired.append(s))
+            sc.activatedAmbiguously.connect(lambda s=seq: fired.append(f"{s}(歧义)"))
+        opened: list = []
+        with patch.object(mw.IssueDialog, "exec", lambda self: 0), \
+             patch.object(mw.ReportDialog, "exec", lambda self: 0), \
+             patch.object(
+                 QFileDialog, "getOpenFileName",
+                 lambda *a, **k: (opened.append("psd"), ("", ""))[1],
+             ), \
+             patch.object(
+                 QFileDialog, "getExistingDirectory",
+                 lambda *a, **k: (opened.append("folder"), "")[1],
+             ):
+            # 先测不触发异步切换的键，导航键最后单独测
+            order = [s for s in groups if s not in ("Up", "Down")]
+            for seq in order:
+                fired.clear()
+                combo = QKeySequence(seq)[0]
+                QTest.keyClick(window, combo.key(), combo.keyboardModifiers())
+                app.processEvents()
+                assert fired == [seq], f"{seq} 应恰好触发自身，实际 {fired}"
+            window._compare.interrupt()
+            # 导航键：Up/Down 切换 PSD（异步），逐个等待落定
+            for seq in ("Down", "Up"):
+                fired.clear()
+                combo = QKeySequence(seq)[0]
+                QTest.keyClick(window, combo.key(), combo.keyboardModifiers())
+                app.processEvents()
+                assert fired == [seq], f"{seq} 应恰好触发自身，实际 {fired}"
+                _wait_for_file(window, window._current_file)
+            window._compare.interrupt()
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_all_default_shortcuts_fire")
+
+
+def test_shortcut_conflict_detection_and_fixes() -> None:
+    """冲突检测（配置期 + 运行期提示）与旧配置自动修复。"""
+    import json
+
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtTest import QTest
+
+    from mangaproof.config.settings import (
+        DEFAULT_ISSUE_TYPES,
+        DEFAULT_KEYBINDINGS,
+        Settings,
+        shortcut_conflicts,
+    )
+    from mangaproof.ui.settings_dialog import KeybindingsDialog
+
+    # 1) 冲突检测：同一序列绑两个动作能被查出来，且大小写/空格归一化
+    kb = dict(DEFAULT_KEYBINDINGS)
+    types = [dict(t) for t in DEFAULT_ISSUE_TYPES]
+    assert shortcut_conflicts(kb, types) == {}
+    kb["redraw_mode"] = "R"
+    for item in types:
+        if item["name"] == "漏字":
+            item["key"] = "r"          # 小写也应视为冲突
+    conflicts = shortcut_conflicts(kb, types)
+    assert list(conflicts) == ["R"], conflicts
+    assert ("核心快捷键", "红框模式") in conflicts["R"]
+    assert ("问题类型", "漏字") in conflicts["R"]
+    # 空绑定（键位留空 = 不绑）不算冲突
+    for item in types:
+        if item["name"] == "漏字":
+            item["key"] = ""
+    assert shortcut_conflicts(kb, types) == {}
+
+    # 2) 旧版 settings.json（漏字=R 撞红框模式）载入时自动让位到 P
+    with tempfile.TemporaryDirectory() as tmp:
+        legacy = Path(tmp) / "legacy.json"
+        legacy.write_text(json.dumps({
+            "keybindings": {"redraw_mode": "R"},
+            "issue_types": [{"name": "漏字", "key": "R"}, {"name": "错字", "key": "T"}],
+        }, ensure_ascii=False), encoding="utf-8")
+        s = SettingsManager(legacy).settings
+        assert s.issue_types[0] == {"name": "漏字", "key": "P"}
+        assert s.keybindings["redraw_mode"] == "R"
+        assert s.shortcut_conflicts() == {}
+
+        # 用户已自行改绑（redraw_mode 不是 R）→ 尊重用户，不动
+        custom = Path(tmp) / "custom.json"
+        custom.write_text(json.dumps({
+            "keybindings": {"redraw_mode": "F8"},
+            "issue_types": [{"name": "漏字", "key": "R"}],
+        }, ensure_ascii=False), encoding="utf-8")
+        s2 = SettingsManager(custom).settings
+        assert s2.issue_types[0]["key"] == "R", "用户自定配置不应被擅自改写"
+        assert s2.keybindings["redraw_mode"] == "F8"
+
+    # 3) 快捷键子对话框：即时提示冲突，且冲突时不允许保存
+    s3 = Settings()
+    kb_dlg = KeybindingsDialog(s3)
+    kb_dlg.show()
+    app.processEvents()
+    assert kb_dlg.conflicts() == {}
+    assert kb_dlg.conflict_label.isVisible() is False
+    row = next(
+        i for i, item in enumerate(s3.issue_types) if item["name"] == "漏字"
+    )
+    kb_dlg._issue_edits[row].setKeySequence(QKeySequence("R"))
+    app.processEvents()
+    assert list(kb_dlg.conflicts()) == ["R"]
+    assert kb_dlg.conflict_label.isVisible() is True
+    assert "漏字" in kb_dlg.conflict_label.text()
+    with patch.object(
+        QMessageBox, "warning", return_value=QMessageBox.StandardButton.Ok
+    ) as warn:
+        kb_dlg.accept()
+        assert warn.called, "冲突时应弹窗拦截"
+    assert kb_dlg.result() != KeybindingsDialog.DialogCode.Accepted
+    # 改回不冲突的键 → 可正常保存
+    kb_dlg._issue_edits[row].setKeySequence(QKeySequence("P"))
+    app.processEvents()
+    assert kb_dlg.conflicts() == {}
+    assert kb_dlg.conflict_label.isVisible() is False
+    kb_dlg.accept()
+    assert kb_dlg.result() == KeybindingsDialog.DialogCode.Accepted
+    # 「恢复默认快捷键」不产生冲突
+    kb_dlg._reset_defaults()
+    assert kb_dlg.conflicts() == {}
+
+    # 4) 运行期：真按下冲突键时明确提示撞在哪（而不是静默无反应）
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+
+        for item in window.settings.issue_types:
+            if item["name"] == "漏字":
+                item["key"] = "R"
+        window.settings.keybindings["redraw_mode"] = "R"
+        window._rebuild_shortcuts()
+        app.processEvents()
+        fired: list = []
+        for sc in window._shortcuts:
+            seq = sc.key().toString()
+            sc.activated.connect(lambda s=seq: fired.append(s))
+            sc.activatedAmbiguously.connect(lambda s=seq: fired.append(f"{s}(歧义)"))
+        QTest.keyClick(window, Qt.Key.Key_R)
+        app.processEvents()
+        assert "R(歧义)" in fired, fired
+        assert "R" not in [f for f in fired if f != "R(歧义)"], "冲突键不应触发动作"
+        msg = window.statusBar().currentMessage()
+        assert "红框模式" in msg and "漏字" in msg, msg
+        # 冲突配置重建后仍应提示（便于用户发现）
+        window.close()
+        app.processEvents()
+
+    print("PASS test_shortcut_conflict_detection_and_fixes")
+
+
+def test_shortcut_actions_take_effect() -> None:
+    """按下的快捷键要真的产生对应动作（不只是"触发了信号"）。"""
+    from PySide6.QtTest import QTest
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+
+        calls: list = []
+        with patch.object(
+            mw.IssueDialog, "exec",
+            lambda self: (calls.append(("issue", self.type_combo.currentText())), 0)[1],
+        ), patch.object(
+            mw.ReportDialog, "exec",
+            lambda self: (calls.append(("report", self.hide_clean_files())), 0)[1],
+        ), patch.object(
+            QFileDialog, "getOpenFileName",
+            lambda *a, **k: (calls.append(("open_psd", None)), ("", ""))[1],
+        ), patch.object(
+            QFileDialog, "getExistingDirectory",
+            lambda *a, **k: (calls.append(("open_folder", None)), "")[1],
+        ):
+            # R：进入拖框（红框）模式
+            assert window.viewer.redraw_mode is False
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            assert window.viewer.redraw_mode is True, "R 应进入红框模式"
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            assert window.viewer.redraw_mode is False, "R 再按一次应退出"
+
+            # P：漏字（原 R 撞车后挪到 P）
+            QTest.keyClick(window, Qt.Key.Key_P)
+            app.processEvents()
+            assert window.viewer.pending_type == "漏字"
+
+            # Esc：取消待创建的问题
+            QTest.keyClick(window, Qt.Key.Key_Escape)
+            app.processEvents()
+            assert window.viewer.pending_type is None
+
+            # Ctrl+Enter：自定义批注对话框
+            calls.clear()
+            QTest.keyClick(window, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+            app.processEvents()
+            assert calls and calls[0][0] == "issue", calls
+
+            # 工具栏上标注的三个快捷键必须真的打开对应对话框
+            calls.clear()
+            QTest.keyClick(window, Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier)
+            app.processEvents()
+            assert calls == [("open_psd", None)], calls
+
+            calls.clear()
+            QTest.keyClick(
+                window, Qt.Key.Key_O,
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+            )
+            app.processEvents()
+            assert calls == [("open_folder", None)], calls
+
+            calls.clear()
+            QTest.keyClick(window, Qt.Key.Key_R, Qt.KeyboardModifier.ControlModifier)
+            app.processEvents()
+            assert [c[0] for c in calls] == ["report"], calls
+
+        # Ctrl+S：保存任务（写入进度文件 + 状态栏「已保存」）
+        window._mark_dirty()
+        assert window.save_label.text() == "未保存"
+        QTest.keyClick(window, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+        app.processEvents()
+        assert window.save_label.text().startswith("已保存"), window.save_label.text()
+        progress = persistence.progress_path_for_folder(folder)
+        assert progress.exists(), progress
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_shortcut_actions_take_effect")
 
 
 def test_issue_panel_long_layer_name() -> None:

@@ -40,7 +40,30 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "redraw_mode": "R",
 }
 
+# 核心快捷键的中文名（设置对话框表格 + 冲突提示共用）
+CORE_SHORTCUT_LABELS: dict[str, str] = {
+    "prev_psd": "上一个 PSD",
+    "next_psd": "下一个 PSD",
+    "prev_layer": "上一个图层",
+    "next_layer": "下一个图层",
+    "pass_layer": "当前图层通过",
+    "fail_layer": "当前图层未通过",
+    "toggle_compare": "自动对比",
+    "cancel_operation": "取消/退出批注操作",
+    "save_task": "保存任务",
+    "custom_comment": "自定义批注",
+    "open_psd": "打开单个 PSD",
+    "open_folder": "打开文件夹",
+    "generate_report": "生成返修单",
+    "redraw_mode": "红框模式",
+}
+
 # 预制问题类型（需求 §34）及其默认快捷键（需求 §35，均可配置）
+#
+# 键位分配：数字行 1~9、0 给前 10 类，再接 Q W E _ T Y U I O P。
+# R 让给核心快捷键「红框模式」（拖框提交问题，需求 §37）；漏字排在 R 后面，
+# 用相邻的 P——否则两者同绑 R，Qt 会判定为歧义快捷键而**两个都不触发**
+# （历史缺陷：按 R 完全没反应）。
 DEFAULT_ISSUE_TYPES: list[dict[str, str]] = [
     {"name": "居中错误", "key": "1"},
     {"name": "字体选择错误", "key": "2"},
@@ -55,13 +78,60 @@ DEFAULT_ISSUE_TYPES: list[dict[str, str]] = [
     {"name": "网点残留", "key": "Q"},
     {"name": "修图瑕疵", "key": "W"},
     {"name": "漏翻", "key": "E"},
-    {"name": "漏字", "key": "R"},
+    {"name": "漏字", "key": "P"},
     {"name": "错字", "key": "T"},
     {"name": "翻译错误", "key": "Y"},
     {"name": "排版错误", "key": "U"},
     {"name": "文字溢出", "key": "I"},
     {"name": "其他", "key": "O"},
 ]
+
+# 旧版本默认值：漏字 = R 与「红框模式」= R 撞车（Qt 歧义 → 两个都失效）。
+# 载入旧 settings.json 时按此表自动让位，见 SettingsManager._heal_shortcut_conflicts。
+_LEGACY_DUPLICATE_ISSUE_KEYS: dict[str, str] = {"漏字": "P"}
+
+
+def normalize_key(seq: str) -> str:
+    """快捷键序列归一化（仅用于比较是否撞车，不改变实际绑定值）。"""
+    return "".join(str(seq).split()).upper()
+
+
+def shortcut_entries(
+    keybindings: dict[str, str],
+    issue_types: list[dict[str, str]],
+    custom_comment_key: str = "",
+) -> list[tuple[str, str, str]]:
+    """全部快捷键绑定 → [(序列, 分类, 名称)]（跳过空绑定）。"""
+    entries: list[tuple[str, str, str]] = []
+    for action, label in CORE_SHORTCUT_LABELS.items():
+        seq = keybindings.get(action, DEFAULT_KEYBINDINGS.get(action, ""))
+        if action == "custom_comment" and custom_comment_key:
+            seq = custom_comment_key
+        if seq:
+            entries.append((str(seq), "核心快捷键", label))
+    for item in issue_types:
+        key = str(item.get("key", "") or "")
+        if key:
+            entries.append((key, "问题类型", str(item.get("name", ""))))
+    return entries
+
+
+def shortcut_conflicts(
+    keybindings: dict[str, str],
+    issue_types: list[dict[str, str]],
+    custom_comment_key: str = "",
+) -> dict[str, list[tuple[str, str]]]:
+    """找出重复绑定的快捷键 → {序列: [(分类, 名称), ...]}。
+
+    Qt 对同一窗口内重复的快捷键会判定为「歧义」（Ambiguous shortcut
+    overload）并拒绝触发其中任何一个——表现为按键完全没反应。
+    因此配置阶段必须能检查出来：设置对话框禁止保存冲突配置，
+    运行时也会提示具体是哪两个动作撞车。
+    """
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for seq, kind, label in shortcut_entries(keybindings, issue_types, custom_comment_key):
+        groups.setdefault(normalize_key(seq), []).append((kind, label))
+    return {seq: names for seq, names in groups.items() if len(names) > 1}
 
 DISPLAY_RATIOS: list[float] = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 DEFAULT_DISPLAY_RATIO = 0.6
@@ -151,6 +221,30 @@ class Settings:
 
     def binding(self, action: str) -> str:
         return self.keybindings.get(action, DEFAULT_KEYBINDINGS.get(action, ""))
+
+    def shortcut_conflicts(self) -> dict[str, list[tuple[str, str]]]:
+        """当前配置里的重复快捷键，见模块级 shortcut_conflicts()。"""
+        return shortcut_conflicts(
+            self.keybindings, self.issue_types, self.custom_comment_key
+        )
+
+    def _heal_shortcut_conflicts(self) -> None:
+        """把已知的历史撞车配置自动让位（旧版「漏字」与「红框模式」同绑 R）。
+
+        只在旧默认值原样保留时生效：用户若已自行改绑任一侧，说明他有明确
+        意图，不动。不修的话 Qt 判定歧义，两个动作都按不出来。
+        """
+        for item in self.issue_types:
+            replacement = _LEGACY_DUPLICATE_ISSUE_KEYS.get(item.get("name", ""))
+            if not replacement or not item.get("key"):
+                continue
+            if normalize_key(item["key"]) != "R":
+                continue
+            if normalize_key(self.binding("redraw_mode")) != "R":
+                continue
+            log.info("快捷键修复：问题类型「%s」R → %s（与红框模式撞车）",
+                     item["name"], replacement)
+            item["key"] = replacement
 
 
 class SettingsManager:
@@ -252,6 +346,8 @@ class SettingsManager:
                 cleaned.append({"name": name, "key": str(item.get("key", ""))})
             if cleaned:
                 s.issue_types = cleaned
+
+        s._heal_shortcut_conflicts()
 
         recent = raw.get("recent_paths", [])
         if isinstance(recent, list):

@@ -27,7 +27,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QKeySequenceEdit,
+    QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -39,6 +41,7 @@ from PySide6.QtWidgets import (
 from mangaproof.compare.controller import hz_to_interval_ms
 from mangaproof.config.settings import (
     COMPARE_SPEED_TIERS,
+    CORE_SHORTCUT_LABELS,
     DEFAULT_COMPARE_MODE,
     DEFAULT_COMPARE_SPEED_HZ,
     DEFAULT_DISPLAY_RATIO,
@@ -53,26 +56,10 @@ from mangaproof.config.settings import (
     DISPLAY_RATIOS,
     JPEG_QUALITY_CHOICES,
     Settings,
+    shortcut_conflicts,
 )
+from mangaproof.ui.theme import COLOR_WARN
 from mangaproof.ui.widgets import NoWheelComboBox
-
-CORE_ACTION_LABELS: Dict[str, str] = {
-    "prev_psd": "上一个 PSD",
-    "next_psd": "下一个 PSD",
-    "prev_layer": "上一个图层",
-    "next_layer": "下一个图层",
-    "pass_layer": "当前图层通过",
-    "fail_layer": "当前图层未通过",
-    "toggle_compare": "自动对比",
-    "cancel_operation": "取消/退出批注操作",
-    "save_task": "保存任务",
-    "custom_comment": "自定义批注",
-    "open_psd": "打开单个 PSD",
-    "open_folder": "打开文件夹",
-    "generate_report": "生成返修单",
-    "redraw_mode": "红框模式",
-}
-
 
 class KeybindingsDialog(QDialog):
     """快捷键设置子对话框：核心快捷键 + 问题类型快捷键 + 自定义批注键。
@@ -91,13 +78,13 @@ class KeybindingsDialog(QDialog):
         # ---- 核心快捷键 ----
         core_group = QGroupBox("核心快捷键（点击后按键重新绑定）")
         core_layout = QVBoxLayout(core_group)
-        self.core_table = QTableWidget(len(CORE_ACTION_LABELS), 2)
+        self.core_table = QTableWidget(len(CORE_SHORTCUT_LABELS), 2)
         self.core_table.setHorizontalHeaderLabels(["功能", "快捷键"])
         self.core_table.verticalHeader().setVisible(False)
         self.core_table.horizontalHeader().setStretchLastSection(True)
         self.core_table.setColumnWidth(0, 300)
         self._core_edits: Dict[str, QKeySequenceEdit] = {}
-        for row, (action, label) in enumerate(CORE_ACTION_LABELS.items()):
+        for row, (action, label) in enumerate(CORE_SHORTCUT_LABELS.items()):
             self.core_table.setItem(row, 0, QTableWidgetItem(label))
             edit = QKeySequenceEdit()
             edit.setKeySequence(QKeySequence(settings.binding(action)))
@@ -130,6 +117,13 @@ class KeybindingsDialog(QDialog):
         issue_layout.addWidget(self.issue_table)
         layout.addWidget(issue_group)
 
+        # ---- 冲突提示（同一按键绑给多个动作时 Qt 会判定歧义，全都不触发）----
+        self.conflict_label = QLabel("")
+        self.conflict_label.setWordWrap(True)
+        self.conflict_label.setStyleSheet(f"color: {COLOR_WARN};")
+        self.conflict_label.setVisible(False)
+        layout.addWidget(self.conflict_label)
+
         # ---- 按钮 ----
         button_row = QHBoxLayout()
         self.reset_btn = QPushButton("恢复默认快捷键")
@@ -144,6 +138,66 @@ class KeybindingsDialog(QDialog):
         button_row.addWidget(self.button_box)
         layout.addLayout(button_row)
 
+        # 任一快捷键变化就即时重算冲突提示
+        for edit in list(self._core_edits.values()) + list(self._issue_edits.values()):
+            edit.keySequenceChanged.connect(self._refresh_conflicts)
+        self.custom_key_edit.keySequenceChanged.connect(self._refresh_conflicts)
+        self._refresh_conflicts()
+
+    # -- 冲突检查 ----------------------------------------------------------
+
+    def conflicts(self) -> dict[str, list[tuple[str, str]]]:
+        """当前编辑框内容的重复快捷键（未保存也检查）。"""
+        keybindings: Dict[str, str] = {}
+        for action, edit in self._core_edits.items():
+            seq = edit.keySequence().toString()
+            keybindings[action] = seq or DEFAULT_KEYBINDINGS.get(action, "")
+        issue_types = [
+            {"name": str(self.issue_table.item(row, 0).text()),
+             "key": edit.keySequence().toString()}
+            for row, edit in self._issue_edits.items()
+            if self.issue_table.item(row, 0) is not None
+        ]
+        custom = (
+            self.custom_key_edit.keySequence().toString()
+            or DEFAULT_KEYBINDINGS["custom_comment"]
+        )
+        return shortcut_conflicts(keybindings, issue_types, custom)
+
+    @staticmethod
+    def _format_conflicts(conflicts: dict[str, list[tuple[str, str]]]) -> str:
+        lines = []
+        for seq, names in sorted(conflicts.items()):
+            who = " ／ ".join(f"{kind}：{label}" for kind, label in names)
+            lines.append(f"· {seq}　→　{who}")
+        return "\n".join(lines)
+
+    def _refresh_conflicts(self) -> None:
+        conflicts = self.conflicts()
+        if not conflicts:
+            self.conflict_label.setVisible(False)
+            self.conflict_label.setText("")
+            return
+        self.conflict_label.setText(
+            "⚠ 快捷键冲突（同一按键绑了多个动作时，按下不会有任何反应，"
+            "请改绑其中一个）：\n" + self._format_conflicts(conflicts)
+        )
+        self.conflict_label.setVisible(True)
+
+    def accept(self) -> None:
+        conflicts = self.conflicts()
+        if conflicts:
+            QMessageBox.warning(
+                self,
+                "快捷键冲突",
+                "以下按键被绑定到了多个动作，保存后按下不会有任何反应：\n\n"
+                f"{self._format_conflicts(conflicts)}\n\n"
+                "请先改绑其中一个，再点「确定」。",
+            )
+            self._refresh_conflicts()
+            return
+        super().accept()
+
     def _reset_defaults(self) -> None:
         for action, edit in self._core_edits.items():
             edit.setKeySequence(QKeySequence(DEFAULT_KEYBINDINGS.get(action, "")))
@@ -151,6 +205,7 @@ class KeybindingsDialog(QDialog):
             if row < len(DEFAULT_ISSUE_TYPES):
                 edit.setKeySequence(QKeySequence(DEFAULT_ISSUE_TYPES[row].get("key", "")))
         self.custom_key_edit.setKeySequence(QKeySequence(DEFAULT_KEYBINDINGS["custom_comment"]))
+        self._refresh_conflicts()
 
     def apply_to(self, settings: Settings) -> None:
         for action, edit in self._core_edits.items():

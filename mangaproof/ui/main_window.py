@@ -30,6 +30,8 @@ from mangaproof.config.settings import (
     DISPLAY_RATIOS,
     Settings,
     SettingsManager,
+    normalize_key,
+    shortcut_conflicts,
 )
 from mangaproof.psd.document import PSDDocument
 from mangaproof.psd.image_cache import LayerImageCache
@@ -430,6 +432,12 @@ class MainWindow(QMainWindow):
                 slot()
 
             sc.activated.connect(handler)
+            # 同一序列被绑定多次时 Qt 判定为歧义：activated 不触发，
+            # 只发 activatedAmbiguously（表现就是"按键完全没反应"）。
+            # 这里给出明确提示，否则用户无从知道是哪个键跟谁撞了。
+            sc.activatedAmbiguously.connect(
+                lambda s=seq.toString(): self._on_ambiguous_shortcut(s)
+            )
             self._shortcuts.append(sc)
 
         bind(kb.get("prev_psd", "Up"), self.prev_psd)
@@ -443,6 +451,11 @@ class MainWindow(QMainWindow):
         bind(kb.get("save_task", "Ctrl+S"), self.save_task)
         bind(kb.get("custom_comment", "Ctrl+Return"), self._on_custom_comment)
         bind(kb.get("redraw_mode", "R"), self.toggle_redraw_mode)
+        # 工具栏/菜单上标注的这三个也必须真的绑定（历史缺陷：只印了提示文本，
+        # 没绑 QShortcut，按下去没有任何反应）
+        bind(kb.get("open_psd", "Ctrl+O"), self.open_psd_dialog)
+        bind(kb.get("open_folder", "Ctrl+Shift+O"), self.open_folder_dialog)
+        bind(kb.get("generate_report", "Ctrl+R"), self.generate_report_dialog)
 
         # 问题类型快捷键（需求 §35）：文本输入框聚焦时不触发
         issue_guard = self._focus_not_text_input
@@ -452,8 +465,51 @@ class MainWindow(QMainWindow):
             if key:
                 bind(key, lambda n=name: self._on_issue_key(n), guard=issue_guard)
 
+        self._warn_shortcut_conflicts()
         self._update_shortcut_hints()
         self._update_issue_panel_shortcuts()
+
+    def _shortcut_conflict_text(self, seq: str) -> str:
+        """该序列撞车的动作名（用于提示），无冲突返回空串。"""
+        conflicts = shortcut_conflicts(
+            self.settings.keybindings,
+            self.settings.issue_types,
+            self.settings.custom_comment_key,
+        )
+        names = conflicts.get(normalize_key(seq))
+        if not names:
+            return ""
+        return " ／ ".join(f"{kind}：{label}" for kind, label in names)
+
+    def _on_ambiguous_shortcut(self, seq: str) -> None:
+        """歧义快捷键被按下：明确告诉用户撞在哪，而不是静默无反应。"""
+        detail = self._shortcut_conflict_text(seq)
+        msg = (
+            f"快捷键 {seq} 被绑定到多个动作，已失效：{detail}"
+            if detail
+            else f"快捷键 {seq} 存在歧义，未能触发（请在设置中重新绑定）"
+        )
+        log.warning("%s", msg)
+        self.statusBar().showMessage(msg, 6000)
+
+    def _warn_shortcut_conflicts(self) -> None:
+        """启动/改绑后检查一遍冲突，冲突则提示（不静默失效）。"""
+        conflicts = shortcut_conflicts(
+            self.settings.keybindings,
+            self.settings.issue_types,
+            self.settings.custom_comment_key,
+        )
+        if not conflicts:
+            return
+        detail = "；".join(
+            f"{seq}（" + " ／ ".join(f"{kind}：{label}" for kind, label in names) + "）"
+            for seq, names in sorted(conflicts.items())
+        )
+        log.warning("快捷键冲突：%s", detail)
+        self.statusBar().showMessage(
+            f"⚠ 快捷键冲突，按下不会有反应：{detail}（可在 设置 →「设置快捷键…」中改绑）",
+            10000,
+        )
 
     def _update_issue_panel_shortcuts(self) -> None:
         """问题面板按钮动态显示当前绑定（需求 §30）。"""
