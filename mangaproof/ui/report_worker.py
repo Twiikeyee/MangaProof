@@ -57,6 +57,8 @@ class ReportWorker(QThread):
         base_dir: Path,
         docs: Optional[Dict[str, object]] = None,   # rel -> 已打开文档快照
         layer_cache=None,                           # 共享图层像素 LRU
+        image_format: str = "png",                  # "png" 无损 / "jpeg" 压缩
+        image_quality: int = 80,                    # JPEG 质量
         parent=None,
     ):
         super().__init__(parent)
@@ -66,6 +68,8 @@ class ReportWorker(QThread):
         self._base_dir = Path(base_dir)
         self._docs: Dict[str, object] = dict(docs) if docs else {}
         self._layer_cache = layer_cache
+        self._image_format = image_format
+        self._image_quality = image_quality
         self._cancel = False
 
     def request_cancel(self) -> None:
@@ -81,6 +85,8 @@ class ReportWorker(QThread):
                 self._out_path,
                 self._image_provider,
                 progress_cb=self._cb,
+                image_format=self._image_format,
+                image_quality=self._image_quality,
             )
         except ReportCancelled:
             log.info("返修单生成已取消：%s", self._out_path)

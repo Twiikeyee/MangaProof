@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -155,8 +155,15 @@ def circled_number(n: int) -> str:
     return f"({n})"
 
 
-def _np_to_png_bytes(img: np.ndarray) -> bytes:
-    """numpy RGBA → 白底合成 → PNG 字节。"""
+def _encode_page_image(
+    img: np.ndarray, image_format: str = "png", quality: int = 80
+) -> bytes:
+    """numpy RGBA → 白底合成 → 图片字节（PNG 无损 / JPEG 压缩）。
+
+    JPEG 体积远小于 PNG（漫画页面常见大幅网点/渐变），代价是有损压缩：
+    质量由 ``quality`` 控制（60～95）。透明区域统一合成到白底，
+    与 PDF 页面背景一致。
+    """
     pil = Image.fromarray(img)
     if pil.mode == "RGBA":
         bg = Image.new("RGBA", pil.size, (255, 255, 255, 255))
@@ -164,7 +171,10 @@ def _np_to_png_bytes(img: np.ndarray) -> bytes:
     elif pil.mode != "RGB":
         pil = pil.convert("RGB")
     buf = BytesIO()
-    pil.save(buf, format="PNG")
+    if image_format == "jpeg":
+        pil.save(buf, format="JPEG", quality=int(quality), optimize=True)
+    else:
+        pil.save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -211,6 +221,8 @@ def generate_report(
     report_path: Path,
     image_provider: Callable[[str], Optional[object]],
     progress_cb: Optional[ProgressCb] = None,
+    image_format: str = "png",
+    image_quality: int = 80,
 ) -> Path:
     """生成返修单。
 
@@ -218,11 +230,16 @@ def generate_report(
     image_provider(rel_path) -> PSDDocument 或 None（供提取 merged image），
     由调用方注入，生成器不依赖 GUI；
     progress_cb(done, total, message)：页面级进度（耗时步骤见下），
-    回调内抛出 ReportCancelled 可中断生成。
+    回调内抛出 ReportCancelled 可中断生成；
+    image_format："png"（无损，默认）或 "jpeg"（有损压缩，体积小），
+    image_quality：JPEG 质量 60～95。
+
+    问题明细页按 PSD（页）合并：同一页的所有问题共用一张页面图像，
+    按图层分组列在图像下方，不再「一个问题一张图/一页」。
     """
     # 进度步数：准备 1 步 + 封面/总览 1 步 + 每个问题明细页 1 步 + 写入 PDF 1 步
-    failed_layers = _collect_failed_layers(task, layer_ids_by_file)
-    total_steps = 3 + len(failed_layers)
+    detail_pages = _collect_failed_pages(task, layer_ids_by_file)
+    total_steps = 3 + len(detail_pages)
 
     _emit(progress_cb, 0, total_steps, "准备返修单…")
     _register_fonts()
@@ -251,8 +268,8 @@ def generate_report(
     story.append(PageBreak())
 
     # ---- 问题明细（需求 §51.3、§52、§53）：最耗时的一步（提取 merged +
-    #      编码 PNG），按页上报进度，取消请求在页边界生效 ----
-    if not failed_layers:
+    #      编码图片），按 PSD 页上报进度，取消请求在页边界生效 ----
+    if not detail_pages:
         story.append(
             Paragraph(
                 "本任务暂无未通过问题。",
@@ -260,19 +277,22 @@ def generate_report(
             )
         )
     else:
-        for i, (rel_path, layer_id, issues) in enumerate(failed_layers):
+        for i, (rel_path, layer_groups, page_issues) in enumerate(detail_pages):
             _emit(
                 progress_cb,
                 2 + i,
                 total_steps,
                 "生成问题明细页"
-                f"（{i + 1}/{len(failed_layers)}）：{rel_path}"
-                f"　—　{issues[0].layer_name or layer_id}",
+                f"（{i + 1}/{len(detail_pages)}）：{rel_path}"
+                f"　—　{T.LABEL_ISSUES} {len(page_issues)} 处",
             )
             if i > 0:
                 story.append(PageBreak())
             story.extend(
-                _build_layer_detail_page(task, rel_path, layer_id, issues, image_provider)
+                _build_page_detail_page(
+                    rel_path, layer_groups, page_issues, image_provider,
+                    image_format, image_quality,
+                )
             )
 
     # ---- 写入 PDF（reportlab 一次性落盘，中途不打断，避免半成品文件） ----
@@ -364,13 +384,16 @@ def _build_overview(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
     return story
 
 
-def _collect_failed_layers(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
-    """收集 (rel_path, layer_id, [issues])，按文件顺序、图层顺序排列。
+def _collect_failed_pages(task: TaskState, layer_ids_by_file: Dict[str, List[str]]):
+    """按 PSD（页）收集问题，返回明细页清单。
 
-    页面顺序固定跟随文档顺序（PSD 顺序 → 图层顺序），与问题编号是否
-    已经检查/重排无关；编号仅用于同一图层内的问题排序。
+    返回 ``[(rel_path, [(layer_id, layer_name, [issues]), ...], [issues]), ...]``：
+    - 外层按文档顺序（PSD 顺序），每个 PSD 只出现一次（同一页的问题共用
+      一张页面图像，不再一个图层/一个问题占一页）；
+    - 内层图层组同样按文档顺序（图层顺序），组内按问题编号排序；
+    - 末项是该页全部问题的扁平列表（顺序与图层组一致），供红框徽标编号使用。
     """
-    grouped: Dict[str, List] = {}
+    grouped: Dict[Tuple[str, str, str], List] = {}
     for issue in task.issues:
         grouped.setdefault((issue.file, issue.layer_id, issue.layer_name), []).append(issue)
 
@@ -389,48 +412,79 @@ def _collect_failed_layers(task: TaskState, layer_ids_by_file: Dict[str, List[st
             min(i.issue_no for i in issues),
         )
 
-    items = sorted(grouped.items(), key=sort_key)
-    return [(k[0], k[1], v) for k, v in items]
+    pages: Dict[str, List] = {}
+    for key, issues in sorted(grouped.items(), key=sort_key):
+        rel, layer_id, layer_name = key
+        pages.setdefault(rel, []).append(
+            (layer_id, layer_name or layer_id, sorted(issues, key=lambda i: i.issue_no))
+        )
+
+    ordered: List[str] = []
+    for record in task.files:
+        if record.relative_path in pages:
+            ordered.append(record.relative_path)
+    ordered.extend(rel for rel in pages if rel not in set(ordered))
+
+    result = []
+    for rel in ordered:
+        layer_groups = pages[rel]
+        flat = [issue for _lid, _name, issues in layer_groups for issue in issues]
+        result.append((rel, layer_groups, flat))
+    return result
 
 
-def _build_layer_detail_page(
-    task: TaskState,
+def _build_page_detail_page(
     rel_path: str,
-    layer_id: str,
-    issues,
+    layer_groups,
+    page_issues,
     image_provider,
+    image_format: str = "png",
+    image_quality: int = 80,
 ):
-    """单图层问题明细页：页面图像 + 矢量红框 + 问题编号 + 批注（需求 §52）。"""
-    # 按问题编号排序
-    issues = sorted(issues, key=lambda i: i.issue_no)
+    """单 PSD（页）问题明细：一张页面图像 + 全部红框 + 按图层分组的问题列表。
 
-    layer_name = issues[0].layer_name or layer_id
-    story = [
-        Paragraph(
-            f"{rel_path}　—　{T.LAYER_LABEL}：{layer_name}",
-            _zh_style(14, 18),
-        ),
-        Spacer(1, 4 * mm),
-    ]
+    编号在页内连续（① ② ③ …，顺序与图层组一致），与红框徽标一一对应
+    （需求 §52、§53）；同一页的多个图层共用这一张图，避免重复占页。
+    """
+    layer_count = len(layer_groups)
+    header = (
+        f"{rel_path}　—　{T.LABEL_ISSUES} {len(page_issues)} 处"
+        + (f"　·　{layer_count} 个图层" if layer_count > 1 else "")
+    )
+    story = [Paragraph(header, _zh_style(14, 18)), Spacer(1, 4 * mm)]
 
     # ---- 图像 + 红框矢量图（自定义 Flowable 直接绘制，需求 §52） ----
-    annotated = AnnotatedPageFlowable(issues, image_provider, rel_path)
+    annotated = AnnotatedPageFlowable(
+        page_issues, image_provider, rel_path, image_format, image_quality
+    )
     if annotated.image_available:
         story.append(annotated)
         story.append(Spacer(1, 5 * mm))
 
-    # ---- 问题编号列表（需求 §53 一一对应） ----
-    for issue in issues:
-        label = f"{circled_number(issues.index(issue) + 1)} {T.TYPE_LABEL}：{issue.type}"
-        story.append(Paragraph(label, _zh_style(12, 17)))
-        if issue.comment:
+    # ---- 问题编号列表（需求 §53 一一对应）：按图层分组，编号页内连续 ----
+    number = 0
+    for layer_id, layer_name, issues in layer_groups:
+        if layer_count > 1:
             story.append(
-                Paragraph(
-                    f"　　{T.COMMENT_LABEL}：{issue.comment}",
-                    _zh_style(11, 16),
-                )
+                Spacer(1, 1 * mm)
+                if number == 0
+                else Spacer(1, 3 * mm)
             )
-        story.append(Spacer(1, 2 * mm))
+            story.append(
+                Paragraph(f"{T.LAYER_LABEL}：{layer_name}", _zh_style(12, 16))
+            )
+        for issue in issues:
+            number += 1
+            label = f"{circled_number(number)} {T.TYPE_LABEL}：{issue.type}"
+            story.append(Paragraph(label, _zh_style(12, 17)))
+            if issue.comment:
+                story.append(
+                    Paragraph(
+                        f"　　{T.COMMENT_LABEL}：{issue.comment}",
+                        _zh_style(11, 16),
+                    )
+                )
+            story.append(Spacer(1, 2 * mm))
 
     return story
 
@@ -439,18 +493,26 @@ class AnnotatedPageFlowable(Flowable):
     """「页面图像 + PDF 矢量红框 + 问题编号」Flowable（需求 §52、§53）。
 
     直接使用 PDF 自身的矢量矩形与字体，绝不截图 GUI。
-    图像为 PSD 自带 merged image（与红框世界坐标同坐标系）。
+    图像为 PSD 自带 merged image（与红框世界坐标同坐标系）；
+    传入的问题顺序即页内编号顺序（1 起）。
     """
 
-    def __init__(self, issues, image_provider, rel_path: str):
+    def __init__(
+        self,
+        issues,
+        image_provider,
+        rel_path: str,
+        image_format: str = "png",
+        image_quality: int = 80,
+    ):
         super().__init__()
-        self.issues = sorted(issues, key=lambda i: i.issue_no)
+        self.issues = list(issues)
         self.rel_path = rel_path
         self.width = 120 * mm
         self.height = 170 * mm
         self.hAlign = "CENTER"
         self.image_available = False
-        self._png_bytes: Optional[bytes] = None
+        self._image_bytes: Optional[bytes] = None
         self._img_w = 0
         self._img_h = 0
 
@@ -462,7 +524,9 @@ class AnnotatedPageFlowable(Flowable):
         if doc_obj is not None:
             try:
                 merged = doc_obj.merged_np()
-                self._png_bytes = _np_to_png_bytes(merged)
+                self._image_bytes = _encode_page_image(
+                    merged, image_format, image_quality
+                )
                 self._img_w, self._img_h = merged.shape[1], merged.shape[0]
                 self.image_available = True
             except Exception:
@@ -474,7 +538,7 @@ class AnnotatedPageFlowable(Flowable):
     def draw(self) -> None:
         c = self.canv
         img_w, img_h = self._img_w, self._img_h
-        if self._png_bytes is None or img_w <= 0 or img_h <= 0:
+        if self._image_bytes is None or img_w <= 0 or img_h <= 0:
             return
         scale = min(self.width / img_w, self.height / img_h)
         draw_w, draw_h = img_w * scale, img_h * scale
@@ -482,7 +546,7 @@ class AnnotatedPageFlowable(Flowable):
         off_x = (self.width - draw_w) / 2.0
         off_y = (self.height - draw_h) / 2.0
 
-        c.drawImage(ImageReader(BytesIO(self._png_bytes)), off_x, off_y, draw_w, draw_h)
+        c.drawImage(ImageReader(BytesIO(self._image_bytes)), off_x, off_y, draw_w, draw_h)
 
         # PDF 矢量红框（需求 §52）：世界坐标 → PDF 坐标（y 轴向上）
         for idx, issue in enumerate(self.issues):

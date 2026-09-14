@@ -470,13 +470,13 @@ def test_report_progress_dialog_and_cancel() -> None:
                 window._current_file, info.id, info.name, "漏字", "", (10, 20, 80, 40)
             )
 
-        real_encode = gen._np_to_png_bytes
+        real_encode = gen._encode_page_image
 
-        def slow_encode(img):
+        def slow_encode(img, image_format="png", quality=80):
             time.sleep(0.1)           # 放慢每页编码，模拟大页面
-            return real_encode(img)
+            return real_encode(img, image_format, quality)
 
-        with patch.object(gen, "_np_to_png_bytes", slow_encode), patch.object(
+        with patch.object(gen, "_encode_page_image", slow_encode), patch.object(
             QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
         ):
             window._generate_report(interactive=False)

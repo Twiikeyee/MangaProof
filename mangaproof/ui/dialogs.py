@@ -16,6 +16,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mangaproof.config.settings import (
+    DEFAULT_JPEG_QUALITY,
+    DEFAULT_REPORT_IMAGE_FORMAT,
+    JPEG_QUALITY_CHOICES,
+)
 from mangaproof.review.issue import Issue
 
 
@@ -84,7 +89,11 @@ class IssueDialog(QDialog):
 
 
 class ReportDialog(QDialog):
-    """返修单生成（需求 §46、§49、§54）。"""
+    """返修单生成（需求 §46、§49、§54）。
+
+    除名称外，可在生成时选择页面图像是否压缩（PNG 无损 / JPEG 压缩），
+    选择结果由主窗口记回设置，下次沿用。
+    """
 
     def __init__(
         self,
@@ -92,15 +101,40 @@ class ReportDialog(QDialog):
         task_name: str,
         incomplete: bool,
         parent: Optional[QWidget] = None,
+        image_format: str = DEFAULT_REPORT_IMAGE_FORMAT,
+        jpeg_quality: int = DEFAULT_JPEG_QUALITY,
     ):
         super().__init__(parent)
         self.setWindowTitle("生成 MangaProof 返修单")
-        self.resize(440, 170)
+        self.resize(460, 240)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name_edit = QLineEdit(default_name)
         form.addRow("返修单名称：", self.name_edit)
+
+        self.image_format_combo = QComboBox()
+        self.image_format_combo.addItem("PNG 无损（默认，体积大）", "png")
+        self.image_format_combo.addItem("JPEG 压缩（体积小，有损）", "jpeg")
+        fmt_idx = self.image_format_combo.findData(image_format)
+        self.image_format_combo.setCurrentIndex(max(0, fmt_idx))
+        self.image_format_combo.setToolTip(
+            "问题明细页的页面图像格式：\n"
+            "· PNG：无损，页面图像较大；\n"
+            "· JPEG：压缩，报告体积显著变小（漫画页面常见大幅网点/渐变），\n"
+            "  画质略降，红框与编号仍是 PDF 矢量、不受影响。"
+        )
+        form.addRow("页面图像：", self.image_format_combo)
+
+        self.quality_combo = QComboBox()
+        for q in JPEG_QUALITY_CHOICES:
+            self.quality_combo.addItem(f"{q}%" + ("（默认）" if q == DEFAULT_JPEG_QUALITY else ""), q)
+        q_idx = self.quality_combo.findData(jpeg_quality)
+        self.quality_combo.setCurrentIndex(max(0, q_idx))
+        self.quality_combo.setToolTip("仅 JPEG 压缩时生效：质量越低体积越小")
+        form.addRow("JPEG 质量：", self.quality_combo)
+        self.image_format_combo.currentIndexChanged.connect(self._sync_quality_enabled)
+        self._sync_quality_enabled()
         layout.addLayout(form)
 
         note = "⚠ 任务尚未全部完成，返修单将标注「任务状态：未完成」。" if incomplete else ""
@@ -117,5 +151,14 @@ class ReportDialog(QDialog):
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
 
+    def _sync_quality_enabled(self) -> None:
+        self.quality_combo.setEnabled(self.image_format() == "jpeg")
+
     def report_name(self) -> str:
         return self.name_edit.text().strip()
+
+    def image_format(self) -> str:
+        return str(self.image_format_combo.currentData())
+
+    def jpeg_quality(self) -> int:
+        return int(self.quality_combo.currentData())

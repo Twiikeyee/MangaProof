@@ -88,6 +88,14 @@ DEFAULT_WHEEL_MODE = "pan"      # "pan" 上下移动 / "zoom" 缩放
 ISSUE_SCOPES: tuple[str, ...] = ("page", "layer")
 DEFAULT_ISSUE_SCOPE = "page"
 
+# 返修单页面图像格式：
+# - "png"（默认）：无损，体积大；
+# - "jpeg"：有损压缩，体积显著变小（漫画页面常见网点/渐变），质量可调。
+REPORT_IMAGE_FORMATS: tuple[str, ...] = ("png", "jpeg")
+DEFAULT_REPORT_IMAGE_FORMAT = "png"
+JPEG_QUALITY_CHOICES: tuple[int, ...] = (60, 70, 80, 90, 95)
+DEFAULT_JPEG_QUALITY = 80
+
 # 内存回收策略档位：宽松 / 平衡 / 激进。
 # 各档预算（bg QImage 池字节上限、图层像素 LRU 字节上限）在
 # mangaproof/ui/main_window.py 的 _MEMORY_POLICIES 中定义；
@@ -108,6 +116,9 @@ class Settings:
     recursive_scan: bool = False
     generate_pdf_on_complete: bool = True
     report_name: str = ""
+    # 返修单页面图像：png（无损）/ jpeg（压缩，体积小）+ JPEG 质量
+    report_image_format: str = DEFAULT_REPORT_IMAGE_FORMAT
+    report_jpeg_quality: int = DEFAULT_JPEG_QUALITY
     hide_console: bool = True   # 打包产物隐藏控制台（直接运行 py 时始终显示）
     keybindings: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_KEYBINDINGS))
     issue_types: list[dict[str, str]] = field(
@@ -189,6 +200,18 @@ class SettingsManager:
             raw.get("generate_pdf_on_complete", True)
         )
         s.report_name = str(raw.get("report_name", "") or "")
+
+        fmt = raw.get("report_image_format", DEFAULT_REPORT_IMAGE_FORMAT)
+        s.report_image_format = (
+            fmt if fmt in REPORT_IMAGE_FORMATS else DEFAULT_REPORT_IMAGE_FORMAT
+        )
+        try:
+            quality = int(raw.get("report_jpeg_quality", DEFAULT_JPEG_QUALITY))
+        except (TypeError, ValueError):
+            quality = DEFAULT_JPEG_QUALITY
+        if not (60 <= quality <= 95):
+            quality = DEFAULT_JPEG_QUALITY
+        s.report_jpeg_quality = quality
         s.hide_console = bool(raw.get("hide_console", True))
         s.custom_comment_key = str(
             raw.get("custom_comment_key", DEFAULT_KEYBINDINGS["custom_comment"])
@@ -239,6 +262,8 @@ class SettingsManager:
                     "recursive_scan": self.settings.recursive_scan,
                     "generate_pdf_on_complete": self.settings.generate_pdf_on_complete,
                     "report_name": self.settings.report_name,
+                    "report_image_format": self.settings.report_image_format,
+                    "report_jpeg_quality": self.settings.report_jpeg_quality,
                     "hide_console": self.settings.hide_console,
                     "custom_comment_key": self.settings.custom_comment_key,
                     "keybindings": self.settings.keybindings,

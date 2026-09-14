@@ -318,7 +318,7 @@ def test_report_progress_and_cancel():
     """返修单生成进度回调（GUI 进度条数据源）与取消语义。
 
     - 进度单调不减、总步数一致、首步从 0 开始、末步到达总数；
-    - 问题明细页逐页上报（消息含文件名）；
+    - 问题明细页按 PSD 合并后逐页上报（消息含文件名与问题数）；
     - 回调内抛 ReportCancelled → 生成中断且不落盘（PDF 尚未开始写入）。
     """
     import pytest
@@ -330,14 +330,18 @@ def test_report_progress_and_cancel():
         task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
         doc1 = PSDDocument(folder / "001.psd")
         ids1 = [i.id for i in doc1.layers]
+        ids2 = [i.id for i in PSDDocument(folder / "002.psd").layers]
+        # 001.psd 两个图层（同一页 → 共用一张页面图像）+ 002.psd 一处问题
         task.set_status("001.psd", ids1[1], FAILED)
         task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误",
                        "这里应使用 Bold", (40, 60, 120, 60))
         task.add_issue("001.psd", ids1[2], "dialogue_02", "漏字", "", (60, 240, 140, 60))
         task.set_status("001.psd", ids1[2], FAILED)
+        task.set_status("002.psd", ids2[1], FAILED)
+        task.add_issue("002.psd", ids2[1], "dialogue_01", "居中错误", "", (30, 30, 90, 60))
         layer_ids = {
             "001.psd": ids1,
-            "002.psd": [i.id for i in PSDDocument(folder / "002.psd").layers],
+            "002.psd": ids2,
             "10.psd": [i.id for i in PSDDocument(folder / "10.psd").layers],
         }
         provider = lambda rel: PSDDocument(folder / rel)  # noqa: E731
@@ -355,9 +359,10 @@ def test_report_progress_and_cancel():
         assert len({total for _, total, _ in steps}) == 1, "总步数应保持一致"
         values = [done for done, _, _ in steps]
         assert values == sorted(values), f"进度必须单调不减：{values}"
-        # 2 个未通过图层 → 2 个明细页：准备 1 + 封面/总览 1 + 明细 2 + 写入 1
+        # 2 个 PSD 有问题 → 2 个明细页：准备 1 + 封面/总览 1 + 明细 2 + 写入 1
         assert steps[-1][1] == 5, steps
         assert any("001.psd" in msg for _, _, msg in steps), "明细页进度应含文件名"
+        assert any("问题 2 处" in msg for _, _, msg in steps), "进度应含该页问题数"
         assert all(msg for _, _, msg in steps), "进度说明不应为空"
 
         # 取消：第 1 步（封面/总览）前中断 → 不产生 PDF 文件
@@ -697,6 +702,85 @@ def test_issue_numbering_orphans_and_progress():
         plan_empty = plan_numbering(empty, layer_ids)
         assert plan_empty.total == 0 and not plan_empty.changed
         print("问题编号归属不明 OK：保留问题并排在最后")
+
+
+def test_report_groups_issues_by_page_and_compression():
+    """同一 PSD 的问题合并到同一明细页（共用页面图像）；图片压缩可选。
+
+    - 3 个图层的问题（同一 PSD）+ 另一个 PSD 的 1 个问题
+      → 明细页只有 2 页（而非每图层/每问题一页），总页数 = 封面 + 总览 + 2；
+    - 同一明细页上 3 个红框与徽标 (1)(2)(3) 出现在同一个内容流；
+    - JPEG 压缩：PDF 使用 DCTDecode 编码，矢量红框数量不变；
+    - 编码器单测：照片类内容（渐变+噪声）JPEG 明显小于 PNG。
+    """
+    import re
+    import tempfile
+
+    import numpy as np
+
+    from mangaproof.report.generator import _encode_page_image
+
+    def page_count(raw: bytes) -> int:
+        return len(re.findall(rb"/Type\s*/Page[^s]", raw))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        docs = {p.name: PSDDocument(folder / p.name) for p in sorted(folder.glob("*.psd"))}
+        ids1 = [i.id for i in docs["001.psd"].layers]
+        ids2 = [i.id for i in docs["002.psd"].layers]
+        # 001.psd 的三个图层各一个问题（同一页）
+        for n, lid in enumerate(ids1[:3]):
+            task.set_status("001.psd", lid, FAILED)
+            task.add_issue("001.psd", lid, f"layer_{n}", "漏字", f"批注 {n}",
+                           (20 + 60 * n, 40 + 40 * n, 90, 50))
+        # 002.psd 一个问题（另一页）
+        task.set_status("002.psd", ids2[1], FAILED)
+        task.add_issue("002.psd", ids2[1], "dialogue_01", "居中错误", "", (30, 30, 90, 60))
+        layer_ids = {p.name: [i.id for i in docs[p.name].layers]
+                     for p in sorted(folder.glob("*.psd"))}
+        provider = lambda rel: PSDDocument(folder / rel)  # noqa: E731
+
+        png_path = folder / "grouped_png.pdf"
+        generate_report(task, layer_ids, png_path, provider)
+        raw_png = png_path.read_bytes()
+        # 封面 + 总览 + 2 个明细页（同一 PSD 的 3 个图层共用一页）
+        assert page_count(raw_png) == 4, page_count(raw_png)
+        assert b"/DCTDecode" not in raw_png
+
+        streams = _decode_pdf_streams(raw_png)
+        detail = [s for s in streams if b" re S" in s]
+        # 3 个红框 + 徽标 1/2/3 在同一个内容流（同一页）
+        grouped = [s for s in detail if s.count(b" re S") == 3]
+        assert grouped, [s.count(b" re S") for s in detail]
+        assert all(("(%d)" % n).encode() in grouped[0] for n in (1, 2, 3)), (
+            "同一页的徽标编号应按页内顺序连续"
+        )
+        assert any(s.count(b" re S") == 1 and b"(1)" in s for s in detail), (
+            "第二个明细页应重新从 ① 开始编号"
+        )
+
+        # JPEG 压缩：DCTDecode 编码；矢量红框数量与 PNG 版一致
+        jpg_path = folder / "grouped_jpg.pdf"
+        generate_report(task, layer_ids, jpg_path, provider,
+                        image_format="jpeg", image_quality=60)
+        raw_jpg = jpg_path.read_bytes()
+        assert b"/DCTDecode" in raw_jpg, "JPEG 压缩未生效"
+        assert page_count(raw_jpg) == 4
+        assert sum(s.count(b" re S") for s in _decode_pdf_streams(raw_jpg)) == sum(
+            s.count(b" re S") for s in streams
+        ), "压缩不应影响矢量红框"
+
+        # 编码器：照片类内容（渐变+噪声）JPEG 明显小于 PNG
+        h, w = 400, 300
+        grad = np.linspace(0, 255, w, dtype=np.uint8)[None, :].repeat(h, 0)
+        noise = np.random.default_rng(0).integers(0, 40, (h, w), dtype=np.uint8)
+        rgb = np.clip(grad.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        rgba = np.dstack([rgb, rgb, rgb, np.full((h, w), 255, np.uint8)])
+        size_png = len(_encode_page_image(rgba, "png"))
+        size_jpg = len(_encode_page_image(rgba, "jpeg", 60))
+        assert size_jpg < size_png * 0.5, (size_jpg, size_png)
+        print(f"PDF 分页/压缩 OK：4 页；渐变图 JPEG {size_jpg}B vs PNG {size_png}B")
 
 
 def test_default_report_name_output_folder():

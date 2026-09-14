@@ -38,11 +38,14 @@ from mangaproof.config.settings import (
     DEFAULT_COMPARE_SPEED_HZ,
     DEFAULT_DISPLAY_RATIO,
     DEFAULT_ISSUE_TYPES,
+    DEFAULT_JPEG_QUALITY,
     DEFAULT_KEYBINDINGS,
     DEFAULT_ISSUE_SCOPE,
     DEFAULT_MEMORY_POLICY,
+    DEFAULT_REPORT_IMAGE_FORMAT,
     DEFAULT_WHEEL_MODE,
     DISPLAY_RATIOS,
+    JPEG_QUALITY_CHOICES,
     Settings,
 )
 
@@ -272,6 +275,33 @@ class SettingsDialog(QDialog):
         self.report_name_edit = QLineEdit(settings.report_name)
         self.report_name_edit.setPlaceholderText("留空使用默认名称（PSD 名 / 文件夹名）")
         report_form.addRow("返修单名称：", self.report_name_edit)
+
+        self.report_image_combo = QComboBox()
+        self.report_image_combo.addItem("PNG 无损（默认，体积大）", "png")
+        self.report_image_combo.addItem("JPEG 压缩（体积小，有损）", "jpeg")
+        fmt_idx = self.report_image_combo.findData(settings.report_image_format)
+        self.report_image_combo.setCurrentIndex(max(0, fmt_idx))
+        self.report_image_combo.setToolTip(
+            "问题明细页的页面图像格式（生成时也可临时改选，选择会被记住）：\n"
+            "· PNG：无损，报告体积大；\n"
+            "· JPEG：压缩，体积显著变小（漫画页面常见大幅网点/渐变），画质略降；\n"
+            "红框与 ①②③ 编号始终是 PDF 矢量，与图片格式无关。"
+        )
+        report_form.addRow("页面图像：", self.report_image_combo)
+
+        self.report_quality_combo = QComboBox()
+        for q in JPEG_QUALITY_CHOICES:
+            self.report_quality_combo.addItem(
+                f"{q}%" + ("（默认）" if q == DEFAULT_JPEG_QUALITY else ""), q
+            )
+        q_idx = self.report_quality_combo.findData(settings.report_jpeg_quality)
+        self.report_quality_combo.setCurrentIndex(max(0, q_idx))
+        self.report_quality_combo.setToolTip("仅 JPEG 压缩时生效：质量越低体积越小")
+        report_form.addRow("JPEG 质量：", self.report_quality_combo)
+        self.report_image_combo.currentIndexChanged.connect(
+            self._update_report_quality_enabled
+        )
+        self._update_report_quality_enabled()
         layout.addWidget(report_group)
 
         # ---- 快捷键（入口按钮 → 独立子对话框）----
@@ -324,6 +354,12 @@ class SettingsDialog(QDialog):
         manual = self.compare_mode_combo.currentData() == "manual"
         self.compare_speed_combo.setEnabled(not manual)
 
+    def _update_report_quality_enabled(self) -> None:
+        """JPEG 质量仅在选择 JPEG 压缩时可用。"""
+        self.report_quality_combo.setEnabled(
+            self.report_image_combo.currentData() == "jpeg"
+        )
+
     # -- 复位 / 应用 --------------------------------------------------------
 
     def _reset_defaults(self) -> None:
@@ -343,6 +379,11 @@ class SettingsDialog(QDialog):
         self.report_name_edit.clear()
         idx = self.memory_policy_combo.findData(DEFAULT_MEMORY_POLICY)
         self.memory_policy_combo.setCurrentIndex(max(0, idx))
+        idx = self.report_image_combo.findData(DEFAULT_REPORT_IMAGE_FORMAT)
+        self.report_image_combo.setCurrentIndex(max(0, idx))
+        idx = self.report_quality_combo.findData(DEFAULT_JPEG_QUALITY)
+        self.report_quality_combo.setCurrentIndex(max(0, idx))
+        self._update_report_quality_enabled()
         # 快捷键同样复位：记录"应用默认"意图，OK 时写回默认值
         self._kb_dialog = None
         self._kb_reset_defaults = True
@@ -356,6 +397,8 @@ class SettingsDialog(QDialog):
         settings.recursive_scan = self.recursive_check.isChecked()
         settings.generate_pdf_on_complete = self.pdf_check.isChecked()
         settings.report_name = self.report_name_edit.text().strip()
+        settings.report_image_format = str(self.report_image_combo.currentData())
+        settings.report_jpeg_quality = int(self.report_quality_combo.currentData())
         settings.hide_console = self.console_check.isChecked()
         settings.memory_policy = str(self.memory_policy_combo.currentData())
 

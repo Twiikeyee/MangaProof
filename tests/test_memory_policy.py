@@ -186,3 +186,43 @@ def test_window_set_current_invalid_falls_back_first_page():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_settings_report_image_format_roundtrip(tmp_path):
+    from mangaproof.config.settings import (
+        DEFAULT_JPEG_QUALITY,
+        DEFAULT_REPORT_IMAGE_FORMAT,
+    )
+
+    assert DEFAULT_REPORT_IMAGE_FORMAT == "png", "默认不压缩（无损 PNG）"
+    assert DEFAULT_JPEG_QUALITY == 80
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    assert manager.settings.report_image_format == "png"
+    assert manager.settings.report_jpeg_quality == 80
+    manager.settings.report_image_format = "jpeg"
+    manager.settings.report_jpeg_quality = 60
+    manager.save()
+    reloaded = SettingsManager(path).settings
+    assert reloaded.report_image_format == "jpeg"
+    assert reloaded.report_jpeg_quality == 60
+
+
+def test_settings_report_image_format_invalid_falls_back(tmp_path):
+    from mangaproof.config.settings import (
+        DEFAULT_JPEG_QUALITY,
+        DEFAULT_REPORT_IMAGE_FORMAT,
+    )
+
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({
+            "settings_version": 1,
+            "report_image_format": "webp",
+            "report_jpeg_quality": 300,
+        }),
+        encoding="utf-8",
+    )
+    s = SettingsManager(path).settings
+    assert s.report_image_format == DEFAULT_REPORT_IMAGE_FORMAT
+    assert s.report_jpeg_quality == DEFAULT_JPEG_QUALITY

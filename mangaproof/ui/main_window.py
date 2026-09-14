@@ -1691,10 +1691,25 @@ class MainWindow(QMainWindow):
                 )["unreviewed"]
                 > 0
             )
-            dialog = ReportDialog(name, self.task.task_name, incomplete, self)
+            dialog = ReportDialog(
+                name,
+                self.task.task_name,
+                incomplete,
+                self,
+                image_format=self.settings.report_image_format,
+                jpeg_quality=self.settings.report_jpeg_quality,
+            )
             if dialog.exec() != ReportDialog.DialogCode.Accepted:
                 return
             name = dialog.report_name()
+            # 页面图像压缩选择记回设置（下次生成沿用同一选择）
+            if (
+                dialog.image_format() != self.settings.report_image_format
+                or dialog.jpeg_quality() != self.settings.report_jpeg_quality
+            ):
+                self.settings.report_image_format = dialog.image_format()
+                self.settings.report_jpeg_quality = dialog.jpeg_quality()
+                self.settings_manager.save()
 
         out_path = resolve_report_path(self._base_dir, name, default_name)
         # 确保全部任务文件的图层 id 都已扫描（每个 PSD 只解析一次，需求 §59）
@@ -1728,6 +1743,8 @@ class MainWindow(QMainWindow):
             base_dir=self._base_dir,
             docs=self._docs,           # 已打开文档快照（worker 内部再复制一份）
             layer_cache=self._layer_cache,
+            image_format=self.settings.report_image_format,
+            image_quality=self.settings.report_jpeg_quality,
         )
         dialog = QProgressDialog("准备返修单…", "取消", 0, 1, self)
         dialog.setWindowTitle("生成返修单")
