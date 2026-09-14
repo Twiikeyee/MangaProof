@@ -40,7 +40,6 @@ from mangaproof.psd.loader import (
 )
 from mangaproof.report.generator import (
     default_report_name,
-    generate_report,
     resolve_report_path,
 )
 from mangaproof.review import navigator, persistence
@@ -66,6 +65,10 @@ from mangaproof.ui.preloader import (
     KIND_PRELOAD,
     WARM_ALL,
     PreloadWorker,
+)
+from mangaproof.ui.report_worker import (
+    KIND_CANCELLED as REPORT_CANCELLED,
+    ReportWorker,
 )
 from mangaproof.ui.settings_dialog import SettingsDialog
 from mangaproof.ui.statistics_panel import StatisticsPanel
@@ -124,6 +127,10 @@ class MainWindow(QMainWindow):
         self._load_dialog = None
         self._load_mode = ""
         self._load_path: Optional[Path] = None
+
+        # 后台生成返修单状态（进度框 + 防 GUI 卡死）
+        self._report_worker = None
+        self._report_dialog = None
 
         # PSD 预加载线程（切换大文件不卡顿）
         self._preload = PreloadWorker(lambda rel: self._docs.get(rel), self)
@@ -1561,27 +1568,91 @@ class MainWindow(QMainWindow):
                         info.name for info in doc.layers
                     ]
 
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            generate_report(
-                self.task,
-                self._layer_ids_by_file,
-                out_path,
-                # 文档对象可能已被内存策略驱逐：按需惰性重建
-                image_provider=lambda rel: self._ensure_doc(rel),
-            )
-        except Exception:
-            log.exception("生成返修单失败")
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "生成返修单", "生成返修单失败，详情见 logs/mangaproof.log。")
+        self._start_report(out_path)
+
+    # -- 后台生成（进度框 + 防 GUI 卡死） ----------------------------------
+
+    def _start_report(self, out_path: Path) -> None:
+        """把返修单生成交给后台线程，UI 显示页面级进度（可取消）。"""
+        if self._report_worker is not None:
+            # 上一轮生成仍在进行（或结果尚未处理）→ 忽略重复请求，
+            # 避免同时开两个 worker / 关掉新进度框
+            self.statusBar().showMessage("正在生成返修单…", 3000)
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+
+        worker = ReportWorker(
+            self.task,
+            dict(self._layer_ids_by_file),
+            out_path,
+            base_dir=self._base_dir,
+            docs=self._docs,           # 已打开文档快照（worker 内部再复制一份）
+            layer_cache=self._layer_cache,
+        )
+        dialog = QProgressDialog("准备返修单…", "取消", 0, 1, self)
+        dialog.setWindowTitle("生成返修单")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setMinimumWidth(460)
+        dialog.setAutoClose(True)
+        # 与「打开任务」一致：autoReset 会在值到达 100% 时触发 reset 并连带
+        # canceled 信号，由 _close_report_ui 统一关闭，无需自动重置。
+        dialog.setAutoReset(False)
+
+        worker.progress.connect(self._on_report_progress)
+        worker.succeeded.connect(self._on_report_finished)
+        worker.failed.connect(self._on_report_failed)
+        dialog.canceled.connect(worker.request_cancel)
+
+        self._report_worker = worker
+        self._report_dialog = dialog
+        self.action_report.setEnabled(False)
+        dialog.show()
+        worker.start()
+
+    def _on_report_progress(self, done: int, total: int, message: str) -> None:
+        dialog = self._report_dialog
+        if dialog is None:
+            return
+        dialog.setMaximum(max(total, 1))
+        dialog.setValue(min(done, total))
+        # 模态进度框的 setValue 内部会 pump 事件循环，可能重入导致对话框
+        # 已被关闭（self._report_dialog 置 None），需复查后再更新文案。
+        if self._report_dialog is dialog:
+            dialog.setLabelText(message)
+
+    def _close_report_ui(self) -> None:
+        self.action_report.setEnabled(self.task is not None)
+        if self._report_dialog is not None:
+            # 先断开 canceled：close() 可能触发该信号导致重入
+            try:
+                self._report_dialog.canceled.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._report_dialog.close()
+            self._report_dialog.deleteLater()
+            self._report_dialog = None
+        if self._report_worker is not None:
+            worker = self._report_worker
+            self._report_worker = None
+            worker.deleteLater()
+
+    def _on_report_failed(self, message: str) -> None:
+        self._close_report_ui()
+        QMessageBox.critical(
+            self,
+            "生成返修单",
+            f"生成返修单失败：\n{message}\n\n详情见 logs/mangaproof.log。",
+        )
+
+    def _on_report_finished(self, result) -> None:
+        self._close_report_ui()
+        if result.kind == REPORT_CANCELLED:
+            self.statusBar().showMessage("已取消生成返修单", 3000)
+            return
         # 报告按需重开的文档对象及时回收，避免驻留
         self._evict_outside_window(self._current_keep_set())
-
-        QMessageBox.information(self, "生成返修单", f"已生成：\n{out_path}")
-        log.info("返修单已生成：%s", out_path)
+        QMessageBox.information(self, "生成返修单", f"已生成：\n{result.path}")
+        log.info("返修单已生成：%s", result.path)
 
     # ================================================================= 设置
 
@@ -1719,6 +1790,10 @@ class MainWindow(QMainWindow):
         if self._loader is not None and self._loader.isRunning():
             self._loader.request_cancel()
             self._loader.wait(5000)
+        # 返修单仍在生成 → 同样请求取消并等待（取消在页边界生效）
+        if self._report_worker is not None and self._report_worker.isRunning():
+            self._report_worker.request_cancel()
+            self._report_worker.wait(5000)
         self._preload.stop()
         self._preload.wait(8000)
         if self.task is not None:

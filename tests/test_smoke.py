@@ -314,6 +314,64 @@ def test_report_generation():
         print("PDF OK:", out, out.stat().st_size, "bytes")
 
 
+def test_report_progress_and_cancel():
+    """返修单生成进度回调（GUI 进度条数据源）与取消语义。
+
+    - 进度单调不减、总步数一致、首步从 0 开始、末步到达总数；
+    - 问题明细页逐页上报（消息含文件名）；
+    - 回调内抛 ReportCancelled → 生成中断且不落盘（PDF 尚未开始写入）。
+    """
+    import pytest
+
+    from mangaproof.report.generator import ReportCancelled
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        doc1 = PSDDocument(folder / "001.psd")
+        ids1 = [i.id for i in doc1.layers]
+        task.set_status("001.psd", ids1[1], FAILED)
+        task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误",
+                       "这里应使用 Bold", (40, 60, 120, 60))
+        task.add_issue("001.psd", ids1[2], "dialogue_02", "漏字", "", (60, 240, 140, 60))
+        task.set_status("001.psd", ids1[2], FAILED)
+        layer_ids = {
+            "001.psd": ids1,
+            "002.psd": [i.id for i in PSDDocument(folder / "002.psd").layers],
+            "10.psd": [i.id for i in PSDDocument(folder / "10.psd").layers],
+        }
+        provider = lambda rel: PSDDocument(folder / rel)  # noqa: E731
+
+        steps: list = []
+        out = folder / "progress.pdf"
+        generate_report(
+            task, layer_ids, out, provider,
+            progress_cb=lambda done, total, msg: steps.append((done, total, msg)),
+        )
+        assert out.exists()
+        assert steps, "进度回调未被调用"
+        assert steps[0][0] == 0, "进度应从 0 开始（准备阶段）"
+        assert steps[-1][0] == steps[-1][1], "结束时应到达总步数"
+        assert len({total for _, total, _ in steps}) == 1, "总步数应保持一致"
+        values = [done for done, _, _ in steps]
+        assert values == sorted(values), f"进度必须单调不减：{values}"
+        # 2 个未通过图层 → 2 个明细页：准备 1 + 封面/总览 1 + 明细 2 + 写入 1
+        assert steps[-1][1] == 5, steps
+        assert any("001.psd" in msg for _, _, msg in steps), "明细页进度应含文件名"
+        assert all(msg for _, _, msg in steps), "进度说明不应为空"
+
+        # 取消：第 1 步（封面/总览）前中断 → 不产生 PDF 文件
+        out_cancel = folder / "cancelled.pdf"
+
+        def cancel_cb(done, total, message):
+            if done >= 1:
+                raise ReportCancelled()
+
+        with pytest.raises(ReportCancelled):
+            generate_report(task, layer_ids, out_cancel, provider, progress_cb=cancel_cb)
+        assert not out_cancel.exists(), "取消后不应留下返修单文件"
+
+
 def _decode_pdf_streams(pdf_bytes: bytes) -> list[bytes]:
     """解出 PDF 内容流（ASCII85/FlateDecode），返回字节列表。"""
     import base64

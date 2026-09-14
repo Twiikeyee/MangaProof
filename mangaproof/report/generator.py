@@ -3,7 +3,10 @@
 - 使用纯 Python PDF 库（reportlab），与 GUI、任务逻辑完全解耦（需求 §47）；
 - PDF 红框由 PDF 矢量矩形绘制，绝不截图 GUI（需求 §52）；
 - 问题编号 ①②③ 与正文一一对应（需求 §53）；
-- 未完成时明确标注「任务状态：未完成」（需求 §54）。
+- 未完成时明确标注「任务状态：未完成」（需求 §54）；
+- 可选 progress_cb(done, total, message) 汇报页面级进度，供 GUI 进度框
+  显示（大任务不阻塞界面）；回调内抛出 ReportCancelled 即中断生成，
+  此时 PDF 尚未开始落盘，目标文件不受影响。
 """
 
 from __future__ import annotations
@@ -46,6 +49,21 @@ log = logging.getLogger("mangaproof.report.generator")
 
 ZH_FONT = "STSong-Light"
 _page_w, _page_h = A4
+
+# 进度回调：(已完成步数, 总步数, 阶段说明)
+ProgressCb = Callable[[int, int, str], None]
+
+
+class ReportCancelled(Exception):
+    """用户取消生成返修单（由 progress_cb 抛出，逐级向上传播）。"""
+
+
+def _emit(
+    progress_cb: Optional[ProgressCb], done: int, total: int, message: str
+) -> None:
+    """上报进度（progress_cb 未提供时为无操作）。"""
+    if progress_cb is not None:
+        progress_cb(done, total, message)
 
 
 def _register_fonts() -> None:
@@ -129,13 +147,21 @@ def generate_report(
     layer_ids_by_file: Dict[str, List[str]],
     report_path: Path,
     image_provider: Callable[[str], Optional[object]],
+    progress_cb: Optional[ProgressCb] = None,
 ) -> Path:
     """生成返修单。
 
     layer_ids_by_file: {相对路径: 图层 id 列表}（顺序即文档顺序）；
     image_provider(rel_path) -> PSDDocument 或 None（供提取 merged image），
-    由调用方注入，生成器不依赖 GUI。
+    由调用方注入，生成器不依赖 GUI；
+    progress_cb(done, total, message)：页面级进度（耗时步骤见下），
+    回调内抛出 ReportCancelled 可中断生成。
     """
+    # 进度步数：准备 1 步 + 封面/总览 1 步 + 每个问题明细页 1 步 + 写入 PDF 1 步
+    failed_layers = _collect_failed_layers(task)
+    total_steps = 3 + len(failed_layers)
+
+    _emit(progress_cb, 0, total_steps, "准备返修单…")
     _register_fonts()
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -154,14 +180,15 @@ def generate_report(
     )
     story = []
 
-    # ---- 首页（需求 §51.1） ----
+    # ---- 首页 + PSD 总览（需求 §51.1、§51.2） ----
+    _emit(progress_cb, 1, total_steps, "生成封面与总览…")
     story.extend(_build_cover(task, all_counts, complete))
     story.append(PageBreak())
-    # ---- PSD 总览（需求 §51.2） ----
     story.extend(_build_overview(task, layer_ids_by_file))
     story.append(PageBreak())
-    # ---- 问题明细（需求 §51.3、§52、§53） ----
-    failed_layers = _collect_failed_layers(task)
+
+    # ---- 问题明细（需求 §51.3、§52、§53）：最耗时的一步（提取 merged +
+    #      编码 PNG），按页上报进度，取消请求在页边界生效 ----
     if not failed_layers:
         story.append(
             Paragraph(
@@ -171,13 +198,24 @@ def generate_report(
         )
     else:
         for i, (rel_path, layer_id, issues) in enumerate(failed_layers):
+            _emit(
+                progress_cb,
+                2 + i,
+                total_steps,
+                "生成问题明细页"
+                f"（{i + 1}/{len(failed_layers)}）：{rel_path}"
+                f"　—　{issues[0].layer_name or layer_id}",
+            )
             if i > 0:
                 story.append(PageBreak())
             story.extend(
                 _build_layer_detail_page(task, rel_path, layer_id, issues, image_provider)
             )
 
+    # ---- 写入 PDF（reportlab 一次性落盘，中途不打断，避免半成品文件） ----
+    _emit(progress_cb, total_steps - 1, total_steps, f"写入 PDF：{report_path.name}")
     doc.build(story)
+    _emit(progress_cb, total_steps, total_steps, "生成完成")
     return report_path
 
 

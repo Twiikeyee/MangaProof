@@ -24,7 +24,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QMessageBox, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QWidget,
+)
 
 from mangaproof.config.settings import SettingsManager
 from mangaproof.review import persistence
@@ -64,6 +71,16 @@ def _wait_for_file(window: MainWindow, rel: str, timeout_s: float = 30.0) -> Non
     assert window._current_file == rel, (
         f"切换文件超时：期望 {rel}，实际 {window._current_file}"
     )
+
+
+def _wait_for_report(window: MainWindow, timeout_s: float = 60.0) -> None:
+    """返修单生成为后台流程（进度框 + 防 GUI 卡死）。"""
+    deadline = time.time() + timeout_s
+    while window._report_worker is not None and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert window._report_worker is None, "返修单生成超时（后台 worker 未完成）"
+    assert window._report_dialog is None, "返修单进度框未关闭"
 
 
 def test_preload_worker() -> None:
@@ -226,6 +243,127 @@ def test_task_loader_progress() -> None:
         assert messages[-1][2] == "加载完成"
 
     print("PASS test_task_loader_progress")
+
+
+def _pump_until(cond, timeout_s: float = 30.0) -> bool:
+    """轮询事件循环直到条件成立（后台线程测试用），返回是否成立。"""
+    deadline = time.time() + timeout_s
+    while not cond() and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    return bool(cond())
+
+
+def test_report_worker() -> None:
+    """后台返修单 worker：进度信号推进到完成；请求取消后不落盘。"""
+    from mangaproof.psd.document import PSDDocument
+    from mangaproof.review import persistence
+    from mangaproof.ui.report_worker import KIND_CANCELLED, KIND_OK, ReportWorker
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        doc = PSDDocument(folder / "001.psd")
+        ids = [i.id for i in doc.layers]
+        task.set_status("001.psd", ids[1], FAILED)
+        task.add_issue(
+            "001.psd", ids[1], "dialogue_01", "字体选择错误", "这里应使用 Bold",
+            (40, 60, 120, 60),
+        )
+        layer_ids = {"001.psd": ids, "002.psd": [], "10.psd": []}
+
+        # 1) 正常生成：进度消息推进，产物落盘
+        out = folder / "worker.pdf"
+        messages = []
+        results = []
+        worker = ReportWorker(task, layer_ids, out, folder, docs={"001.psd": doc})
+        worker.progress.connect(lambda d, t, m: messages.append((d, t, m)))
+        worker.succeeded.connect(lambda r: results.append(r))
+        worker.start()
+        _pump_until(lambda: bool(results))
+        assert results, "返修单 worker 未完成"
+        assert results[0].kind == KIND_OK
+        assert Path(results[0].path) == out
+        assert out.exists() and out.stat().st_size > 1000
+        assert messages and messages[0][0] == 0
+        assert messages[-1][0] == messages[-1][1]
+        assert messages[-1][2] == "生成完成"
+
+        # 2) 取消：请求取消后第一次进度回调即中断，PDF 不落盘
+        out_cancel = folder / "worker_cancelled.pdf"
+        results2 = []
+        worker2 = ReportWorker(task, layer_ids, out_cancel, folder, docs={"001.psd": doc})
+        worker2.succeeded.connect(lambda r: results2.append(r))
+        worker2.request_cancel()
+        worker2.start()
+        _pump_until(lambda: bool(results2))
+        assert results2, "取消后 worker 未返回"
+        assert results2[0].kind == KIND_CANCELLED
+        assert not out_cancel.exists(), "取消后不应留下返修单文件"
+
+    print("PASS test_report_worker")
+
+
+def test_report_progress_dialog_and_cancel() -> None:
+    """返修单导出：进度框逐页推进（界面不冻结）；「取消」不留下半成品。"""
+    import mangaproof.report.generator as gen
+    from mangaproof.review.state import FAILED
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+
+        # 4 个未通过图层 → 4 个明细页（多个进度步，取消点确定落在页边界）
+        doc = window.current_doc
+        for info in doc.layers[:4]:
+            window.task.set_status(window._current_file, info.id, FAILED)
+            window.task.add_issue(
+                window._current_file, info.id, info.name, "漏字", "", (10, 20, 80, 40)
+            )
+
+        real_encode = gen._np_to_png_bytes
+
+        def slow_encode(img):
+            time.sleep(0.1)           # 放慢每页编码，模拟大页面
+            return real_encode(img)
+
+        with patch.object(gen, "_np_to_png_bytes", slow_encode), patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window._generate_report(interactive=False)
+            dialog = window._report_dialog
+            assert dialog is not None, "导出未显示进度框"
+            assert dialog.windowModality() == Qt.WindowModality.WindowModal
+            bar = dialog.findChild(QProgressBar)
+            assert bar is not None, "进度框缺少进度条"
+            # 不覆盖样式表 → 沿用全局主题的 QProgressBar 样式（与既有进度框一致）
+            assert bar.styleSheet() == "", "返修单进度条不应单独定制样式"
+            # 生成期间主线程仍在跑事件循环 → 进度持续推进，界面未冻结
+            assert _pump_until(lambda: dialog.value() >= 2, 30), (
+                f"进度未推进（当前 {dialog.value()}/{dialog.maximum()}）"
+            )
+            assert dialog.isVisible(), "生成期间进度框应保持可见"
+            cancel_btn = next(
+                b for b in dialog.findChildren(QPushButton) if b.text() == "取消"
+            )
+            cancel_btn.click()
+            _wait_for_report(window)
+
+        assert not (folder / "chapter01.pdf").exists(), "取消后不应留下返修单文件"
+        assert "已取消" in window.statusBar().currentMessage()
+        window.close()
+        app.processEvents()
+
+    print("PASS test_report_progress_dialog_and_cancel")
 
 
 def test_dark_titlebar_installed() -> None:
@@ -532,11 +670,14 @@ def test_full_workflow() -> None:
         assert window2.task.status_of("001.psd", ids[1]) == FAILED
         assert len(window2.task.issues_for("001.psd", ids[1])) == 2
 
-        # 生成返修单（非交互）
+        # 生成返修单（非交互）：后台线程 + 进度框，避免大批量任务冻结界面
         with patch.object(
             QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
         ):
             window2._generate_report(interactive=False)
+            assert window2._report_worker is not None, "返修单生成未走后台线程"
+            assert window2._report_dialog is not None, "未显示返修单进度框"
+            _wait_for_report(window2)
         out = folder / "chapter01.pdf"
         assert out.exists() and out.stat().st_size > 1000
         with open(out, "rb") as f:
