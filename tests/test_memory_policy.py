@@ -131,6 +131,35 @@ def test_settings_memory_policy_missing_falls_back(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 问题红框显示范围（issue_scope）
+# ---------------------------------------------------------------------------
+
+def test_settings_issue_scope_default_and_roundtrip(tmp_path):
+    from mangaproof.config.settings import DEFAULT_ISSUE_SCOPE
+
+    assert DEFAULT_ISSUE_SCOPE == "page", "默认显示当前页全部问题"
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    assert manager.settings.issue_scope == "page"
+    manager.settings.issue_scope = "layer"
+    manager.save()
+    assert SettingsManager(path).settings.issue_scope == "layer"
+
+
+def test_settings_issue_scope_invalid_or_missing_falls_back(tmp_path):
+    from mangaproof.config.settings import DEFAULT_ISSUE_SCOPE
+
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"settings_version": 1, "issue_scope": "global"}),
+        encoding="utf-8",
+    )
+    assert SettingsManager(path).settings.issue_scope == DEFAULT_ISSUE_SCOPE
+    path.write_text(json.dumps({"settings_version": 1}), encoding="utf-8")
+    assert SettingsManager(path).settings.issue_scope == DEFAULT_ISSUE_SCOPE
+
+
+# ---------------------------------------------------------------------------
 # task_loader 窗口集合
 # ---------------------------------------------------------------------------
 

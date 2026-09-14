@@ -82,6 +82,12 @@ DEFAULT_COMPARE_MODE = "auto"   # "auto" 自动切换 / "manual" 手动切换
 # 触控板双指滚不受此设置影响，恒为双轴平移。
 DEFAULT_WHEEL_MODE = "pan"      # "pan" 上下移动 / "zoom" 缩放
 
+# 问题红框显示范围（需求 §39 Overlay 展示）：
+# - "page"（默认）：始终显示当前 PSD（页）的全部问题——跨图层，一屏看全整页标注；
+# - "layer"：只显示当前图层的问题（旧版本行为）。
+ISSUE_SCOPES: tuple[str, ...] = ("page", "layer")
+DEFAULT_ISSUE_SCOPE = "page"
+
 # 内存回收策略档位：宽松 / 平衡 / 激进。
 # 各档预算（bg QImage 池字节上限、图层像素 LRU 字节上限）在
 # mangaproof/ui/main_window.py 的 _MEMORY_POLICIES 中定义；
@@ -98,6 +104,7 @@ class Settings:
     compare_mode: str = DEFAULT_COMPARE_MODE   # "auto" / "manual"
     compare_speed_hz: int = DEFAULT_COMPARE_SPEED_HZ
     wheel_mode: str = DEFAULT_WHEEL_MODE       # "pan" / "zoom"
+    issue_scope: str = DEFAULT_ISSUE_SCOPE     # "page"（当前页全部）/ "layer"（仅当前图层）
     recursive_scan: bool = False
     generate_pdf_on_complete: bool = True
     report_name: str = ""
@@ -174,6 +181,9 @@ class SettingsManager:
         wheel = raw.get("wheel_mode", DEFAULT_WHEEL_MODE)
         s.wheel_mode = wheel if wheel in ("pan", "zoom") else DEFAULT_WHEEL_MODE
 
+        scope = raw.get("issue_scope", DEFAULT_ISSUE_SCOPE)
+        s.issue_scope = scope if scope in ISSUE_SCOPES else DEFAULT_ISSUE_SCOPE
+
         s.recursive_scan = bool(raw.get("recursive_scan", False))
         s.generate_pdf_on_complete = bool(
             raw.get("generate_pdf_on_complete", True)
@@ -225,6 +235,7 @@ class SettingsManager:
                     "compare_mode": self.settings.compare_mode,
                     "compare_speed_hz": self.settings.compare_speed_hz,
                     "wheel_mode": self.settings.wheel_mode,
+                    "issue_scope": self.settings.issue_scope,
                     "recursive_scan": self.settings.recursive_scan,
                     "generate_pdf_on_complete": self.settings.generate_pdf_on_complete,
                     "report_name": self.settings.report_name,

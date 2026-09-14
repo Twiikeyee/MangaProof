@@ -1073,6 +1073,84 @@ def test_settings_keybindings_subdialog() -> None:
     print("PASS test_settings_keybindings_subdialog")
 
 
+def test_issue_scope_setting_and_viewer() -> None:
+    """问题红框显示范围：默认「当前页全部问题」，可切换为「仅当前图层」。"""
+    from mangaproof.config.settings import DEFAULT_ISSUE_SCOPE, Settings
+    from mangaproof.ui.settings_dialog import SettingsDialog
+
+    # 设置项默认值与下拉框读写/复位
+    s = Settings()
+    assert s.issue_scope == DEFAULT_ISSUE_SCOPE == "page"
+    dlg = SettingsDialog(s)
+    assert dlg.issue_scope_combo.currentData() == "page"
+    lidx = dlg.issue_scope_combo.findData("layer")
+    assert lidx >= 0
+    dlg.issue_scope_combo.setCurrentIndex(lidx)
+    dlg.apply_to(s)
+    assert s.issue_scope == "layer"
+    dlg._reset_defaults()
+    dlg.apply_to(s)
+    assert s.issue_scope == DEFAULT_ISSUE_SCOPE
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        sm = SettingsManager(root / "settings.json")
+        window = MainWindow(sm)
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+
+        # 在 001.psd 的 0/1/2 三个图层各放一个问题（跨图层）
+        ids = window._layer_ids_by_file["001.psd"]
+        for index in (0, 1, 2):
+            window.task.add_issue("001.psd", ids[index], f"layer_{index}",
+                                  "漏字", "", (10, 10, 40, 40))
+        window._select_layer_internal(1)
+        window._refresh_all_panels()
+        window._refresh_viewer_issues()
+        assert len(window.viewer._issues) == 3, "默认应显示当前页全部问题"
+
+        # 翻到别的图层（同页）：整页范围下红框集合不变
+        window._select_layer_internal(2)
+        window._refresh_viewer_issues()
+        assert len(window.viewer._issues) == 3
+
+        # 切换为「仅当前图层」：只显示当前图层的问题，切图层后随之变化
+        window.settings.issue_scope = "layer"
+        window._refresh_viewer_issues()
+        assert [i.layer_id for i in window.viewer._issues] == [ids[2]]
+        window._select_layer_internal(0)
+        window._refresh_viewer_issues()
+        assert [i.layer_id for i in window.viewer._issues] == [ids[0]]
+
+        # 切回整页范围：恢复显示全部
+        window.settings.issue_scope = "page"
+        window._refresh_viewer_issues()
+        assert len(window.viewer._issues) == 3
+
+        # 翻到没有问题的问题页 → 空；范围设置不影响问题数据
+        window._switch_file("10.psd")
+        _wait_for_file(window, "10.psd")
+        app.processEvents()
+        assert window.viewer._issues == []
+        assert len(window.task.issues) == 3
+
+        # 设置持久化（保存后重新读取）
+        sm.save()
+        assert SettingsManager(root / "settings.json").settings.issue_scope == "page"
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_issue_scope_setting_and_viewer")
+
+
 def _send_wheel(
     viewer: QWidget,
     angle: tuple[int, int] = (0, 0),

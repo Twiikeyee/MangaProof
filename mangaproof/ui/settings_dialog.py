@@ -5,7 +5,8 @@
 - 快捷键设置独立子对话框（KeybindingsDialog）：核心快捷键、
   问题类型快捷键、自定义批注键——主对话框只保留入口按钮，
   避免设置页过长挤压；
-- PDF 生成开关、返修单自定义名称、递归扫描。
+- PDF 生成开关、返修单自定义名称、递归扫描；
+- 问题红框显示范围（当前页全部问题 / 仅当前图层）、内存回收策略档位。
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from mangaproof.config.settings import (
     DEFAULT_DISPLAY_RATIO,
     DEFAULT_ISSUE_TYPES,
     DEFAULT_KEYBINDINGS,
+    DEFAULT_ISSUE_SCOPE,
     DEFAULT_MEMORY_POLICY,
     DEFAULT_WHEEL_MODE,
     DISPLAY_RATIOS,
@@ -179,6 +181,19 @@ class SettingsDialog(QDialog):
         idx = self.ratio_combo.findData(current_ratio)
         self.ratio_combo.setCurrentIndex(max(0, idx))
         display_form.addRow("图层自动显示比例：", self.ratio_combo)
+
+        self.issue_scope_combo = QComboBox()
+        self.issue_scope_combo.addItem("当前页全部问题（默认，跨图层显示红框）", "page")
+        self.issue_scope_combo.addItem("仅当前图层的问题（旧版行为）", "layer")
+        scope_idx = self.issue_scope_combo.findData(settings.issue_scope)
+        self.issue_scope_combo.setCurrentIndex(max(0, scope_idx))
+        self.issue_scope_combo.setToolTip(
+            "画布上红框（问题标注）的显示范围：\n"
+            "· 当前页全部问题：当前 PSD 的所有问题都显示，翻到哪页就看全哪页的标注；\n"
+            "· 仅当前图层：只显示当前图层的问题，其余图层红框隐藏。\n"
+            "切换图层/翻页即时生效，不影响已保存的问题数据。"
+        )
+        display_form.addRow("问题红框显示：", self.issue_scope_combo)
         layout.addWidget(display_group)
 
         # ---- 自动对比 ----
@@ -320,6 +335,8 @@ class SettingsDialog(QDialog):
         self.compare_speed_combo.setCurrentIndex(max(0, idx))
         idx = self.wheel_mode_combo.findData(DEFAULT_WHEEL_MODE)
         self.wheel_mode_combo.setCurrentIndex(max(0, idx))
+        idx = self.issue_scope_combo.findData(DEFAULT_ISSUE_SCOPE)
+        self.issue_scope_combo.setCurrentIndex(max(0, idx))
         self.recursive_check.setChecked(False)
         self.console_check.setChecked(True)
         self.pdf_check.setChecked(True)
@@ -335,6 +352,7 @@ class SettingsDialog(QDialog):
         settings.compare_mode = str(self.compare_mode_combo.currentData())
         settings.compare_speed_hz = int(self.compare_speed_combo.currentData())
         settings.wheel_mode = str(self.wheel_mode_combo.currentData())
+        settings.issue_scope = str(self.issue_scope_combo.currentData())
         settings.recursive_scan = self.recursive_check.isChecked()
         settings.generate_pdf_on_complete = self.pdf_check.isChecked()
         settings.report_name = self.report_name_edit.text().strip()

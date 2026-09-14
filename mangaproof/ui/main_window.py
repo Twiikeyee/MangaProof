@@ -43,6 +43,7 @@ from mangaproof.report.generator import (
     resolve_report_path,
 )
 from mangaproof.review import navigator, persistence
+from mangaproof.review.issue import Issue
 from mangaproof.review.numbering import apply_numbering
 from mangaproof.review.persistence import (
     backup_progress_file,
@@ -855,7 +856,7 @@ class MainWindow(QMainWindow):
 
         if not layer_ids:
             self._current_index = -1
-            self.viewer.set_issues([])
+            self.viewer.set_issues(self._viewer_issues())
             self.viewer.set_layer_outline(None)
             return
 
@@ -1154,9 +1155,7 @@ class MainWindow(QMainWindow):
             self.task.current_file = self._current_file
             self.task.current_layer = info.id
 
-        self.viewer.set_issues(
-            self.task.issues_for(self._current_file, info.id) if self.task else []
-        )
+        self.viewer.set_issues(self._viewer_issues())
         self.viewer.set_layer_outline(layer_visual_bounds(info))
         # 自动定位 + 自动缩放（需求 §17、§20）
         self.viewer.recenter_on_layer(info, self.settings.layer_display_ratio)
@@ -1415,12 +1414,27 @@ class MainWindow(QMainWindow):
             self._commit_new_issue(*dialog.result_values(), rect=(0, 0, 0, 0))
 
     def _refresh_viewer_issues(self) -> None:
-        """问题变化后刷新 Viewer 红框 Overlay（需求 §39）。"""
-        if self.task is not None and self.current_doc is not None and self._current_index >= 0:
+        """问题变化后刷新 Viewer 红框 Overlay（需求 §39）。
+
+        显示范围跟随设置（见 _viewer_issues）：默认显示当前页全部问题。
+        """
+        self.viewer.set_issues(self._viewer_issues())
+
+    def _viewer_issues(self) -> List[Issue]:
+        """Veiwer 当前应显示的问题集合。
+
+        - issue_scope == "page"（默认）：当前 PSD 的全部问题（跨图层），
+          翻到哪页就看全哪页的标注，便于整页通盘检查；
+        - issue_scope == "layer"：仅当前图层的问题（旧版本行为）。
+        """
+        if self.task is None:
+            return []
+        if self.settings.issue_scope == "layer":
+            if self.current_doc is None or self._current_index < 0:
+                return []
             info = self.current_doc.layers[self._current_index]
-            self.viewer.set_issues(
-                self.task.issues_for(self._current_file, info.id)
-            )
+            return self.task.issues_for(self._current_file, info.id)
+        return self.task.issues_for_file(self._current_file)
 
     def _commit_new_issue(self, issue_type: str, comment: str, rect) -> None:
         if self.task is None or self.current_doc is None or self._current_index < 0:
@@ -1792,6 +1806,7 @@ class MainWindow(QMainWindow):
             self._apply_compare_settings()
             self._apply_memory_policy()   # 内存策略档位热应用
             self.viewer.set_wheel_mode(self.settings.wheel_mode)
+            self._refresh_viewer_issues()  # 红框显示范围（整页/仅当前图层）热应用
             idx = self.ratio_combo.findData(self.settings.layer_display_ratio)
             self.ratio_combo.setCurrentIndex(max(0, idx))
             self.recenter_current_layer()
