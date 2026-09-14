@@ -1,6 +1,8 @@
 """MangaProof 返修单 PDF 生成（需求 §45～§54）。
 
 - 使用纯 Python PDF 库（reportlab），与 GUI、任务逻辑完全解耦（需求 §47）；
+- 字体与界面一致：优先内嵌程序自带的 MiSans（font/MiSans-Medium.ttf，
+  与 Qt 界面同一份文件），字体缺失时回退 reportlab 内置 CID 宋体；
 - PDF 红框由 PDF 矢量矩形绘制，绝不截图 GUI（需求 §52）；
 - 问题编号 ①②③ 与正文一一对应（需求 §53）；
 - 未完成时明确标注「任务状态：未完成」（需求 §54）；
@@ -41,13 +43,29 @@ except ImportError:  # reportlab 4.x
     from reportlab.pdfbase.pdfmetrics import UnicodeCIDFont
 
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from mangaproof.review.state import PASSED, FAILED, TaskState
 from mangaproof.report import templates as T
 
 log = logging.getLogger("mangaproof.report.generator")
 
-ZH_FONT = "STSong-Light"
+# 正文字体：优先 MiSans（程序自带，与界面同一字体），缺失时回退内置 CID 宋体。
+# 二者均以「字体名」字符串在 reportlab 中注册，下面的模块级变量在
+# _register_fonts() 后指向实际生效的字体名（样式表在调用时读取）。
+MISANS_NAME = "MiSans"
+ZH_FONT_FALLBACK = "STSong-Light"
+ZH_FONT = ZH_FONT_FALLBACK
+# 徽标数字字体：CID 字体在 canvas 路径下编码不可靠（① 等字符异常），
+# 回退时保持标准 Helvetica-Bold；MiSans 可用时一并切换为 MiSans。
+BADGE_FONT_FALLBACK = "Helvetica-Bold"
+BADGE_FONT = BADGE_FONT_FALLBACK
+
+# ①～⑳ 在当前字体中的覆盖上限（MiSans 只覆盖 ①～⑩，其余回退 (11) 写法，
+# 避免 PDF 中出现缺字空白；CID 宋体按 GB 字符集同样保守取 10）
+_circled_max = 10
+_font_ready = False
+
 _page_w, _page_h = A4
 
 # 进度回调：(已完成步数, 总步数, 阶段说明)
@@ -67,12 +85,57 @@ def _emit(
 
 
 def _register_fonts() -> None:
+    """注册返修单字体（同进程只做一次）。
+
+    优先 MiSans（与界面同一份字体文件，内嵌子集不影响体积），
+    找不到或注册失败时回退 reportlab 内置 CID 宋体，保证 PDF 始终可生成。
+    """
+    global _font_ready
+    if _font_ready:
+        return
+    _font_ready = True          # 失败也不重试：避免每次导出重复解析字体表
+    if _register_misans():
+        return
+
     try:
-        pdfmetrics.registerFont(UnicodeCIDFont(ZH_FONT))
+        pdfmetrics.registerFont(UnicodeCIDFont(ZH_FONT_FALLBACK))
         if hasattr(pdfmetrics, "addMapping"):  # reportlab 4.x 需要；5.x 已移除
-            pdfmetrics.addMapping(ZH_FONT, 0, 0, ZH_FONT)
+            pdfmetrics.addMapping(ZH_FONT_FALLBACK, 0, 0, ZH_FONT_FALLBACK)
     except Exception:
         log.warning("中文字体注册失败，PDF 中文可能显示异常")
+
+
+def _register_misans() -> bool:
+    """注册 MiSans 并切换正文/徽标字体；成功返回 True。"""
+    global ZH_FONT, BADGE_FONT, _circled_max
+
+    from mangaproof.fonts import find_font_path
+
+    path = find_font_path()
+    if path is None:
+        log.warning("未找到 MiSans 字体，返修单回退内置宋体")
+        return False
+    try:
+        pdfmetrics.registerFont(TTFont(MISANS_NAME, str(path)))
+        face = pdfmetrics.getFont(MISANS_NAME).face
+    except Exception:
+        log.warning("MiSans 字体注册失败（%s），返修单回退内置宋体", path, exc_info=True)
+        return False
+
+    ZH_FONT = MISANS_NAME
+    BADGE_FONT = MISANS_NAME
+    _circled_max = _covered_circled_max(face)
+    log.info("返修单 PDF 使用 MiSans 字体：%s（①～⑳ 覆盖到 %d）", path, _circled_max)
+    return True
+
+
+def _covered_circled_max(face) -> int:
+    """字体实际覆盖到的 ①～⑳ 上限（缺字时回退 (11) 写法，不出现空白方块）。"""
+    char_to_glyph = getattr(face, "charToGlyph", None) or {}
+    for n in range(20, 0, -1):
+        if char_to_glyph.get(0x2460 + n - 1):
+            return n
+    return 0
 
 
 def _zh_style(size: float, leading: Optional[float] = None) -> ParagraphStyle:
@@ -85,9 +148,9 @@ def _zh_style(size: float, leading: Optional[float] = None) -> ParagraphStyle:
 
 
 def circled_number(n: int) -> str:
-    """① ② ③ … ⑳，超过 20 用 (21) 形式。"""
+    """① ② ③ …，超出当前字体覆盖范围时用 (11) 形式。"""
     base = 0x2460
-    if 1 <= n <= 20:
+    if 1 <= n <= _circled_max:
         return chr(base + n - 1)
     return f"({n})"
 
@@ -430,10 +493,10 @@ class AnnotatedPageFlowable(Flowable):
                 by = rect_top - badge_h - gap  # 空间不足 → 框内左上角
             c.setFillColor(colors.HexColor("#E53935"))
             c.roundRect(bx, by, badge_w, badge_h, badge_r, stroke=0, fill=1)
-            # 纯数字 + Helvetica-Bold：canvas 路径下 CID 字体对 ① 编码异常，
-            # 使用标准字体保证徽标数字可靠渲染（正文列表仍用 ① 对应）。
+            # 纯数字 + 当前字体（MiSans 可用时与正文一致；回退到 CID 宋体时
+            # canvas 路径下 ① 等字符编码不可靠，故用标准 Helvetica-Bold）。
             c.setFillColor(colors.white)
-            c.setFont("Helvetica-Bold", 7)
+            c.setFont(BADGE_FONT, 7)
             c.drawCentredString(
                 bx + badge_w / 2.0, by + badge_h / 2.0 - 2.4, str(n)
             )

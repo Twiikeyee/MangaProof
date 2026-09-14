@@ -374,31 +374,83 @@ def test_report_progress_and_cancel():
 
 def _decode_pdf_streams(pdf_bytes: bytes) -> list[bytes]:
     """解出 PDF 内容流（ASCII85/FlateDecode），返回字节列表。"""
-    import base64
     import re
-    import zlib
 
     out = []
     for m in re.finditer(rb"stream\r?\n(.*?)endstream", pdf_bytes, re.S):
-        body = m.group(1).strip()
-        data = None
-        try:
-            data = zlib.decompress(body)
-        except Exception:
-            try:
-                data = zlib.decompress(base64.a85decode(body, adobe=True))
-            except Exception:
-                try:
-                    data = base64.a85decode(body, adobe=True)
-                except Exception:
-                    data = body
+        data = _inflate_stream(m.group(1).strip())
         if data:
             out.append(data)
     return out
 
 
+def _inflate_stream(body: bytes) -> bytes:
+    """解压单个 PDF 流（zlib / ASCII85+Flate / 原样）。"""
+    import base64
+    import zlib
+
+    for decode in (
+        lambda b: zlib.decompress(b),
+        lambda b: zlib.decompress(base64.a85decode(b, adobe=True)),
+        lambda b: b,
+    ):
+        try:
+            return decode(body)
+        except Exception:
+            continue
+    return b""
+
+
+def _pdf_text_fonts(raw: bytes) -> set:
+    """返回 PDF 中真正用于绘制文本的字体（BaseFont 名集合）。
+
+    按「页对象 → /Font 资源字典 → 内容流」逐页解析：字体资源名（如 /F2+0）
+    仅在页内有效，只统计出现在 Tj/TJ 之前的字体，忽略 canvas 的初始字体状态。
+    """
+    import re
+
+    objs = {
+        int(m.group(1)): m.group(2)
+        for m in re.finditer(rb"(?m)^(\d+) 0 obj(.*?)endobj", raw, re.S)
+    }
+    fonts: set = set()
+    for body in objs.values():
+        if b"/Type /Page" not in body or b"/Contents" not in body:
+            continue
+        contents = re.search(rb"/Contents (\d+) 0 R", body)
+        font_dict = re.search(rb"/Font (\d+) 0 R", body)
+        if not contents or not font_dict:
+            continue
+        mapping = {
+            m.group(1): int(m.group(2))
+            for m in re.finditer(
+                rb"/(F[^\s/]+) (\d+) 0 R", objs.get(int(font_dict.group(1)), b"")
+            )
+        }
+        stream = re.search(
+            rb"stream\r?\n(.*?)endstream", objs.get(int(contents.group(1)), b""), re.S
+        )
+        if stream is None:
+            continue
+        current = None
+        for m in re.finditer(
+            rb"/(F[^\s/]+) [\d.]+ Tf|(?<![A-Za-z])(Tj|TJ)(?![A-Za-z])",
+            _inflate_stream(stream.group(1).strip()),
+        ):
+            if m.group(1):
+                current = m.group(1)
+            elif current is not None:
+                base = re.search(
+                    rb"/BaseFont\s*/([^\s/]+)",
+                    objs.get(mapping.get(current, -1), b""),
+                )
+                if base is not None:
+                    fonts.add(base.group(1).decode())
+    return fonts
+
+
 def test_pdf_badge_number_outside_rect():
-    """回归：PDF 徽标必须含纯数字（Helvetica-Bold）且位于红框外侧（需求 §52/§53）。"""
+    """回归：PDF 徽标必须含纯数字且位于红框外侧（需求 §52/§53）。"""
     import re
     import tempfile
 
@@ -419,22 +471,22 @@ def test_pdf_badge_number_outside_rect():
         )
         streams = _decode_pdf_streams(out.read_bytes())
         raw = out.read_bytes()
-        # 徽标字体资源注册为 Helvetica-Bold（内容流中被子集引用为 /F<n>）
-        assert b"Helvetica-Bold" in raw, "徽标未使用 Helvetica-Bold"
+        # 徽标与正文同字体（MiSans）：内嵌子集在内容流中被子集引用为 /F<n>
+        assert re.search(rb"/BaseFont\s*/[A-Z]{6}\+MiSans", raw), "未内嵌 MiSans"
         annotated = next(
             (s for s in streams if b" re S" in s and b"(1)" in s), None
         )
         assert annotated is not None, "未找到带红框与徽标的页面流"
 
         text = annotated.decode("latin-1")
-        # 徽标数字：纯 ASCII "(1)"，7pt（Helvetica-Bold 子集字体）
-        assert re.search(r"/F\d+ 7 Tf", text)
+        # 徽标数字：纯 ASCII "(1)"，7pt（字体资源名为子集形式，如 /F2+0）
+        assert re.search(r"/F[^\s/]+ 7 Tf", text)
         # 红框矩形与徽标数字基线位置（PDF y 轴向上：数字基线应在红框顶边之上）
         m_rect = re.search(
             r"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re S", text
         )
         m_num = re.search(
-            r"([\d.]+) ([\d.]+) Tm \(1\) Tj", text
+            r"([\d.]+) ([\d.]+) Tm /F[^\s/]+ 7 Tf[^\n]*\(1\) Tj", text
         )
         assert m_rect and m_num, "未解析到红框或徽标文本"
         rx, ry, rw, rh = (float(v) for v in m_rect.groups())
@@ -443,6 +495,112 @@ def test_pdf_badge_number_outside_rect():
             f"徽标应在红框外侧上方：徽标基线 y={num_y}，红框顶边 y={ry + rh}"
         )
         print("PDF badge OK：数字在框外", num_y, ">", ry + rh)
+
+
+def test_report_uses_misans_font(monkeypatch):
+    """返修单 PDF 使用程序自带的 MiSans（与界面同一字体文件）。
+
+    - 正文/徽标字体名均切到 MiSans，唯一内嵌字体为 MiSans 子集；
+    - 页面上实际绘制文本的字体（逐页解析资源字典）只有 MiSans；
+    - 画布文本（徽标数字）显式 setFont("MiSans", 7)；
+    - ①～⑳ 中字体未覆盖的编号回退 (11) 写法，不出现空白方块。
+    """
+    import re
+    import tempfile
+
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    from mangaproof.report import generator as gen
+
+    setfont_calls: list = []
+    real_setfont = rl_canvas.Canvas.setFont
+
+    def spy(self, psfontname, size, leading=None):
+        setfont_calls.append((psfontname, float(size)))
+        return real_setfont(self, psfontname, size, leading)
+
+    monkeypatch.setattr(rl_canvas.Canvas, "setFont", spy)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        doc1 = PSDDocument(folder / "001.psd")
+        ids = [i.id for i in doc1.layers]
+        task.set_status("001.psd", ids[1], FAILED)
+        task.add_issue("001.psd", ids[1], "dialogue_01", "字体选择错误",
+                       "这里应使用 Bold", (40, 60, 120, 60))
+        out = folder / "misans.pdf"
+        generate_report(
+            task,
+            {"001.psd": ids, "002.psd": [], "10.psd": []},
+            out,
+            image_provider=lambda rel: PSDDocument(folder / rel),
+        )
+
+        assert gen.ZH_FONT == "MiSans", gen.ZH_FONT
+        assert gen.BADGE_FONT == "MiSans", gen.BADGE_FONT
+        # 徽标（画布文本）显式使用 MiSans 7pt；reportlab 表格机制另有
+        # Helvetica 10pt 的空 setFont（绘制 Paragraph 单元格前的默认状态），
+        # 不绘制字形——「实际使用字体」由下面的逐页解析与内嵌字体校验覆盖。
+        assert ("MiSans", 7.0) in setfont_calls, setfont_calls
+
+        raw = out.read_bytes()
+        assert b"STSong" not in raw and b"Helvetica-Bold" not in raw
+        # 唯一内嵌的字体流必须是 MiSans 子集（基础字体不内嵌，无 FontFile）
+        embedded = [
+            body for _, body in re.findall(rb"(?m)^(\d+) 0 obj(.*?)endobj", raw, re.S)
+            if b"/FontFile2" in body
+        ]
+        assert embedded, "未内嵌任何字体流"
+        assert raw.count(b"/FontFile3") == 0 and raw.count(b"/FontFile ") == 0
+        for body in embedded:
+            assert re.search(rb"/FontName\s*/[A-Z]{6}\+MiSans", body), body[:200]
+        # 逐页确认实际绘制文本的字体只有 MiSans
+        fonts = _pdf_text_fonts(raw)
+        assert fonts, "未解析到文本字体"
+        assert all("MiSans" in name for name in fonts), fonts
+
+        # MiSans 覆盖 ①～⑩；⑪ 起回退 (11) 写法（缺字不出现空白）
+        assert gen._circled_max == 10, gen._circled_max
+        assert [gen.circled_number(n) for n in (1, 2, 10, 11, 20, 21)] == [
+            "①", "②", "⑩", "(11)", "(20)", "(21)"
+        ]
+        print("PDF 字体 OK：MiSans 子集内嵌，正文与徽标同字体；缺字回退 (11)")
+
+
+def test_report_font_fallback(monkeypatch):
+    """MiSans 缺失时回退内置 CID 宋体 + Helvetica-Bold，PDF 仍可生成。"""
+    import tempfile
+
+    from mangaproof.report import generator as gen
+
+    monkeypatch.setattr("mangaproof.fonts.find_font_path", lambda: None)
+    monkeypatch.setattr(gen, "_font_ready", False)
+    monkeypatch.setattr(gen, "ZH_FONT", gen.ZH_FONT_FALLBACK)
+    monkeypatch.setattr(gen, "BADGE_FONT", gen.BADGE_FONT_FALLBACK)
+    monkeypatch.setattr(gen, "_circled_max", 10)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = _copy_fixtures(Path(tmp) / "chapter01")
+        task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
+        doc1 = PSDDocument(folder / "001.psd")
+        ids = [i.id for i in doc1.layers]
+        task.set_status("001.psd", ids[1], FAILED)
+        task.add_issue("001.psd", ids[1], "dialogue_01", "字体选择错误", "", (40, 60, 120, 60))
+        out = folder / "fallback.pdf"
+        generate_report(
+            task,
+            {"001.psd": ids, "002.psd": [], "10.psd": []},
+            out,
+            image_provider=lambda rel: PSDDocument(folder / rel),
+        )
+
+        assert gen.ZH_FONT == gen.ZH_FONT_FALLBACK
+        assert gen.BADGE_FONT == gen.BADGE_FONT_FALLBACK
+        raw = out.read_bytes()
+        assert b"STSong-Light" in raw and b"Helvetica-Bold" in raw
+        assert out.stat().st_size > 1000
+        print("PDF 字体回退 OK：CID 宋体 + Helvetica-Bold")
 
 
 def test_default_report_name_output_folder():

@@ -3,7 +3,11 @@
 - 直接运行（python main.py）：查找 程序目录/font/MiSans-Medium.ttf；
 - PyInstaller 打包产物：数据文件位于冻结资源目录（sys._MEIPASS，
   PyInstaller 6.x 的 onedir 布局为 _internal/），自动回退查找；
-- 注册进 Qt 字体数据库并设为应用默认字体，主题样式表同步使用。
+- 源码/开发态兜底：包目录的上一级（pytest、python -m 等 __main__ 不在
+  项目根的场景），保证测试与开发环境也能拿到同一份字体文件；
+- 注册进 Qt 字体数据库并设为应用默认字体，主题样式表同步使用；
+- 返修单 PDF 生成（report/generator.py）复用 find_font_path() 取得同一
+  字体文件，使 PDF 与界面字体一致。
 
 MiSans 字体（https://hyperos.mi.com/font/download）版权归小米所有，
 依据《MiSans 字体知识产权许可协议》使用：
@@ -24,14 +28,27 @@ FONT_FILENAME = "MiSans-Medium.ttf"
 
 
 def font_candidates() -> list[Path]:
-    """字体文件候选路径（直接运行 + 打包两种布局）。"""
+    """字体文件候选路径（程序目录 → 冻结资源目录 → 源码目录）。"""
     from mangaproof.config import paths
 
     candidates = [paths.get_app_dir() / "font" / FONT_FILENAME]
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidates.append(Path(meipass) / "font" / FONT_FILENAME)
+    # 源码/开发态兜底：包目录（mangaproof/）的上一级即项目根
+    candidates.append(Path(__file__).resolve().parent.parent / "font" / FONT_FILENAME)
     return candidates
+
+
+def find_font_path() -> Path | None:
+    """返回第一个存在的 MiSans 字体文件；未找到返回 None。
+
+    供 Qt 字体加载与 PDF 生成共用，避免两处各自判断字体位置。
+    """
+    for path in font_candidates():
+        if path.exists():
+            return path
+    return None
 
 
 def load_app_fonts(app, candidates: list[Path] | None = None) -> str | None:
