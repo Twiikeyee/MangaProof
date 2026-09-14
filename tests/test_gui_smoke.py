@@ -2816,6 +2816,83 @@ def test_issue_type_picker_shows_keys() -> None:
     print("PASS test_issue_type_picker_shows_keys")
 
 
+def _make_hidden_layers_psd(path: Path) -> None:
+    """生成含隐藏图层 / 隐藏组的 PSD（验证隐藏内容被整体忽略）。"""
+    from PIL import Image
+    from psd_tools import PSDImage
+    from psd_tools.api.layers import Group, PixelLayer
+
+    canvas = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
+    box = Image.new("RGBA", (50, 50), (10, 10, 10, 255))
+    psd = PSDImage.frompil(canvas)
+    PixelLayer.frompil(canvas, psd, name="bg", top=0, left=0)
+    PixelLayer.frompil(box, psd, name="top_visible", top=10, left=10)
+    hidden = PixelLayer.frompil(box, psd, name="top_hidden", top=20, left=20)
+    hidden.visible = False
+
+    group = Group.new(psd, name="visible_group")
+    PixelLayer.frompil(box, psd, name="in_visible_group", top=30, left=30)
+    group.append(psd[-1])
+
+    hidden_group = Group.new(psd, name="hidden_group")
+    hidden_group.visible = False
+    PixelLayer.frompil(box, psd, name="in_hidden_group", top=50, left=50)
+    hidden_group.append(psd[-1])
+    psd.save(path)
+
+
+def test_hidden_layers_ignored_in_gui() -> None:
+    """隐藏图层（含隐藏组内的图层）不进图层列表、统计与预加载。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = root / "chapter"
+        folder.mkdir(parents=True)
+        _make_hidden_layers_psd(folder / "hidden_layers.psd")
+
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        app.processEvents()
+
+        rel = "hidden_layers.psd"
+        names = window._layer_names_by_file[rel]
+        assert names == ["bg", "top_visible", "in_visible_group"], names
+        assert len(window._layer_ids_by_file[rel]) == 3
+
+        # 图层列表只有可见图层
+        assert window.layer_panel.list_widget.count() == 3
+        listed = [window.layer_panel.list_widget.item(i).text()
+                  for i in range(window.layer_panel.list_widget.count())]
+        assert all("hidden" not in text for text in listed), listed
+
+        # 统计只按可见图层算（total 不会把隐藏层算进去）
+        counts = window.task.count_all(window._layer_ids_by_file)
+        assert counts["total"] == 3, counts
+        assert "3" in window.stats_panel.total_cells["layers"].text()
+
+        # 预加载只预热可见图层：隐藏层根本不在列表里，全部预热完成即可
+        assert window.current_doc is not None
+        assert len(window.current_doc.layers) == 3
+        deadline = time.time() + 30
+        while window.warmup_label.text() != "图层预热完成" and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+        assert window.warmup_label.text() == "图层预热完成"
+        for info in window.current_doc.layers:
+            assert info.has_visual_bounds(), info.name
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_hidden_layers_ignored_in_gui")
+
+
 def test_issue_panel_long_layer_name() -> None:
     """当前图层问题面板：超长图层名单行省略显示（不撑宽、不换行）。"""
     from mangaproof.ui.issue_panel import IssuePanel

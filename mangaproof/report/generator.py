@@ -308,8 +308,7 @@ def generate_report(
     _register_fonts()
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
-    layer_counts = {rel: len(ids) for rel, ids in layer_ids_by_file.items()}
-    all_counts = task.count_all(layer_counts)
+    all_counts = task.count_all(layer_ids_by_file)
     complete = all_counts["unreviewed"] == 0
 
     doc = ReportDocTemplate(

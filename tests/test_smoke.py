@@ -50,6 +50,82 @@ def test_document_load_001():
     assert doc.bg_layer_id() == doc.layers[0].id
 
 
+def test_hidden_layers_excluded_from_structure():
+    """隐藏图层（含隐藏组内的图层）不进入可监制结构。
+
+    可监制图层列表是唯一数据源：图层面板、统计、预加载、返修单都由它派生，
+    结构里剔除即处处忽略（不解析像素、不占内存、不计入进度）。
+    """
+    from PIL import Image
+    from psd_tools import PSDImage
+    from psd_tools.api.layers import Group, PixelLayer
+
+    with tempfile.TemporaryDirectory() as tmp:
+        canvas = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
+        box = Image.new("RGBA", (50, 50), (10, 10, 10, 255))
+        psd = PSDImage.frompil(canvas)
+        PixelLayer.frompil(canvas, psd, name="bg", top=0, left=0)
+        PixelLayer.frompil(box, psd, name="top_visible", top=10, left=10)
+        hidden = PixelLayer.frompil(box, psd, name="top_hidden", top=20, left=20)
+        hidden.visible = False
+
+        group_visible = Group.new(psd, name="visible_group")
+        PixelLayer.frompil(box, psd, name="in_visible_group", top=30, left=30)
+        group_visible.append(psd[-1])
+        child_hidden = PixelLayer.frompil(
+            box, psd, name="in_visible_group_hidden", top=40, left=40
+        )
+        child_hidden.visible = False
+        group_visible.append(psd[-1])
+
+        # 隐藏组：子层自身 visible=True，但在 Photoshop 里不显示
+        group_hidden = Group.new(psd, name="hidden_group")
+        group_hidden.visible = False
+        PixelLayer.frompil(box, psd, name="in_hidden_group", top=50, left=50)
+        group_hidden.append(psd[-1])
+
+        # 隐藏组里再套一层组：整棵子树都不可见
+        group_outer = Group.new(psd, name="hidden_outer")
+        group_outer.visible = False
+        group_inner = Group.new(group_outer, name="inner")
+        PixelLayer.frompil(box, psd, name="deep_in_hidden_group", top=60, left=60)
+        group_inner.append(psd[-1])
+
+        path = Path(tmp) / "groups.psd"
+        psd.save(path)
+
+        doc = PSDDocument(path)
+        names = [info.name for info in doc.layers]
+        assert names == ["bg", "top_visible", "in_visible_group"], names
+        # 编号沿用 PSD 内的索引路径（稳定），隐藏层只是不出现
+        assert [info.id for info in doc.layers] == ["0.0", "0.1", "0.3.0"]
+        assert all(info.visible for info in doc.layers)
+        # 隐藏图层不参与 bg 回退选择：没有精确 "bg" 名时取最底部可见层
+        assert doc.bg_layer_id() == doc.layers[0].id
+
+
+def test_statistics_ignore_hidden_layers():
+    """已隐藏/已消失图层的历史监制记录不计入总体统计。"""
+    from mangaproof.review.state import TaskState
+
+    task = TaskState()
+    # 001.psd 有 3 个可见层；其中 1 个"已隐藏"的旧记录不该被计入
+    visible = {"001.psd": ["0.0", "0.1", "0.2"]}
+    task.set_status("001.psd", "0.0", PASSED)
+    task.set_status("001.psd", "0.1", FAILED)
+    task.set_status("001.psd", "0.9", PASSED)      # 已隐藏图层（已不在列表里）
+    counts = task.count_all(visible)
+    assert counts == {
+        "files": 1, "total": 3, "reviewed": 2,
+        "passed": 1, "failed": 1, "unreviewed": 1, "issues": 0,
+    }, counts
+    # 隐藏层的记录仍留在文件里（不破坏数据），只是统计与进度按可见层算
+    assert task.status_of("001.psd", "0.9") == PASSED
+    assert len(task.reviews) == 3
+    # 逐文件统计与总体口径一致
+    assert task.count_file("001.psd", visible["001.psd"])["passed"] == 1
+
+
 def test_layer_image_mode_split():
     """图层预热分流：type→topil_only，bg/最底部→topil，其余→composite。"""
     import numpy as np

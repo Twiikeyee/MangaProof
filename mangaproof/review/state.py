@@ -162,18 +162,26 @@ class TaskState:
             "issues": len(self.issues_for_file(file_rel)),
         }
 
-    def count_all(self, layer_counts: Dict[str, int]) -> dict:
-        """layer_counts: {file_rel: 总图层数}"""
+    def count_all(self, layer_ids_by_file: Dict[str, List[str]]) -> dict:
+        """总体统计。layer_ids_by_file: {file_rel: 当前可监制图层 id 列表}
+
+        只统计「当前真实存在且可见」的图层：PSD 里被隐藏、或已删除/改名
+        的图层，其历史监制记录不再计入任何一项（否则会出现 passed 比
+        total 还大的怪数；隐藏图层同样不该出现在进度里）。
+        """
         passed = failed = 0
-        for status in self.reviews.values():
-            if status == PASSED:
-                passed += 1
-            elif status == FAILED:
-                failed += 1
-        total = sum(layer_counts.values())
+        total = 0
+        for rel, layer_ids in layer_ids_by_file.items():
+            total += len(layer_ids)
+            for lid in layer_ids:
+                st = self.status_of(rel, lid)
+                if st == PASSED:
+                    passed += 1
+                elif st == FAILED:
+                    failed += 1
         reviewed = passed + failed
         return {
-            "files": len(layer_counts),
+            "files": len(layer_ids_by_file),
             "total": total,
             "reviewed": reviewed,
             "passed": passed,

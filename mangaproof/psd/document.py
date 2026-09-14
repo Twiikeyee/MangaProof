@@ -40,6 +40,23 @@ _LOADER_TOPIL = "topil"              # bg/最底层：topil 优先，失败退�
 _LOADER_TOPIL_ONLY = "topil_only"    # type 图层：仅 topil，失败直接放弃
 
 
+def _layer_visible(node) -> bool:
+    """图层在 PSD 中是否可见（计入所属组/文件夹的可见性）。
+
+    psd-tools 的 `visible` 只是图层自身的开关：处在被隐藏的组里的图层，
+    自身 visible=True 但实际不显示。`is_visible()` 会一路向上检查父组，
+    才是 Photoshop 里真正的可见性。
+    """
+    checker = getattr(node, "is_visible", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            log.debug("is_visible() 失败，回退自身 visible 标记：%r",
+                      getattr(node, "name", "?"), exc_info=True)
+    return bool(getattr(node, "visible", True))
+
+
 class PSDDocument:
     def __init__(
         self,
@@ -153,6 +170,10 @@ class PSDDocument:
     def build_layers(self) -> List[LayerInfo]:
         """构建可监制图层列表（文档顺序，稳定编号）。
 
+        只收「在 PSD 中可见」的图层：自身隐藏的、以及位于隐藏组/文件夹里
+        的图层一律不进列表——图层列表、统计、预加载、返修单都由此列表
+        派生，隐藏图层因此自然被全部忽略（不占用内存也不参与进度）。
+
         注意：psd-tools 1.18 的迭代顺序为自下而上（第一个即最底部图层，
         已用合成结果实证），因此「最底部 pixel 层」取迭代序中第一个
         pixel 层。
@@ -162,8 +183,14 @@ class PSDDocument:
 
         def visit(node, parent_id, path_id):
             # 先按文档顺序收集本层，再递归子层
-            if node.kind in _REVIEWABLE_KINDS and getattr(node, "visible", True):
+            if node.kind in _REVIEWABLE_KINDS and _layer_visible(node):
                 entries.append((node, parent_id, path_id))
+            # 隐藏的组：内部一律不可见，整棵子树直接跳过
+            try:
+                if node.is_group() and not _layer_visible(node):
+                    return
+            except Exception:
+                pass
             # 递归子层（group 等容器）
             try:
                 children = list(node)  # __iter__ 按文档顺序（自下而上）
@@ -194,7 +221,8 @@ class PSDDocument:
                 id=path_id,
                 name=name,
                 bounds=bbox,
-                visible=bool(node.visible),
+                # 列表里只有可见图层，这里恒为 True（保留字段便于上层判断）
+                visible=True,
                 layer_type=str(node.kind),
                 image_mode=mode,
                 parent_id=parent_id,

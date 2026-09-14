@@ -1380,9 +1380,7 @@ class MainWindow(QMainWindow):
         """任务是否所有可监制图层都已检查（需求 §44）。"""
         if self.task is None:
             return False
-        counts = self.task.count_all(
-            {rel: len(ids) for rel, ids in self._layer_ids_by_file.items()}
-        )
+        counts = self.task.count_all(self._layer_ids_by_file)
         return counts["total"] > 0 and counts["unreviewed"] == 0
 
     def _on_all_reviewed(self) -> None:
@@ -1930,12 +1928,7 @@ class MainWindow(QMainWindow):
 
         name = self.settings.report_name or default_name
         if interactive:
-            incomplete = (
-                self.task.count_all(
-                    {rel: len(ids) for rel, ids in self._layer_ids_by_file.items()}
-                )["unreviewed"]
-                > 0
-            )
+            incomplete = self.task.count_all(self._layer_ids_by_file)["unreviewed"] > 0
             dialog = ReportDialog(
                 name,
                 self.task.task_name,
@@ -2152,8 +2145,7 @@ class MainWindow(QMainWindow):
             self._current_file, names, statuses, issue_counts
         )
         # 总体
-        layer_counts = {rel: len(v) for rel, v in self._layer_ids_by_file.items()}
-        self.stats_panel.set_total(self.task.count_all(layer_counts))
+        self.stats_panel.set_total(self.task.count_all(self._layer_ids_by_file))
 
     def _refresh_issue_panel(self) -> None:
         if self.task is None or self.current_doc is None or self._current_index < 0:
