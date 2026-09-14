@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -31,6 +32,11 @@ class IssueDialog(QDialog):
     - 预制问题类型下拉（可含“其他”）；
     - 自定义批注文本框（可留空，不阻塞监制，需求 §38）；
     - rect 信息展示（方式 A/B 拖框结果）。
+
+    自动框选模式（auto_pick=True，仅「自动框选」触发时使用）：
+    类型未定时自动展开下拉栏，直接用问题类型快捷键选中即为错误原因，
+    随即跳到批注输入框；类型已由快捷键确定时直接停在批注框。
+    手动拖框触发的对话框保持原逻辑（自己点开下拉栏选择）。
     """
 
     def __init__(
@@ -41,11 +47,21 @@ class IssueDialog(QDialog):
         issue: Optional[Issue] = None,
         rect: Optional[Tuple[float, float, float, float]] = None,
         title: str = "添加问题",
+        type_keys: Optional[Dict[str, str]] = None,
+        auto_pick: bool = False,
     ):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(420, 320)
         self._rect = rect
+        self._auto_pick = bool(auto_pick)
+        # 问题类型快捷键 → 类型名（自动框选模式下用按键直接选定类型）
+        self._type_keys: Dict[str, str] = {
+            str(k).strip().upper(): name
+            for name, k in (type_keys or {}).items()
+            if str(k).strip()
+        }
+        self._type_preselected = default_type is not None and default_type in issue_types
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -84,6 +100,60 @@ class IssueDialog(QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
+
+        if self._auto_pick:
+            # 下拉栏弹出后按键事件落在弹出列表上，两个都装过滤器更稳
+            self._auto_pick_started = False
+            self.installEventFilter(self)
+            self.type_combo.installEventFilter(self)
+            self.type_combo.view().installEventFilter(self)
+            self.type_combo.activated.connect(self._on_type_activated)
+
+    # -- 自动框选模式：展开下拉栏 + 快捷键选类型 + 跳到批注框 --------------
+
+    def showEvent(self, event) -> None:   # noqa: N802（Qt 命名）
+        """首次真正显示时才展开下拉栏。
+
+        不在 __init__ 里排队：对话框可能被构造后并未显示（调用方提前
+        取消/未 exec），那时弹出下拉栏会抢走键盘焦点，连主窗口的快捷键
+        都一起吃掉。
+        """
+        super().showEvent(event)
+        if self._auto_pick and not self._auto_pick_started:
+            self._auto_pick_started = True
+            QTimer.singleShot(0, self._begin_auto_pick)
+
+    def _begin_auto_pick(self) -> None:
+        """类型未定则自动展开下拉栏；已由问题类型快捷键确定则直奔批注框。"""
+        if not self.isVisible():
+            return
+        if self._type_preselected:
+            self.comment_edit.setFocus()
+            return
+        self.type_combo.setFocus()
+        self.type_combo.showPopup()
+
+    def _select_type(self, name: str) -> bool:
+        idx = self.type_combo.findText(name)
+        if idx < 0:
+            return False
+        self.type_combo.setCurrentIndex(idx)
+        if self.type_combo.view().isVisible():
+            self.type_combo.hidePopup()
+        self.comment_edit.setFocus()      # 自动跳转到批注输入框
+        return True
+
+    def _on_type_activated(self, _index: int) -> None:
+        """鼠标/回车在下拉栏里选定后同样跳到批注框。"""
+        self.comment_edit.setFocus()
+
+    def eventFilter(self, obj, event) -> bool:
+        if self._auto_pick and event.type() == QEvent.Type.KeyPress:
+            text = (event.text() or "").strip().upper()
+            name = self._type_keys.get(text)
+            if name and self._select_type(name):
+                return True
+        return super().eventFilter(obj, event)
 
     def result_values(self) -> Tuple[str, str]:
         return self.type_combo.currentText(), self.comment_edit.toPlainText().strip()

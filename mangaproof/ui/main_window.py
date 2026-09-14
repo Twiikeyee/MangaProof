@@ -1492,13 +1492,17 @@ class MainWindow(QMainWindow):
         self.issue_panel.set_hint(self._annotation_hint(f"请在画布上拖拽红框：{type_name}"))
         self.viewer.setFocus()
 
-    def _on_issue_drawn(self, issue_type: str, x: float, y: float, w: float, h: float) -> None:
+    def _on_issue_drawn(
+        self, issue_type: str, x: float, y: float, w: float, h: float, auto: bool = False
+    ) -> None:
         dialog = IssueDialog(
             self.settings.issue_type_names(),
             self,
             default_type=issue_type,
             rect=(x, y, w, h),
             title=f"添加问题：{issue_type}",
+            type_keys=self.settings.issue_key_map(),
+            auto_pick=auto,
         )
         if dialog.exec() == IssueDialog.DialogCode.Accepted:
             self._commit_new_issue(
@@ -1506,10 +1510,22 @@ class MainWindow(QMainWindow):
             )
         self._after_issue_draw(rearm_type=issue_type)
 
-    def _on_rect_drawn(self, x: float, y: float, w: float, h: float) -> None:
-        """方式 B：先拖框 → 选择类型（需求 §37）。"""
+    def _on_rect_drawn(
+        self, x: float, y: float, w: float, h: float, auto: bool = False
+    ) -> None:
+        """方式 B：先拖框 → 选择类型（需求 §37）。
+
+        auto=True 表示由「自动框选」触发：对话框自动展开下拉栏、
+        问题类型快捷键直接选定并跳到批注框（手动拖框保持原逻辑）。
+        """
         self._compare.interrupt()
-        dialog = IssueDialog(self.settings.issue_type_names(), self, rect=(x, y, w, h))
+        dialog = IssueDialog(
+            self.settings.issue_type_names(),
+            self,
+            rect=(x, y, w, h),
+            type_keys=self.settings.issue_key_map(),
+            auto_pick=auto,
+        )
         if dialog.exec() == IssueDialog.DialogCode.Accepted:
             self._commit_new_issue(*dialog.result_values(), rect=(x, y, w, h))
         self._after_issue_draw(rearm_type=None)
@@ -1550,9 +1566,9 @@ class MainWindow(QMainWindow):
         pending = self.viewer.pending_type
         log.info("自动框选：%s %s → %s", self._current_file, info.id, rect)
         if pending is not None:
-            self._on_issue_drawn(pending, x, y, w, h)
+            self._on_issue_drawn(pending, x, y, w, h, auto=True)
         else:
-            self._on_rect_drawn(x, y, w, h)
+            self._on_rect_drawn(x, y, w, h, auto=True)
 
     def _annotation_hint(self, prefix: str) -> str:
         """拖框提示：说明标完是否自动退出 + 退出键。"""

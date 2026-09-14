@@ -2459,6 +2459,147 @@ def test_auto_box_current_layer() -> None:
     print("PASS test_auto_box_current_layer")
 
 
+def test_auto_box_type_picker_dialog() -> None:
+    """自动框选触发的类型对话框：自动展开下拉 → 快捷键直选 → 跳到批注框。
+
+    手动拖框触发的对话框保持原逻辑（自己点开下拉栏选择）。
+    """
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QDialog
+
+    from mangaproof.ui.dialogs import IssueDialog
+
+    types = ["居中错误", "字体选择错误", "漏字", "气泡处理错误", "其他"]
+    keys = {
+        "居中错误": "1", "字体选择错误": "2", "漏字": "P",
+        "气泡处理错误": "7", "其他": "O",
+    }
+
+    # 1) 自动模式 + 类型未定：自动展开下拉栏，焦点在下拉框
+    dlg = IssueDialog(types, None, type_keys=keys, auto_pick=True)
+    dlg.show()
+    app.processEvents()
+    app.processEvents()
+    assert dlg.type_combo.view().isVisible(), "应自动展开下拉栏"
+    assert dlg.focusWidget() is dlg.type_combo
+    # 按数字快捷键 → 选中该类型 + 收起下拉栏 + 自动跳到批注输入框
+    QTest.keyClick(dlg.type_combo.view(), Qt.Key.Key_7)
+    app.processEvents()
+    assert dlg.type_combo.currentText() == "气泡处理错误"
+    assert dlg.result_values()[0] == "气泡处理错误"
+    assert not dlg.type_combo.view().isVisible(), "选定后应收起下拉栏"
+    assert dlg.focusWidget() is dlg.comment_edit, "应自动跳转到文本输入框"
+    dlg.close()
+
+    # 字母快捷键同理（漏字 = P）
+    dlg2 = IssueDialog(types, None, type_keys=keys, auto_pick=True)
+    dlg2.show()
+    app.processEvents()
+    app.processEvents()
+    QTest.keyClick(dlg2.type_combo.view(), Qt.Key.Key_P)
+    app.processEvents()
+    assert dlg2.type_combo.currentText() == "漏字"
+    assert dlg2.focusWidget() is dlg2.comment_edit
+    dlg2.close()
+
+    # 2) 自动模式 + 类型已由问题类型快捷键确定：不展开下拉，直接停在批注框
+    dlg3 = IssueDialog(types, None, default_type="漏字", type_keys=keys, auto_pick=True)
+    dlg3.show()
+    app.processEvents()
+    app.processEvents()
+    assert not dlg3.type_combo.view().isVisible()
+    assert dlg3.type_combo.currentText() == "漏字"
+    assert dlg3.focusWidget() is dlg3.comment_edit
+    dlg3.close()
+
+    # 3) 手动拖框：保持原逻辑——不展开下拉栏，快捷键不代选类型
+    dlg4 = IssueDialog(types, None, type_keys=keys, auto_pick=False)
+    dlg4.show()
+    app.processEvents()
+    app.processEvents()
+    assert not dlg4.type_combo.view().isVisible()
+    before = dlg4.type_combo.currentText()
+    QTest.keyClick(dlg4, Qt.Key.Key_7)
+    app.processEvents()
+    assert dlg4.type_combo.currentText() == before
+    dlg4.close()
+
+    # 4) 端到端：自动框选走 auto_pick，手动拖框不走
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+
+        seen: dict = {}
+
+        def fake_exec(self):
+            seen["auto_pick"] = self._auto_pick
+            self.show()
+            app.processEvents()
+            app.processEvents()          # 让 singleShot(0) 的展开动作执行
+            seen["popup"] = self.type_combo.view().isVisible()
+            if seen["popup"]:
+                QTest.keyClick(self.type_combo.view(), Qt.Key.Key_7)
+                app.processEvents()
+            seen["type"] = self.type_combo.currentText()
+            seen["focus_comment"] = self.focusWidget() is self.comment_edit
+            self.close()
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(mw.IssueDialog, "exec", fake_exec), patch.object(
+            mw.IssueDialog, "result_values",
+            lambda self: (self.type_combo.currentText(), ""),
+        ):
+            # 红框模式 + 自动框选 → 展开下拉 + 快捷键选类型
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            QTest.keyClick(window, Qt.Key.Key_A)
+            app.processEvents()
+            assert seen == {
+                "auto_pick": True, "popup": True,
+                "type": "气泡处理错误", "focus_comment": True,
+            }, seen
+            assert window.task.issues[-1].type == "气泡处理错误"
+
+            # 问题类型快捷键 + 自动框选 → 类型已定，不展开下拉、直奔批注框
+            seen.clear()
+            QTest.keyClick(window, Qt.Key.Key_P)
+            app.processEvents()
+            QTest.keyClick(window, Qt.Key.Key_A)
+            app.processEvents()
+            assert seen == {
+                "auto_pick": True, "popup": False,
+                "type": "漏字", "focus_comment": True,
+            }, seen
+            assert window.task.issues[-1].type == "漏字"
+
+            # 手动拖框 → 原逻辑（auto_pick=False，不自动展开）
+            seen.clear()
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            window._on_rect_drawn(10, 10, 60, 60)
+            app.processEvents()
+            assert seen == {
+                "auto_pick": False, "popup": False,
+                "type": "居中错误", "focus_comment": False,
+            }, seen
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_auto_box_type_picker_dialog")
+
+
 def test_issue_panel_long_layer_name() -> None:
     """当前图层问题面板：超长图层名单行省略显示（不撑宽、不换行）。"""
     from mangaproof.ui.issue_panel import IssuePanel
