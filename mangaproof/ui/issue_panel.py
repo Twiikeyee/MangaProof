@@ -22,7 +22,13 @@ from PySide6.QtWidgets import (
 
 from mangaproof.review.issue import Issue
 from mangaproof.review.state import FAILED, PASSED, UNREVIEWED
-from mangaproof.ui.theme import COLOR_FAIL, COLOR_PASS, COLOR_UNREVIEWED, COLOR_WARN
+from mangaproof.ui.theme import (
+    COLOR_ACCENT,
+    COLOR_FAIL,
+    COLOR_PASS,
+    COLOR_UNREVIEWED,
+    COLOR_WARN,
+)
 
 
 class _ElidedLabel(QLabel):
@@ -53,6 +59,7 @@ class _ElidedLabel(QLabel):
 class IssuePanel(QWidget):
     status_change_requested = Signal(str)     # UNREVIEWED / PASSED / FAILED
     add_issue_requested = Signal()            # 进入拖框模式（方式 B）
+    continuous_toggled = Signal(bool)         # 「连续标注」开关
     custom_comment_requested = Signal()       # 自定义批注（Ctrl+Enter）
     edit_issue_requested = Signal(str)        # issue_id（双击编辑）
     delete_issue_requested = Signal(str)      # issue_id
@@ -99,10 +106,22 @@ class IssuePanel(QWidget):
         layout.addWidget(self.issue_list)
 
         add_row = QHBoxLayout()
-        self.add_btn = QPushButton("＋ 拖框添加问题")
+        self.add_btn = QPushButton("＋ 添加问题")
         self.add_btn.clicked.connect(self.add_issue_requested.emit)
-        add_row.addWidget(self.add_btn)
+        self.add_btn.setToolTip("在画布上拖框圈出问题位置，然后选择问题类型")
+        add_row.addWidget(self.add_btn, 3)
+
+        # 连续标注开关：勾选状态必须一眼可见（文字 + 高亮底色双重提示）
+        self.continuous_btn = QPushButton("连续标注")
+        self.continuous_btn.setCheckable(True)
+        self.continuous_btn.setStyleSheet(
+            f"QPushButton:checked {{ background-color: {COLOR_ACCENT};"
+            f" color: white; border-color: {COLOR_ACCENT}; font-weight: bold; }}"
+        )
+        self.continuous_btn.toggled.connect(self._on_continuous_toggled)
+        add_row.addWidget(self.continuous_btn, 2)
         layout.addLayout(add_row)
+        self._update_continuous_visual()
 
         self.custom_btn = QPushButton("✎ 自定义批注")
         self.custom_btn.clicked.connect(self.custom_comment_requested.emit)
@@ -141,6 +160,36 @@ class IssuePanel(QWidget):
     def set_hint(self, text: str) -> None:
         self.hint_label.setText(text)
 
+    # -- 连续标注 ----------------------------------------------------------
+
+    def continuous(self) -> bool:
+        return self.continuous_btn.isChecked()
+
+    def set_continuous(self, enabled: bool) -> None:
+        """设置连续标注开关（不触发 continuous_toggled，避免回环保存）。"""
+        if self.continuous_btn.isChecked() == bool(enabled):
+            self._update_continuous_visual()
+            return
+        self.continuous_btn.blockSignals(True)
+        self.continuous_btn.setChecked(bool(enabled))
+        self.continuous_btn.blockSignals(False)
+        self._update_continuous_visual()
+
+    def _on_continuous_toggled(self, checked: bool) -> None:
+        self._update_continuous_visual()
+        self.continuous_toggled.emit(bool(checked))
+
+    def _update_continuous_visual(self) -> None:
+        """勾选状态双重可见：按钮文字 + 高亮底色（:checked 样式）。"""
+        on = self.continuous_btn.isChecked()
+        self.continuous_btn.setText("✓ 连续标注" if on else "连续标注")
+        self.continuous_btn.setToolTip(
+            "连续标注：开启后标完一个问题仍保持拖框模式，可接着标下一个；\n"
+            "关闭（默认）时标完一个问题自动退出拖框模式。\n"
+            "对「红框模式」与问题类型快捷键（1~0、Q~O…）都生效。\n"
+            f"当前：{'开启' if on else '关闭'}"
+        )
+
     def set_shortcut_labels(self, bindings: dict, issue_type_tips: str = "") -> None:
         """动态显示当前绑定的快捷键（需求 §30）。
 
@@ -151,7 +200,7 @@ class IssuePanel(QWidget):
         self.pass_btn.setToolTip(f"标记当前图层通过　快捷键：{bindings.get('pass', 'Enter')}")
         self.fail_btn.setText(f"✗ 未通过 ({bindings.get('fail', '/')})")
         self.fail_btn.setToolTip(f"标记当前图层未通过　快捷键：{bindings.get('fail', '/')}")
-        self.add_btn.setText(f"＋ 拖框添加问题 ({bindings.get('redraw', 'R')})")
+        self.add_btn.setText(f"＋ 添加问题 ({bindings.get('redraw', 'R')})")
         self.custom_btn.setText(f"✎ 自定义批注 ({bindings.get('custom', 'Ctrl+Enter')})")
         if issue_type_tips:
             self.add_btn.setToolTip(issue_type_tips)

@@ -23,7 +23,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QColor, QKeyEvent, QWheelEvent
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -2161,6 +2161,177 @@ def test_shortcut_actions_take_effect() -> None:
         app.processEvents()
 
     print("PASS test_shortcut_actions_take_effect")
+
+
+def _drag_rect(viewer, wx0: float, wy0: float, wx1: float, wy1: float) -> None:
+    """在 Viewer 上模拟一次真实拖框（世界坐标 → 屏幕坐标 → 鼠标事件）。"""
+    p0 = viewer.camera.world_to_screen(wx0, wy0, viewer.width(), viewer.height())
+    p1 = viewer.camera.world_to_screen(wx1, wy1, viewer.width(), viewer.height())
+    for kind, pt in (
+        (QEvent.Type.MouseButtonPress, p0),
+        (QEvent.Type.MouseMove, p1),
+        (QEvent.Type.MouseButtonRelease, p1),
+    ):
+        ev = QMouseEvent(
+            kind, QPointF(*pt), QPointF(*pt),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(viewer, ev)
+        app.processEvents()
+
+
+def test_one_shot_annotation_and_continuous_toggle() -> None:
+    """默认"标完一个即退出"，右侧「连续标注」按钮可切回连续标注。
+
+    覆盖：红框模式（R / 按钮）与问题类型快捷键两条路径；按钮勾选状态可见；
+    开关持久化到 settings.json。
+    """
+    from PySide6.QtTest import QTest
+
+    from mangaproof.config.settings import (
+        DEFAULT_CONTINUOUS_ANNOTATION,
+        Settings,
+    )
+    from mangaproof.ui.issue_panel import IssuePanel
+
+    # 1) 默认值与按钮外观：可勾选、默认关、状态一眼可见（文字 + 高亮样式）
+    assert DEFAULT_CONTINUOUS_ANNOTATION is False
+    assert Settings().continuous_annotation is False
+    panel = IssuePanel()
+    panel.resize(300, 400)
+    panel.show()
+    app.processEvents()
+    assert panel.continuous_btn.isCheckable() is True
+    assert panel.continuous() is False
+    assert panel.continuous_btn.text() == "连续标注"
+    assert "关闭" in panel.continuous_btn.toolTip()
+    # 与「添加问题」同一行、位于其右侧（左按钮 / 右开关）
+    assert panel.continuous_btn.parentWidget() is panel.add_btn.parentWidget()
+    assert panel.add_btn.geometry().right() <= panel.continuous_btn.geometry().left()
+    assert "添加问题" in panel.add_btn.text()
+    panel.set_continuous(True)
+    assert panel.continuous() is True
+    assert panel.continuous_btn.text().startswith("✓")
+    assert "开启" in panel.continuous_btn.toolTip()
+    assert ":checked" in panel.continuous_btn.styleSheet(), "勾选态需要高亮样式"
+    panel.close()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        sm = SettingsManager(root / "settings.json")
+        window = MainWindow(sm)
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+        viewer = window.viewer
+        assert viewer.redraw_mode is False
+        assert window.issue_panel.continuous() is False
+
+        accepted = patch.object(
+            mw.IssueDialog, "exec", return_value=mw.IssueDialog.DialogCode.Accepted
+        )
+        values = patch.object(
+            mw.IssueDialog, "result_values", return_value=("漏字", "")
+        )
+        with accepted, values:
+            # 2) 红框模式（R 快捷键）：标完一个自动退出
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            assert viewer.redraw_mode is True
+            assert "自动退出" in window.issue_panel.hint_label.text()
+            _drag_rect(viewer, 50, 50, 150, 110)
+            assert len(window.task.issues) == 1
+            assert viewer.redraw_mode is False, "默认标完一个应自动退出"
+            assert window.issue_panel.hint_label.text() == ""
+
+            # 3) 「添加问题」按钮：同样一标一退
+            window.issue_panel.add_btn.click()
+            app.processEvents()
+            assert viewer.redraw_mode is True
+            _drag_rect(viewer, 60, 60, 160, 120)
+            assert len(window.task.issues) == 2
+            assert viewer.redraw_mode is False
+
+            # 4) 问题类型快捷键：一标一退（类型不再保持）
+            QTest.keyClick(window, Qt.Key.Key_P)      # 漏字
+            app.processEvents()
+            assert viewer.pending_type == "漏字"
+            assert "自动退出" in window.issue_panel.hint_label.text()
+            _drag_rect(viewer, 70, 70, 170, 130)
+            assert len(window.task.issues) == 3
+            assert viewer.pending_type is None
+            assert viewer.redraw_mode is False
+
+            # 5) 打开「连续标注」：两条路径都保持待标状态
+            window.issue_panel.continuous_btn.click()
+            app.processEvents()
+            assert window.issue_panel.continuous() is True
+            assert window.settings.continuous_annotation is True
+
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            assert "连续标注中" in window.issue_panel.hint_label.text()
+            _drag_rect(viewer, 80, 80, 180, 140)
+            assert len(window.task.issues) == 4
+            assert viewer.redraw_mode is True, "连续标注应保持红框模式"
+            _drag_rect(viewer, 90, 90, 190, 150)
+            assert len(window.task.issues) == 5
+
+            QTest.keyClick(window, Qt.Key.Key_Escape)
+            app.processEvents()
+            assert viewer.redraw_mode is False
+
+            QTest.keyClick(window, Qt.Key.Key_P)      # 漏字
+            app.processEvents()
+            assert viewer.pending_type == "漏字"
+            _drag_rect(viewer, 100, 100, 200, 160)
+            assert len(window.task.issues) == 6
+            assert viewer.pending_type == "漏字", "连续标注应保持同一类型"
+            _drag_rect(viewer, 110, 110, 210, 170)
+            assert len(window.task.issues) == 7
+            assert window.task.issues[6].type == "漏字"
+            QTest.keyClick(window, Qt.Key.Key_Escape)
+            app.processEvents()
+            assert viewer.pending_type is None
+
+            # 6) 关掉开关：恢复一标一退
+            window.issue_panel.continuous_btn.click()
+            app.processEvents()
+            assert window.settings.continuous_annotation is False
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            _drag_rect(viewer, 120, 120, 220, 180)
+            assert len(window.task.issues) == 8
+            assert viewer.redraw_mode is False
+
+        # 7) 持久化：开关状态写入 settings.json，重启后按钮直接是勾选态
+        window.issue_panel.continuous_btn.click()
+        app.processEvents()
+        sm.save()
+        assert (
+            SettingsManager(root / "settings.json").settings.continuous_annotation is True
+        )
+        reborn = MainWindow(SettingsManager(root / "settings.json"))
+        app.processEvents()
+        assert reborn.settings.continuous_annotation is True
+        assert reborn.issue_panel.continuous() is True, "启动时应恢复勾选态"
+        assert reborn.issue_panel.continuous_btn.text().startswith("✓")
+        reborn.close()
+        app.processEvents()
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_one_shot_annotation_and_continuous_toggle")
 
 
 def test_issue_panel_long_layer_name() -> None:

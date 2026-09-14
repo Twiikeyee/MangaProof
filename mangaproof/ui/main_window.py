@@ -221,9 +221,11 @@ class MainWindow(QMainWindow):
         self.issue_panel = IssuePanel()
         self.issue_panel.status_change_requested.connect(self._on_status_change_requested)
         self.issue_panel.add_issue_requested.connect(self._on_add_issue_requested)
+        self.issue_panel.continuous_toggled.connect(self._on_continuous_toggled)
         self.issue_panel.custom_comment_requested.connect(self._on_custom_comment)
         self.issue_panel.edit_issue_requested.connect(self._on_edit_issue)
         self.issue_panel.delete_issue_requested.connect(self._on_delete_issue)
+        self.issue_panel.set_continuous(self.settings.continuous_annotation)
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -1481,10 +1483,7 @@ class MainWindow(QMainWindow):
             return
         self._compare.interrupt()   # 需求 §40：停止对比后创建
         self.viewer.set_pending_type(type_name)
-        self.issue_panel.set_hint(
-            f"请在画布上拖拽红框：{type_name}"
-            f"（{self._display_key(self.settings.binding('cancel_operation') or 'Esc')} 取消）"
-        )
+        self.issue_panel.set_hint(self._annotation_hint(f"请在画布上拖拽红框：{type_name}"))
         self.viewer.setFocus()
 
     def _on_issue_drawn(self, issue_type: str, x: float, y: float, w: float, h: float) -> None:
@@ -1499,7 +1498,7 @@ class MainWindow(QMainWindow):
             self._commit_new_issue(
                 *dialog.result_values(), rect=(x, y, w, h)
             )
-        self.issue_panel.set_hint("")
+        self._after_issue_draw(rearm_type=issue_type)
 
     def _on_rect_drawn(self, x: float, y: float, w: float, h: float) -> None:
         """方式 B：先拖框 → 选择类型（需求 §37）。"""
@@ -1507,6 +1506,56 @@ class MainWindow(QMainWindow):
         dialog = IssueDialog(self.settings.issue_type_names(), self, rect=(x, y, w, h))
         if dialog.exec() == IssueDialog.DialogCode.Accepted:
             self._commit_new_issue(*dialog.result_values(), rect=(x, y, w, h))
+        self._after_issue_draw(rearm_type=None)
+
+    def _annotation_hint(self, prefix: str) -> str:
+        """拖框提示：说明标完是否自动退出 + 退出键。"""
+        tail = (
+            "连续标注中，可接着标下一个"
+            if self.settings.continuous_annotation
+            else "标完一个自动退出"
+        )
+        cancel = self._display_key(self.settings.binding("cancel_operation") or "Esc")
+        return f"{prefix}（{tail}；{cancel} 取消）"
+
+    def _after_issue_draw(self, rearm_type: Optional[str]) -> None:
+        """一次拖框标注收尾（默认标完即退出，见「连续标注」开关）。
+
+        - 连续标注关（默认）：清掉拖框/待选类型模式，回到普通浏览状态；
+        - 连续标注开：保持拖框模式；类型快捷键路径则重新武装同一类型，
+          便于连续标注同类问题。
+        """
+        self.issue_panel.set_hint("")
+        if not self.settings.continuous_annotation:
+            self.viewer.set_pending_type(None)
+            self.viewer.set_redraw_mode(False)
+            return
+        if rearm_type is not None:
+            self.viewer.set_pending_type(rearm_type)
+            self.issue_panel.set_hint(
+                self._annotation_hint(f"请在画布上拖拽红框：{rearm_type}")
+            )
+        else:
+            self.viewer.set_redraw_mode(True)
+            self.issue_panel.set_hint(self._annotation_hint("拖框模式：在画布上拖拽红框"))
+
+    def _on_continuous_toggled(self, enabled: bool) -> None:
+        """「连续标注」开关：立即生效并持久化。"""
+        self.settings.continuous_annotation = bool(enabled)
+        self.settings_manager.save()
+        self.statusBar().showMessage(
+            "连续标注：开启（标完一个问题仍保持拖框模式）"
+            if enabled
+            else "连续标注：关闭（标完一个问题自动退出拖框模式）",
+            4000,
+        )
+        # 提示文案随开关刷新（正在拖框时立即反映新语义）
+        if self.viewer.any_issue_mode():
+            if self.viewer.pending_type is not None:
+                prefix = f"请在画布上拖拽红框：{self.viewer.pending_type}"
+            else:
+                prefix = "拖框模式：在画布上拖拽红框"
+            self.issue_panel.set_hint(self._annotation_hint(prefix))
 
     def _on_custom_comment(self) -> None:
         """自定义批注（需求 §36），无红框。"""
@@ -1714,6 +1763,10 @@ class MainWindow(QMainWindow):
             return
         self._compare.interrupt()
         self.viewer.set_redraw_mode(not self.viewer.redraw_mode)
+        if self.viewer.redraw_mode:
+            self.issue_panel.set_hint(
+                self._annotation_hint("拖框模式：在画布上拖拽红框")
+            )
 
     def _on_redraw_mode_toggled(self, checked: bool) -> None:
         if checked != self.viewer.redraw_mode:
@@ -1724,10 +1777,7 @@ class MainWindow(QMainWindow):
             return
         self._compare.interrupt()
         self.viewer.set_redraw_mode(True)
-        self.issue_panel.set_hint(
-            f"拖框模式：在画布上拖拽红框"
-            f"（{self._display_key(self.settings.binding('cancel_operation') or 'Esc')} 取消）"
-        )
+        self.issue_panel.set_hint(self._annotation_hint("拖框模式：在画布上拖拽红框"))
         self.viewer.setFocus()
 
     def _on_pending_changed(self) -> None:
