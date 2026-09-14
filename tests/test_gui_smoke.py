@@ -23,7 +23,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QColor, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QMessageBox,
@@ -35,10 +35,11 @@ from PySide6.QtWidgets import (
 
 from mangaproof.config.settings import SettingsManager
 from mangaproof.review import persistence
-from mangaproof.review.state import FAILED, PASSED, UNREVIEWED
+from mangaproof.review.state import FAILED, PARTIAL, PASSED, UNREVIEWED, TaskState
 from mangaproof.ui.dialogs import IssueDialog
 from mangaproof.ui.main_window import MainWindow
 from mangaproof.ui.task_loader import TaskLoadWorker
+from mangaproof.ui.theme import COLOR_FAIL, COLOR_PASS, COLOR_UNREVIEWED, COLOR_WARN
 
 DATA_DIR = Path(__file__).parent / "data" / "chapter01"
 
@@ -217,6 +218,98 @@ def test_layer_panel_layout_and_elide() -> None:
         app.processEvents()
 
     print("PASS test_layer_panel_layout_and_elide")
+
+
+def test_file_panel_status_icons() -> None:
+    """回归：PSD 文件列表状态图标必须与 TaskState.file_status() 取值域对齐。
+
+    历史缺陷：面板图标表按 "done" 取键，而 file_status() 全通过时返回
+    "passed"，导致全部通过的 PSD 落到未监制兜底样式（灰 ○），
+    而"有未通过"因键名恰好都是 "failed" 而正常显示红 ✗。
+    """
+    from mangaproof.ui.file_panel import STATUS_STYLES
+
+    # 1) 契约：状态取值域必须全部被图标表覆盖，且不能有失效键
+    probe = TaskState()
+    probed = {
+        probe.file_status("empty.psd", []),          # 无图层
+        probe.file_status("none.psd", ["a", "b"]),   # 未监制
+        probe.file_status("half.psd", ["a", "b"]),
+        probe.file_status("pass.psd", ["a", "b"]),
+        probe.file_status("fail.psd", ["a", "b"]),
+    }
+    probe.set_status("half.psd", "a", PASSED)        # 部分监制
+    for lid in ("a", "b"):
+        probe.set_status("pass.psd", lid, PASSED)    # 全部通过
+        probe.set_status("fail.psd", lid, FAILED)    # 全部未通过
+    probed |= {
+        probe.file_status("half.psd", ["a", "b"]),
+        probe.file_status("pass.psd", ["a", "b"]),
+        probe.file_status("fail.psd", ["a", "b"]),
+    }
+    assert probed == {UNREVIEWED, PASSED, FAILED, PARTIAL}, probed
+    assert probed <= set(STATUS_STYLES), set(probed) - set(STATUS_STYLES)
+
+    # 2) 端到端：真实窗口 → 文件列表条目文本与前景色
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+
+        rels = [r.relative_path for r in window.task.files]
+        assert len(rels) >= 3, rels
+        all_pass, all_fail, partial = rels[0], rels[1], rels[2]
+        assert all(len(window._layer_ids_by_file[r]) >= 2 for r in rels), (
+            window._layer_ids_by_file
+        )
+
+        def snapshot() -> dict:
+            lw = window.file_panel.list_widget
+            assert lw.count() == len(rels)
+            return {
+                lw.item(i).data(Qt.ItemDataRole.UserRole): (
+                    lw.item(i).text(), lw.item(i).foreground().color().name()
+                )
+                for i in range(lw.count())
+            }
+
+        # 全部未监制：○ 灰
+        for rel, (text, color) in snapshot().items():
+            assert text.startswith("○ "), (rel, text)
+            assert color == QColor(COLOR_UNREVIEWED).name(), (rel, color)
+
+        for lid in window._layer_ids_by_file[all_pass]:
+            window.task.set_status(all_pass, lid, PASSED)
+        for lid in window._layer_ids_by_file[all_fail]:
+            window.task.set_status(all_fail, lid, FAILED)
+        # 部分监制：只通过第一层，其余保持未监制
+        window.task.set_status(partial, window._layer_ids_by_file[partial][0], PASSED)
+        window._refresh_file_panel()
+        app.processEvents()
+
+        shown = snapshot()
+        text, color = shown[all_pass]
+        assert text.startswith("✓ "), (text, color)
+        assert color == QColor(COLOR_PASS).name(), (text, color)
+        text, color = shown[all_fail]
+        assert text.startswith("✗ "), (text, color)
+        assert color == QColor(COLOR_FAIL).name(), (text, color)
+        text, color = shown[partial]
+        assert text.startswith("● "), (text, color)
+        assert color == QColor(COLOR_WARN).name(), (text, color)
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_file_panel_status_icons")
 
 
 def test_task_loader_progress() -> None:

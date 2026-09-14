@@ -15,6 +15,7 @@ from mangaproof.review.issue import Issue
 UNREVIEWED = "unreviewed"
 PASSED = "passed"
 FAILED = "failed"
+PARTIAL = "partial"   # 仅文件级：部分图层已监制（图层级不会出现）
 
 LAYER_STATUSES = (UNREVIEWED, PASSED, FAILED)
 
@@ -22,12 +23,14 @@ STATUS_LABELS = {
     UNREVIEWED: "未监制",
     PASSED: "已通过",
     FAILED: "未通过",
+    PARTIAL: "部分监制",
 }
 
 STATUS_ICONS = {
     UNREVIEWED: "○",
     PASSED: "✓",
     FAILED: "✗",
+    PARTIAL: "●",
 }
 
 
@@ -180,7 +183,12 @@ class TaskState:
         }
 
     def file_status(self, file_rel: str, layer_ids) -> str:
-        """PSD 级状态：完成 / 部分 / 未开始 / 有问题。"""
+        """PSD 级状态：PASSED / FAILED / PARTIAL / UNREVIEWED。
+
+        返回值为 state 模块的状态常量（不是图层级 LAYER_STATUSES 的子集：
+        额外可能返回 PARTIAL），调用方必须按下表映射图标/颜色，
+        不要自行硬编码字符串。
+        """
         st = self.count_file(file_rel, layer_ids)
         if st["total"] == 0:
             return UNREVIEWED
@@ -189,7 +197,7 @@ class TaskState:
         if st["unreviewed"] == 0:
             return PASSED
         if st["reviewed"] > 0:
-            return "partial"
+            return PARTIAL
         return UNREVIEWED
 
     # -- 序列化（需求 §8、§10） -------------------------------------------

@@ -14,7 +14,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mangaproof.review.state import (
+    FAILED,
+    PARTIAL,
+    PASSED,
+    STATUS_ICONS,
+    UNREVIEWED,
+)
 from mangaproof.ui.theme import COLOR_FAIL, COLOR_PASS, COLOR_UNREVIEWED, COLOR_WARN
+
+# 文件级状态 → （颜色, 图标）：键必须是 TaskState.file_status() 的返回值，
+# 即 state 模块的状态常量，避免字符串拼写分叉导致落到未监制兜底样式。
+STATUS_STYLES = {
+    UNREVIEWED: (COLOR_UNREVIEWED, STATUS_ICONS[UNREVIEWED]),
+    PASSED: (COLOR_PASS, STATUS_ICONS[PASSED]),
+    FAILED: (COLOR_FAIL, STATUS_ICONS[FAILED]),
+    PARTIAL: (COLOR_WARN, STATUS_ICONS[PARTIAL]),
+}
 
 
 class FilePanel(QWidget):
@@ -50,18 +66,18 @@ class FilePanel(QWidget):
             self.list_widget.addItem(item)
 
     def set_file_statuses(self, statuses: Dict[str, str]) -> None:
-        """statuses: {rel_path: "done"|"partial"|"failed"|"unreviewed"}"""
+        """statuses: {rel_path: TaskState.file_status() 返回值}。
+
+        取值域：PASSED("passed") / FAILED("failed") / PARTIAL("partial") /
+        UNREVIEWED("unreviewed")，未知值按未监制样式兜底。
+        """
         self._statuses = dict(statuses)
         for row in range(self.list_widget.count()):
             item = self.list_widget.item(row)
             rel = item.data(Qt.ItemDataRole.UserRole)
-            status = self._statuses.get(rel, "unreviewed")
-            color, icon = {
-                "done": (COLOR_PASS, "✓ "),
-                "failed": (COLOR_FAIL, "✗ "),
-                "partial": (COLOR_WARN, "● "),
-            }.get(status, (COLOR_UNREVIEWED, "○ "))
-            item.setText(icon + rel)
+            status = self._statuses.get(rel, UNREVIEWED)
+            color, icon = STATUS_STYLES.get(status, STATUS_STYLES[UNREVIEWED])
+            item.setText(f"{icon} {rel}")
             item.setForeground(QColor(color))
 
     def set_current_row(self, row: int) -> None:
