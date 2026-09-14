@@ -1511,6 +1511,184 @@ def test_wheel_modes() -> None:
     print("PASS test_wheel_modes")
 
 
+def test_layer_outline_geometry_and_setting() -> None:
+    """当前图层蓝色虚线边界框：几何按世界坐标 LTRB 映射 + 可关闭。
+
+    历史缺陷：layer_visual_bounds() 返回 (left, top, right, bottom)，
+    Viewer 却按 (x, y, w, h) 解包，右下角被画到 (left+right, top+bottom)——
+    左上角正确、右下角严重外扩（bg 层因 left=top=0 恰好无误差而掩盖了问题）。
+    """
+    from mangaproof.camera.camera import Camera
+    from mangaproof.camera.centering import layer_visual_bounds
+    from mangaproof.config.settings import DEFAULT_SHOW_LAYER_OUTLINE, Settings
+    from mangaproof.ui.settings_dialog import SettingsDialog
+    from mangaproof.ui.viewer_widget import outline_screen_rect
+
+    # 1) 纯几何：LTRB 的两个角点分别映射（zoom=2, center=(200,300), 视口 800x600）
+    cam = Camera(center_x=200.0, center_y=300.0, zoom=2.0)
+    rect = outline_screen_rect(cam, (100, 200, 300, 400), 800, 600)
+    assert rect is not None
+    x0, y0 = cam.world_to_screen(100, 200, 800, 600)
+    x1, y1 = cam.world_to_screen(300, 400, 800, 600)
+    assert (rect.left(), rect.top()) == (x0, y0)
+    assert (rect.right(), rect.bottom()) == (x1, y1)
+    assert (rect.width(), rect.height()) == (400.0, 400.0)   # (300-100)*2
+    # 旧误解（x,y,w,h）会得到 (x0, y0, 300*2, 400*2)——右下角恰好翻倍
+    assert rect.right() != x0 + 300 * 2 and rect.bottom() != y0 + 400 * 2
+    # 退化输入不绘制
+    assert outline_screen_rect(cam, None, 800, 600) is None
+    assert outline_screen_rect(cam, (100, 200, 100, 400), 800, 600) is None
+    assert outline_screen_rect(cam, (100, 200, 300, 200), 800, 600) is None
+
+    # 2) 设置项：默认显示，对话框读写与复位
+    s = Settings()
+    assert s.show_layer_outline is DEFAULT_SHOW_LAYER_OUTLINE is True
+    dlg = SettingsDialog(s)
+    assert dlg.layer_outline_check.isChecked() is True
+    dlg.layer_outline_check.setChecked(False)
+    dlg.apply_to(s)
+    assert s.show_layer_outline is False
+    dlg._reset_defaults()
+    dlg.apply_to(s)
+    assert s.show_layer_outline is DEFAULT_SHOW_LAYER_OUTLINE
+
+    # 3) 端到端：真实窗口 → 虚线框随图层/设置更新
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        sm = SettingsManager(root / "settings.json")
+        window = MainWindow(sm)
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        _wait_for_file(window, "001.psd")
+        app.processEvents()
+
+        # 取一个 left/top 明显不为 0 的图层（对话气泡）
+        doc = window.current_doc
+        index = next(
+            i for i, info in enumerate(doc.layers)
+            if (vb := layer_visual_bounds(info)) and vb[0] > 0 and vb[1] > 0
+        )
+        info = doc.layers[index]
+        window._select_layer_internal(index)
+        app.processEvents()
+
+        expected = layer_visual_bounds(info)
+        assert window.viewer.layer_outline == expected
+        # 世界坐标下右下角必须是 right/bottom，而不是 left+right/top+bottom
+        left, top, right, bottom = expected
+        assert window.viewer.layer_outline[2] == right < left + right
+        assert window.viewer.layer_outline[3] == bottom < top + bottom
+
+        # 绘制矩形：与视觉边界两端点对齐，且不超出画布
+        vw, vh = window.viewer.width(), window.viewer.height()
+        drawn = outline_screen_rect(window.viewer.camera, expected, vw, vh)
+        assert drawn is not None
+        cw, ch = doc.size
+        canvas = outline_screen_rect(window.viewer.camera, (0, 0, cw, ch), vw, vh)
+        assert canvas is not None
+        assert drawn.width() <= canvas.width() + 1
+        assert drawn.height() <= canvas.height() + 1
+
+        # 关闭开关：立即不再绘制（定位行为不受影响）
+        window.settings.show_layer_outline = False
+        window._refresh_viewer_outline()
+        assert window.viewer.layer_outline is None
+        assert window.viewer.camera.zoom > 0
+        # 切图层仍保持关闭
+        window._select_layer_internal((index + 1) % len(doc.layers))
+        assert window.viewer.layer_outline is None
+
+        # 重新打开：当前图层虚线框恢复
+        window.settings.show_layer_outline = True
+        window._refresh_viewer_outline()
+        current = doc.layers[window._current_index]
+        assert window.viewer.layer_outline == layer_visual_bounds(current)
+
+        # 设置持久化
+        sm.save()
+        assert (
+            SettingsManager(root / "settings.json").settings.show_layer_outline is True
+        )
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_layer_outline_geometry_and_setting")
+
+
+def test_layer_outline_paint_path() -> None:
+    """真实 paintEvent 像素校验：蓝虚线框画在视觉边界上，右下角不外扩。
+
+    历史缺陷在绘制环节（把 LTRB 当 x,y,w,h），只看 _layer_outline 数据
+    是抓不到的：这里把纯灰画布渲染出来，用蓝色像素的包围盒反推实际画的框。
+    """
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    from mangaproof.ui.viewer_widget import ViewerWidget
+
+    class _FakeDoc:
+        """仅够 Viewer 绘制用：纯灰 merged 画布，无 bg。"""
+
+        def __init__(self, w: int, h: int):
+            self._w, self._h = w, h
+            self._arr = np.full((h, w, 4), 128, dtype=np.uint8)
+
+        def merged_np(self):
+            return self._arr
+
+        def bg_image(self):
+            return None
+
+    viewer = ViewerWidget()
+    viewer.set_document(_FakeDoc(400, 600))
+    viewer.resize(800, 600)
+    # 视口 800x600、center=(200,300)、zoom=1 → 世界坐标 1:1 映射到屏幕
+    viewer.camera.center_on(200.0, 300.0)
+    viewer.camera.zoom = 1.0
+    viewer.set_layer_outline((100, 200, 300, 400))
+    app.processEvents()
+
+    img: QImage = viewer.grab().toImage().convertToFormat(
+        QImage.Format.Format_RGB32
+    )
+    assert (img.width(), img.height()) == (800, 600), (img.width(), img.height())
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+    buf = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, : img.width(), :]
+    r, g, b = buf[:, :, 2], buf[:, :, 1], buf[:, :, 0]   # RGB32 内存序为 BGRA
+    blue = (b > r + 40) & (b > 120)
+    assert blue.any(), "未画出蓝色虚线框"
+    ys, xs = np.nonzero(blue)
+    bbox = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+
+    def near(a, b_, tol=2):
+        return abs(a - b_) <= tol
+
+    # 期望：世界 (100,200)-(300,400) → 屏幕 (300,200)-(500,400)
+    assert near(bbox[0], 300) and near(bbox[1], 200), bbox
+    assert near(bbox[2], 500) and near(bbox[3], 400), bbox
+    # 旧误解会画到 (300,200)-(600,600)：右下角必须明显更小
+    assert bbox[2] < 550 and bbox[3] < 450, bbox
+
+    # 关闭显示（outline=None）后不再有蓝色像素
+    viewer.set_layer_outline(None)
+    app.processEvents()
+    img = viewer.grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+    buf = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, : img.width(), :]
+    r, g, b = buf[:, :, 2], buf[:, :, 1], buf[:, :, 0]
+    assert not ((b > r + 40) & (b > 120)).any(), "关闭后仍有蓝色虚线框"
+
+    print("PASS test_layer_outline_paint_path")
+
+
 def test_issue_panel_long_layer_name() -> None:
     """当前图层问题面板：超长图层名单行省略显示（不撑宽、不换行）。"""
     from mangaproof.ui.issue_panel import IssuePanel

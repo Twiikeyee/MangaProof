@@ -867,7 +867,7 @@ class MainWindow(QMainWindow):
         if not layer_ids:
             self._current_index = -1
             self.viewer.set_issues(self._viewer_issues())
-            self.viewer.set_layer_outline(None)
+            self._refresh_viewer_outline()
             return
 
         index = self._choose_layer_index(rel, restore)
@@ -1158,6 +1158,7 @@ class MainWindow(QMainWindow):
         doc = self.current_doc
         if doc is None or not (0 <= index < len(doc.layers)):
             self._current_index = -1
+            self._refresh_viewer_outline()   # 清除上一个图层残留的虚线框
             return
         self._current_index = index
         info = doc.layers[index]
@@ -1166,7 +1167,7 @@ class MainWindow(QMainWindow):
             self.task.current_layer = info.id
 
         self.viewer.set_issues(self._viewer_issues())
-        self.viewer.set_layer_outline(layer_visual_bounds(info))
+        self._refresh_viewer_outline()
         # 自动定位 + 自动缩放（需求 §17、§20）
         self.viewer.recenter_on_layer(info, self.settings.layer_display_ratio)
         self._refresh_issue_panel()
@@ -1468,6 +1469,23 @@ class MainWindow(QMainWindow):
         显示范围跟随设置（见 _viewer_issues）：默认显示当前页全部问题。
         """
         self.viewer.set_issues(self._viewer_issues())
+
+    def _refresh_viewer_outline(self) -> None:
+        """刷新当前图层视觉边界虚线框（蓝框，设置中可关闭）。
+
+        世界坐标 (left, top, right, bottom) 由 camera.centering 统一换算；
+        关闭设置、无文档、无当前图层或图层无有效像素时一律传 None（不绘制）。
+        """
+        doc = self.current_doc
+        info = (
+            doc.layers[self._current_index]
+            if doc is not None and 0 <= self._current_index < len(doc.layers)
+            else None
+        )
+        outline = None
+        if info is not None and self.settings.show_layer_outline:
+            outline = layer_visual_bounds(info)
+        self.viewer.set_layer_outline(outline)
 
     def _viewer_issues(self) -> List[Issue]:
         """Veiwer 当前应显示的问题集合。
@@ -1880,6 +1898,7 @@ class MainWindow(QMainWindow):
             self._apply_memory_policy()   # 内存策略档位热应用
             self.viewer.set_wheel_mode(self.settings.wheel_mode)
             self._refresh_viewer_issues()  # 红框显示范围（整页/仅当前图层）热应用
+            self._refresh_viewer_outline()  # 蓝色虚线边界框开关热应用
             idx = self.ratio_combo.findData(self.settings.layer_display_ratio)
             self.ratio_combo.setCurrentIndex(max(0, idx))
             self.recenter_current_layer()

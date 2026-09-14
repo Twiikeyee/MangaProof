@@ -88,6 +88,10 @@ DEFAULT_WHEEL_MODE = "pan"      # "pan" 上下移动 / "zoom" 缩放
 ISSUE_SCOPES: tuple[str, ...] = ("page", "layer")
 DEFAULT_ISSUE_SCOPE = "page"
 
+# 当前图层视觉边界虚线框（蓝色）：定位辅助 Overlay，默认显示。
+# 关闭后画布上不再绘制该框（定位、缩放行为完全不受影响）。
+DEFAULT_SHOW_LAYER_OUTLINE = True
+
 # 返修单页面图像格式：
 # - "png"（默认）：无损，体积大；
 # - "jpeg"：有损压缩，体积显著变小（漫画页面常见网点/渐变），质量可调。
@@ -113,6 +117,8 @@ class Settings:
     compare_speed_hz: int = DEFAULT_COMPARE_SPEED_HZ
     wheel_mode: str = DEFAULT_WHEEL_MODE       # "pan" / "zoom"
     issue_scope: str = DEFAULT_ISSUE_SCOPE     # "page"（当前页全部）/ "layer"（仅当前图层）
+    # 当前图层视觉边界虚线框（蓝色）是否显示（默认显示）
+    show_layer_outline: bool = DEFAULT_SHOW_LAYER_OUTLINE
     recursive_scan: bool = False
     generate_pdf_on_complete: bool = True
     report_name: str = ""
@@ -197,6 +203,10 @@ class SettingsManager:
         scope = raw.get("issue_scope", DEFAULT_ISSUE_SCOPE)
         s.issue_scope = scope if scope in ISSUE_SCOPES else DEFAULT_ISSUE_SCOPE
 
+        s.show_layer_outline = bool(
+            raw.get("show_layer_outline", DEFAULT_SHOW_LAYER_OUTLINE)
+        )
+
         s.recursive_scan = bool(raw.get("recursive_scan", False))
         s.generate_pdf_on_complete = bool(
             raw.get("generate_pdf_on_complete", True)
@@ -262,6 +272,7 @@ class SettingsManager:
                     "compare_speed_hz": self.settings.compare_speed_hz,
                     "wheel_mode": self.settings.wheel_mode,
                     "issue_scope": self.settings.issue_scope,
+                    "show_layer_outline": self.settings.show_layer_outline,
                     "recursive_scan": self.settings.recursive_scan,
                     "generate_pdf_on_complete": self.settings.generate_pdf_on_complete,
                     "report_name": self.settings.report_name,

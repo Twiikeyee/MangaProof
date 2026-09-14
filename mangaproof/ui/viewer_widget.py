@@ -65,6 +65,22 @@ def numpy_to_qimage(arr) -> Optional[QImage]:
     return qimg.copy()
 
 
+def outline_screen_rect(camera, outline, vw: int, vh: int) -> Optional[QRectF]:
+    """图层视觉边界（世界坐标 LTRB）→ 屏幕矩形；退化/无效返回 None。
+
+    单独抽出便于测试：世界坐标 (left, top, right, bottom) 必须分别映射
+    两个角点后再求宽高，不能把 right/bottom 直接当宽高用。
+    """
+    if outline is None:
+        return None
+    left, top, right, bottom = (float(v) for v in outline)
+    if right <= left or bottom <= top:
+        return None
+    x0, y0 = camera.world_to_screen(left, top, vw, vh)
+    x1, y1 = camera.world_to_screen(right, bottom, vw, vh)
+    return QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized()
+
+
 class ViewerWidget(QWidget):
     # 方式 B：先拖出红框（世界坐标 x, y, w, h）
     rect_drawn = Signal(float, float, float, float)
@@ -128,8 +144,21 @@ class ViewerWidget(QWidget):
         self.update()
 
     def set_layer_outline(self, rect: Optional[Tuple[float, float, float, float]]) -> None:
+        """设置当前图层视觉边界虚线框。
+
+        rect 为世界坐标 (left, top, right, bottom)——与
+        camera.centering.layer_visual_bounds() 的返回、LayerInfo.bounds
+        同约定（历史缺陷：本方法收到的 LTRB 曾被 paintEvent 当作
+        (x, y, w, h) 解包，导致左上角正确、右下角画到 left+right/top+bottom）。
+        None 表示不显示。
+        """
         self._layer_outline = rect
         self.update()
+
+    @property
+    def layer_outline(self) -> Optional[Tuple[float, float, float, float]]:
+        """当前虚线框（世界坐标 LTRB），仅供测试/调试。"""
+        return self._layer_outline
 
     # -- 问题创建模式 -----------------------------------------------------
 
@@ -271,15 +300,14 @@ class ViewerWidget(QWidget):
                 QRectF(0, 0, w, h),
             )
 
-        # 当前图层视觉边界虚线框（便于识别当前监制对象）
-        if self._layer_outline is not None:
-            x, y, w, h = self._layer_outline
-            sx0, sy0 = self._camera.world_to_screen(x, y, vw, vh)
-            sx1, sy1 = self._camera.world_to_screen(x + w, y + h, vw, vh)
+        # 当前图层视觉边界虚线框（便于识别当前监制对象，可在设置中关闭）
+        rect = outline_screen_rect(self._camera, self._layer_outline, vw, vh)
+        if rect is not None:
             pen = QPen(QColor(COLOR_ACCENT), 1.0, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)   # 屏幕宽度恒定，放大看细节时线不会变粗
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(sx0, sy0, sx1 - sx0, sy1 - sy0))
+            painter.drawRect(rect)
 
         # 问题红框 Overlay（需求 §31、§32、§39：对比期间保持存在）
         for issue in self._issues:

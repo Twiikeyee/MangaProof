@@ -43,6 +43,7 @@ from mangaproof.config.settings import (
     DEFAULT_ISSUE_SCOPE,
     DEFAULT_MEMORY_POLICY,
     DEFAULT_REPORT_IMAGE_FORMAT,
+    DEFAULT_SHOW_LAYER_OUTLINE,
     DEFAULT_WHEEL_MODE,
     DISPLAY_RATIOS,
     JPEG_QUALITY_CHOICES,
@@ -197,6 +198,15 @@ class SettingsDialog(QDialog):
             "切换图层/翻页即时生效，不影响已保存的问题数据。"
         )
         display_form.addRow("问题红框显示：", self.issue_scope_combo)
+
+        self.layer_outline_check = QCheckBox("显示当前图层的蓝色虚线边界框")
+        self.layer_outline_check.setChecked(settings.show_layer_outline)
+        self.layer_outline_check.setToolTip(
+            "画布上标出当前图层视觉内容范围的蓝色虚线框（定位辅助）。\n"
+            "关闭后不再绘制该框，图层定位与自动缩放行为不受影响；\n"
+            "切换图层、翻页、改设置均即时生效。"
+        )
+        display_form.addRow(self.layer_outline_check)
         layout.addWidget(display_group)
 
         # ---- 自动对比 ----
@@ -390,6 +400,7 @@ class SettingsDialog(QDialog):
         self.wheel_mode_combo.setCurrentIndex(max(0, idx))
         idx = self.issue_scope_combo.findData(DEFAULT_ISSUE_SCOPE)
         self.issue_scope_combo.setCurrentIndex(max(0, idx))
+        self.layer_outline_check.setChecked(DEFAULT_SHOW_LAYER_OUTLINE)
         self.recursive_check.setChecked(False)
         self.console_check.setChecked(True)
         self.pdf_check.setChecked(True)
@@ -412,6 +423,7 @@ class SettingsDialog(QDialog):
         settings.compare_speed_hz = int(self.compare_speed_combo.currentData())
         settings.wheel_mode = str(self.wheel_mode_combo.currentData())
         settings.issue_scope = str(self.issue_scope_combo.currentData())
+        settings.show_layer_outline = self.layer_outline_check.isChecked()
         settings.recursive_scan = self.recursive_check.isChecked()
         settings.generate_pdf_on_complete = self.pdf_check.isChecked()
         settings.report_name = self.report_name_edit.text().strip()
