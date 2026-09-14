@@ -178,6 +178,57 @@ def test_recent_migrates_legacy_settings_key() -> None:
     print("PASS test_recent_migrates_legacy_settings_key")
 
 
+def test_recent_path_adapts_to_run_mode() -> None:
+    """recent.json 落点与 settings.json 完全一致：源码运行 / PyInstaller onedir / .app。
+
+    两种运行方式的程序目录判定都走 config.paths.get_app_dir()（需求 §56）：
+    源码运行 = 入口文件所在目录，打包产物 = 可执行文件所在目录。
+    """
+    from types import SimpleNamespace
+
+    from mangaproof.config import paths
+
+    # 1) 源码运行：python main.py 与 python -m mangaproof.main 都落在项目根
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "mangaproof").mkdir()
+        for entry in (root / "main.py", root / "mangaproof" / "main.py"):
+            entry.write_text("", encoding="utf-8")
+            with patch.dict(
+                sys.modules, {"__main__": SimpleNamespace(__file__=str(entry))}
+            ):
+                assert paths.get_app_dir() == root, entry
+                assert paths.settings_path() == root / "settings.json"
+                assert paths.recent_paths_path() == root / "recent.json"
+
+    # 2) 打包产物：onedir（Linux/Windows）与 macOS .app —— 两个文件都在 exe 同级
+    for rel in (
+        ("dist", "MangaProof", "MangaProof"),
+        ("dist", "MangaProof.app", "Contents", "MacOS", "MangaProof"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp).joinpath(*rel)
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"")
+            with patch.object(sys, "frozen", True, create=True), patch.object(
+                sys, "executable", str(exe)
+            ):
+                app_dir = exe.resolve().parent
+                assert paths.get_app_dir() == app_dir, rel
+                assert paths.settings_path() == app_dir / "settings.json"
+                assert paths.recent_paths_path() == app_dir / "recent.json"
+
+                # 打包形态下主窗口用的正是这条路径：默认设置管理器 → 同目录 recent.json
+                manager = SettingsManager()
+                assert manager.recent_path == paths.recent_paths_path()
+                RecentManager(manager.recent_path).add(str(exe))
+                assert _read_json(app_dir / "recent.json")["paths"] == [
+                    str(exe.resolve())
+                ]
+
+    print("PASS test_recent_path_adapts_to_run_mode")
+
+
 def test_recent_survives_settings_loss() -> None:
     """设置文件损坏/重建不清空最近打开记录（独立文件的初衷）。"""
     with tempfile.TemporaryDirectory() as tmp:
