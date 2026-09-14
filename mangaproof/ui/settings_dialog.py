@@ -58,7 +58,7 @@ from mangaproof.config.settings import (
     Settings,
     shortcut_conflicts,
 )
-from mangaproof.ui.theme import COLOR_WARN
+from mangaproof.ui.theme import COLOR_ACCENT, COLOR_BG_WIDGET, COLOR_TEXT, COLOR_WARN
 from mangaproof.ui.widgets import NoWheelComboBox
 
 class KeybindingsDialog(QDialog):
@@ -231,7 +231,12 @@ class SettingsDialog(QDialog):
     任何窗口高度下都可见可点。
     """
 
-    def __init__(self, settings: Settings, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        settings: Settings,
+        parent: Optional[QWidget] = None,
+        intro: str = "",
+    ):
         super().__init__(parent)
         self.setWindowTitle("MangaProof 设置")
         self.resize(560, 560)   # 与快捷键子对话框一致；小屏可自由缩小（内容滚动）
@@ -240,6 +245,21 @@ class SettingsDialog(QDialog):
         self._kb_reset_defaults = False
 
         layout = QVBoxLayout(self)
+
+        # 首次使用引导文案（可选）：只说明「这里是全部设置项、不改就用默认值」，
+        # 不预设、不推荐任何值——放在滚动区之外，任何窗口高度下都看得见
+        self.intro_label: Optional[QLabel] = None
+        if intro:
+            self.intro_label = QLabel(intro)
+            self.intro_label.setObjectName("settingsIntro")
+            self.intro_label.setWordWrap(True)
+            self.intro_label.setStyleSheet(
+                f"QLabel#settingsIntro {{ color: {COLOR_TEXT};"
+                f" background: {COLOR_BG_WIDGET};"
+                f" border-left: 3px solid {COLOR_ACCENT};"
+                f" padding: 6px 8px; }}"
+            )
+            layout.addWidget(self.intro_label)
 
         # 滚动区：高度不足时出现滚动条，宽度始终跟随对话框
         self.scroll_area = QScrollArea()

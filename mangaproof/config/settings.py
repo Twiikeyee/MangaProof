@@ -337,10 +337,28 @@ class SettingsManager:
     def __init__(self, path: Path | None = None):
         self._path = path if path is not None else paths.settings_path()
         self._lock = threading.Lock()
+        # 本次启动时配置文件是否存在：用于「首次使用」引导（只提示，不代替决策）。
+        # 注意 save() 之后文件就存在了，所以这是启动快照，不是实时状态。
+        self.was_missing = not self._path.exists()
         # 旧版残留的最近打开记录（settings.json 里的 recent_paths）：
         # 只读一次，交给 RecentManager 迁移到 recent.json，见 config/recent.py
         self._legacy_recent_paths: list[str] = []
         self.settings = self._load()
+
+    @property
+    def has_settings_file(self) -> bool:
+        """配置文件当前是否存在（用户确认过设置 / 程序正常退出过即存在）。"""
+        return self._path.exists()
+
+    @property
+    def is_first_use(self) -> bool:
+        """是否首次使用：启动时既没有 settings.json，也没有 recent.json。
+
+        两者都没有 = 从没确认过设置、也从没打开过任务（老用户升级至少会有
+        其中一个）。只用于决定要不要把设置页面直接摆到用户面前，不做任何
+        预设或推荐——默认值已在代码里定好。
+        """
+        return self.was_missing and not self.recent_path.exists()
 
     @property
     def recent_path(self) -> Path:

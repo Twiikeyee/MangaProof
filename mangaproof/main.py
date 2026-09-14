@@ -59,6 +59,7 @@ def main(argv=None) -> int:
     log = get_logger("main")
     log.info("%s v%s 启动，程序目录：%s", APP_NAME, __version__, app_dir)
 
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(argv)
@@ -85,6 +86,10 @@ def main(argv=None) -> int:
 
     window = MainWindow(settings_manager)
     window.show()
+    # 首次使用（既没有 settings.json 也没有 recent.json）：把设置页面直接打开，
+    # 让用户自己过一遍——只展示，不预设、不推荐、不写文件。用 singleShot 让
+    # 主窗口先画出来，用户能看到设置是在哪个程序里弹的。
+    QTimer.singleShot(0, window.maybe_prompt_first_run_settings)
     return app.exec()
 
 

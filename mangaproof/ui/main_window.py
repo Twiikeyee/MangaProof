@@ -15,11 +15,16 @@ from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
     QFileDialog,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
+    QPushButton,
     QToolBar,
+    QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -86,6 +91,7 @@ from mangaproof.ui.task_loader import (
     KIND_NO_FILES,
     TaskLoadWorker,
 )
+from mangaproof.ui.theme import COLOR_ACCENT, COLOR_BG_WIDGET, COLOR_BORDER, COLOR_TEXT
 from mangaproof.ui.viewer_widget import SOURCE_BG, SOURCE_MERGED, ViewerWidget
 from mangaproof.ui.widgets import NoWheelComboBox
 
@@ -102,6 +108,18 @@ _REBIND_WARNING = (
 )
 
 _TEXT_INPUT_TYPES = ("QLineEdit", "QTextEdit", "QPlainTextEdit", "QComboBox")
+
+# 首次使用引导（启动时还没有 settings.json）：
+# 只把「设置页面」摆到用户面前让他自己过一遍，不预设、不推荐、不代替决策——
+# 默认值已经在 config/settings.py 里定好，用户不改也照常工作。
+FIRST_RUN_INTRO = (
+    "首次使用：这里是全部设置项，按自己的习惯调整即可。\n"
+    "每一项都有说明文字；全部保持默认也可以，随时可在 设置 →「设置…」里再改。"
+)
+FIRST_RUN_BANNER = (
+    "第一次使用：建议先过一遍设置（显示比例、内存策略、返修单格式…），"
+    "不调整就直接用默认值。"
+)
 
 # 内存回收策略三档预算（文档结构卸载三档一致，见 _schedule_preloads）：
 # - bg_qimage_bytes：预生成 bg QImage 池字节上限（merged 不受限，窗口有界）
@@ -186,6 +204,8 @@ class MainWindow(QMainWindow):
 
         self._shortcuts: List[QShortcut] = []
         self._updating_panels = False
+        # 首次使用提醒条是否被本次会话手动关闭（不落盘：下次启动仍会提示）
+        self._settings_banner_dismissed = False
 
         self._build_ui()
         self._build_menus()
@@ -193,6 +213,7 @@ class MainWindow(QMainWindow):
         self._update_save_label(initial=True)
         self._refresh_enabled_state()
         self._apply_memory_policy()   # 按设置档位初始化 LRU 预算与 bg QImage 配额
+        self._refresh_settings_banner()   # 首次使用（无配置文件）才显示提醒条
 
     # ================================================================= UI
 
@@ -207,7 +228,15 @@ class MainWindow(QMainWindow):
         self.viewer.issue_drawn.connect(self._on_issue_drawn)
         self.viewer.camera_changed.connect(self._on_camera_changed)
         self.viewer.pending_changed.connect(self._on_pending_changed)
-        self.setCentralWidget(self.viewer)
+
+        # 首次使用提醒条（仅在没有配置文件时出现）+ 画布一起放进中央控件
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self._build_settings_banner())
+        central_layout.addWidget(self.viewer, 1)
+        self.setCentralWidget(central)
 
         # ---- 左侧：文件列表 + 统计 ----
         self.file_panel = FilePanel()
@@ -215,7 +244,6 @@ class MainWindow(QMainWindow):
         self.stats_panel = StatisticsPanel()
         self.stats_panel.layer_chip_clicked.connect(self._on_chip_clicked)
         left_container = QWidget()
-        from PySide6.QtWidgets import QVBoxLayout
         left_layout = QVBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.file_panel, 2)
@@ -318,6 +346,44 @@ class MainWindow(QMainWindow):
 
         self._update_shortcut_hints()
 
+    def _build_settings_banner(self) -> QWidget:
+        """首次使用提醒条：只提示「可以按自己的习惯调设置」，不替用户改任何值。
+
+        显示条件见 _refresh_settings_banner（没有 settings.json 时）。
+        可关闭（本次会话有效）、可直达设置页面，不阻塞任何操作。
+        """
+        banner = QFrame()
+        banner.setObjectName("settingsBanner")
+        banner.setStyleSheet(
+            f"QFrame#settingsBanner {{ background: {COLOR_BG_WIDGET};"
+            f" border-bottom: 1px solid {COLOR_BORDER}; }}"
+            f"QFrame#settingsBanner QLabel {{ color: {COLOR_TEXT}; }}"
+        )
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(10, 5, 6, 5)
+        row.setSpacing(8)
+
+        self.settings_banner_label = QLabel(FIRST_RUN_BANNER)
+        self.settings_banner_label.setWordWrap(True)
+        row.addWidget(self.settings_banner_label, 1)
+
+        self.settings_banner_button = QPushButton("打开设置…")
+        self.settings_banner_button.setToolTip("打开设置页面（默认值已在代码中定好，不改也照常工作）")
+        self.settings_banner_button.clicked.connect(
+            lambda: self.open_settings_dialog(intro=FIRST_RUN_INTRO)
+        )
+        row.addWidget(self.settings_banner_button)
+
+        self.settings_banner_close = QToolButton()
+        self.settings_banner_close.setText("✕")
+        self.settings_banner_close.setToolTip("本次不再提示（设置项保持默认值）")
+        self.settings_banner_close.clicked.connect(self._dismiss_settings_banner)
+        row.addWidget(self.settings_banner_close)
+
+        banner.setVisible(False)
+        self.settings_banner = banner
+        return banner
+
     def _add_tool_action(self, toolbar, text: str, seq: str, slot) -> QAction:
         action = QAction(text, self)
         # 快捷键统一由 _rebuild_shortcuts 绑定（可重绑），这里只显示提示文本
@@ -348,7 +414,8 @@ class MainWindow(QMainWindow):
 
         settings_menu = menubar.addMenu("设置(&S)")
         settings_action = QAction("设置…", self)
-        settings_action.triggered.connect(self.open_settings_dialog)
+        # triggered 会带 checked 参数 → 用 lambda 显式调用（open_settings_dialog 有 intro 形参）
+        settings_action.triggered.connect(lambda: self.open_settings_dialog())
         settings_menu.addAction(settings_action)
 
         help_menu = menubar.addMenu("帮助(&H)")
@@ -1741,7 +1808,7 @@ class MainWindow(QMainWindow):
     def _on_continuous_toggled(self, enabled: bool) -> None:
         """「连续标注」开关：立即生效并持久化。"""
         self.settings.continuous_annotation = bool(enabled)
-        self.settings_manager.save()
+        self._save_settings()
         self.statusBar().showMessage(
             "连续标注：开启（标完一个问题仍保持拖框模式）"
             if enabled
@@ -2099,7 +2166,7 @@ class MainWindow(QMainWindow):
                 self.settings.report_image_format = dialog.image_format()
                 self.settings.report_jpeg_quality = dialog.jpeg_quality()
                 self.settings.report_hide_clean_files = dialog.hide_clean_files()
-                self.settings_manager.save()
+                self._save_settings()
 
         out_path = resolve_report_path(self._base_dir, name, default_name)
         # 确保全部任务文件的图层 id 都已扫描（每个 PSD 只解析一次，需求 §59）
@@ -2203,13 +2270,50 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "生成返修单", f"已生成：\n{result.path}")
         log.info("返修单已生成：%s", result.path)
 
+    # ================================================================= 首次使用引导
+
+    def maybe_prompt_first_run_settings(self) -> None:
+        """首次使用：把设置页面直接打开，让用户自己过一遍（不代替他做决定）。
+
+        只在「启动时既没有 settings.json 也没有 recent.json」时触发——从没配置过、
+        也从没打开过任务（老用户升级至少会有其一，不会被打扰）。只展示设置项，
+        不预设、不推荐、不写文件；用户点「取消」就什么都不做，默认值照常生效。
+        """
+        if not self.settings_manager.is_first_use:
+            return
+        log.info("首次使用：打开设置页面，由用户自行决定是否调整")
+        self.open_settings_dialog(intro=FIRST_RUN_INTRO)
+
+    def _dismiss_settings_banner(self) -> None:
+        """关闭首次使用提醒条（仅本次会话；不写任何文件）。"""
+        self._settings_banner_dismissed = True
+        self._refresh_settings_banner()
+
+    def _refresh_settings_banner(self) -> None:
+        """提醒条只在「首次使用且还没确认过设置」时出现。
+
+        一旦 settings.json 存在（用户在设置里点了确定，或程序正常退出时落盘），
+        提醒条自动收起，不再打扰。
+        """
+        show = (
+            self.settings_manager.was_missing
+            and not self.settings_manager.has_settings_file
+            and not self._settings_banner_dismissed
+        )
+        self.settings_banner.setVisible(show)
+
+    def _save_settings(self) -> None:
+        """保存设置的统一入口（顺手刷新首次使用提醒条的状态）。"""
+        self.settings_manager.save()
+        self._refresh_settings_banner()
+
     # ================================================================= 设置
 
-    def open_settings_dialog(self) -> None:
-        dialog = SettingsDialog(self.settings, self)
+    def open_settings_dialog(self, intro: str = "") -> None:
+        dialog = SettingsDialog(self.settings, self, intro=intro)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             dialog.apply_to(self.settings)
-            self.settings_manager.save()
+            self._save_settings()
             self._rebuild_shortcuts()
             self._apply_compare_settings()
             self._apply_memory_policy()   # 内存策略档位热应用
@@ -2236,7 +2340,7 @@ class MainWindow(QMainWindow):
         if abs(ratio - self.settings.layer_display_ratio) < 1e-6:
             return
         self.settings.layer_display_ratio = ratio
-        self.settings_manager.save()
+        self._save_settings()
         self.recenter_current_layer()
 
     # ================================================================= 面板刷新
@@ -2354,5 +2458,5 @@ class MainWindow(QMainWindow):
         if self.task is not None:
             self._autosave_timer.stop()
             self.save_task()
-        self.settings_manager.save()
+        self._save_settings()
         super().closeEvent(event)
