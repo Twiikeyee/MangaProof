@@ -62,31 +62,62 @@ CORE_SHORTCUT_LABELS: dict[str, str] = {
 
 # 预制问题类型（需求 §34）及其默认快捷键（需求 §35，均可配置）
 #
-# 键位分配：数字行 1~9、0 给前 10 类，再接 Q W E _ T Y U I O P。
-# R 让给核心快捷键「红框模式」（拖框提交问题，需求 §37）；漏字排在 R 后面，
-# 用相邻的 P——否则两者同绑 R，Qt 会判定为歧义快捷键而**两个都不触发**
-# （历史缺陷：按 R 完全没反应）。
+# 键位分配：数字行 1~9、0 给最常用的前 10 类（文字外观类问题集中在 1~6），
+# 接着走字母上排 Q W E _ T Y U I O P（R 让给核心快捷键「红框模式」，
+# 否则两者同绑 R 会被 Qt 判为歧义快捷键而**两个都不触发**），
+# 最后两类用主行的 S、D 补足。
 DEFAULT_ISSUE_TYPES: list[dict[str, str]] = [
     {"name": "居中错误", "key": "1"},
     {"name": "字体选择错误", "key": "2"},
     {"name": "字体字重错误", "key": "3"},
-    {"name": "字号错误", "key": "4"},
-    {"name": "文字位置错误", "key": "5"},
-    {"name": "文字间距错误", "key": "6"},
-    {"name": "气泡处理错误", "key": "7"},
-    {"name": "原文字擦除错误", "key": "8"},
-    {"name": "背景擦除错误", "key": "9"},
-    {"name": "网点对齐错误", "key": "0"},
-    {"name": "网点残留", "key": "Q"},
-    {"name": "修图瑕疵", "key": "W"},
-    {"name": "漏翻", "key": "E"},
-    {"name": "漏字", "key": "P"},
-    {"name": "错字", "key": "T"},
-    {"name": "翻译错误", "key": "Y"},
-    {"name": "排版错误", "key": "U"},
-    {"name": "文字溢出", "key": "I"},
-    {"name": "其他", "key": "O"},
+    {"name": "文字描边粗细错误", "key": "4"},
+    {"name": "文字颜色错误", "key": "5"},
+    {"name": "字号错误", "key": "6"},
+    {"name": "文字位置错误", "key": "7"},
+    {"name": "文字间距错误", "key": "8"},
+    {"name": "气泡处理错误", "key": "9"},
+    {"name": "原文字擦除错误", "key": "0"},
+    {"name": "背景擦除错误", "key": "Q"},
+    {"name": "网点对齐错误", "key": "W"},
+    {"name": "网点残留", "key": "E"},
+    {"name": "修图瑕疵", "key": "T"},
+    {"name": "漏翻", "key": "Y"},
+    {"name": "漏字", "key": "U"},
+    {"name": "错字", "key": "I"},
+    {"name": "翻译错误", "key": "O"},
+    {"name": "排版错误", "key": "P"},
+    {"name": "文字溢出", "key": "S"},
+    {"name": "其他", "key": "D"},
 ]
+
+# 问题类型表版本：默认键位表变更时 +1，载入旧 settings.json 时据此一次性升级
+# （见 SettingsManager._migrate_issue_types）。v2：新增「文字描边粗细错误」
+# 「文字颜色错误」并整体重排键位 + 下拉栏显示快捷键。
+ISSUE_TYPES_VERSION = 2
+
+# v1（旧版）默认键位表：用于判断用户是否改过某个类型的键位——
+# 与旧默认值相同的（没动过）跟随新表，用户自己改过的保持不动。
+_LEGACY_ISSUE_KEYS: dict[str, str] = {
+    "居中错误": "1",
+    "字体选择错误": "2",
+    "字体字重错误": "3",
+    "字号错误": "4",
+    "文字位置错误": "5",
+    "文字间距错误": "6",
+    "气泡处理错误": "7",
+    "原文字擦除错误": "8",
+    "背景擦除错误": "9",
+    "网点对齐错误": "0",
+    "网点残留": "Q",
+    "修图瑕疵": "W",
+    "漏翻": "E",
+    "漏字": "R",   # v1 与「红框模式 R」撞车，v2 起为 U
+    "错字": "T",
+    "翻译错误": "Y",
+    "排版错误": "U",
+    "文字溢出": "I",
+    "其他": "O",
+}
 
 # 旧版本默认值：漏字 = R 与「红框模式」= R 撞车（Qt 歧义 → 两个都失效）。
 # 载入旧 settings.json 时按此表自动让位，见 SettingsManager._heal_shortcut_conflicts。
@@ -255,6 +286,45 @@ class Settings:
                      item["name"], replacement)
             item["key"] = replacement
 
+    def _migrate_issue_types(self, stored_version: int) -> None:
+        """旧版问题类型表 → 新版默认键位（用户自己改过的键位保持不动）。
+
+        - 键位仍是旧默认值的类型：跟随新表（如「漏字」R → U）；
+        - 新版新增的类型：按默认位置插入，键位若被用户自定键占用则先留空；
+        - 用户自己改过的键位、以及自建的类型：原样保留（自建的排在末尾）。
+        """
+        if stored_version >= ISSUE_TYPES_VERSION:
+            return
+        new_keys = {t["name"]: t["key"] for t in DEFAULT_ISSUE_TYPES}
+        for item in self.issue_types:
+            name = item.get("name", "")
+            key = item.get("key", "")
+            old_default = _LEGACY_ISSUE_KEYS.get(name)
+            if old_default and normalize_key(key) == normalize_key(old_default):
+                item["key"] = new_keys.get(name, key)
+
+        current = {item["name"]: item for item in self.issue_types}
+        used = {
+            normalize_key(item.get("key", ""))
+            for item in self.issue_types
+            if item.get("key")
+        }
+        merged: list[dict[str, str]] = []
+        for default in DEFAULT_ISSUE_TYPES:
+            name = default["name"]
+            if name in current:
+                merged.append(current.pop(name))
+                continue
+            key = default["key"]
+            if normalize_key(key) in used:      # 用户自定键占了这个位置 → 先留空
+                key = ""
+            else:
+                used.add(normalize_key(key))
+            merged.append({"name": name, "key": key})
+        merged.extend(current.values())          # 用户自建类型保留在末尾
+        self.issue_types = merged
+        log.info("问题类型表已升级到 v%d（共 %d 类）", ISSUE_TYPES_VERSION, len(merged))
+
 
 class SettingsManager:
     """settings.json 的读写封装。"""
@@ -359,6 +429,11 @@ class SettingsManager:
             if cleaned:
                 s.issue_types = cleaned
 
+        try:
+            types_version = int(raw.get("issue_types_version", 1))
+        except (TypeError, ValueError):
+            types_version = 1
+        s._migrate_issue_types(types_version)
         s._heal_shortcut_conflicts()
 
         recent = raw.get("recent_paths", [])
@@ -392,6 +467,7 @@ class SettingsManager:
                     "custom_comment_key": self.settings.custom_comment_key,
                     "keybindings": self.settings.keybindings,
                     "issue_types": self.settings.issue_types,
+                    "issue_types_version": ISSUE_TYPES_VERSION,
                     "recent_paths": self.settings.recent_paths,
                     "memory_policy": self.settings.memory_policy,
                 }

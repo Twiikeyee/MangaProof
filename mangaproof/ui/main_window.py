@@ -1627,6 +1627,7 @@ class MainWindow(QMainWindow):
         dialog = IssueDialog(
             self.settings.issue_type_names(), self, default_type="其他",
             title="自定义批注",
+            type_keys=self.settings.issue_key_map(),
         )
         if dialog.exec() == IssueDialog.DialogCode.Accepted:
             self._commit_new_issue(*dialog.result_values(), rect=(0, 0, 0, 0))
@@ -1691,7 +1692,10 @@ class MainWindow(QMainWindow):
         issue = next((i for i in self.task.issues if i.issue_id == issue_id), None)
         if issue is None:
             return
-        dialog = IssueDialog(self.settings.issue_type_names(), self, issue=issue, title="编辑问题")
+        dialog = IssueDialog(
+            self.settings.issue_type_names(), self, issue=issue, title="编辑问题",
+            type_keys=self.settings.issue_key_map(),
+        )
         if dialog.exec() == IssueDialog.DialogCode.Accepted:
             issue_type, comment = dialog.result_values()
             issue.type = issue_type

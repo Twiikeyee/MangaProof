@@ -1955,6 +1955,7 @@ def test_shortcut_conflict_detection_and_fixes() -> None:
     from mangaproof.config.settings import (
         DEFAULT_ISSUE_TYPES,
         DEFAULT_KEYBINDINGS,
+        ISSUE_TYPES_VERSION,
         Settings,
         shortcut_conflicts,
     )
@@ -1978,7 +1979,8 @@ def test_shortcut_conflict_detection_and_fixes() -> None:
             item["key"] = ""
     assert shortcut_conflicts(kb, types) == {}
 
-    # 2) 旧版 settings.json（漏字=R 撞红框模式）载入时自动让位到 P
+    # 2) 旧版 settings.json（v1 键位表，无 issue_types_version）载入时升级到 v2：
+    #    仍是旧默认键的类型跟随新表、新增类型补齐；用户自建的键位与类型保留。
     with tempfile.TemporaryDirectory() as tmp:
         legacy = Path(tmp) / "legacy.json"
         legacy.write_text(json.dumps({
@@ -1986,19 +1988,38 @@ def test_shortcut_conflict_detection_and_fixes() -> None:
             "issue_types": [{"name": "漏字", "key": "R"}, {"name": "错字", "key": "T"}],
         }, ensure_ascii=False), encoding="utf-8")
         s = SettingsManager(legacy).settings
-        assert s.issue_types[0] == {"name": "漏字", "key": "P"}
+        keys = {t["name"]: t["key"] for t in s.issue_types}
+        assert keys["漏字"] == "U", "v1 的 漏字=R 属于旧默认键位 → 跟随新表"
         assert s.keybindings["redraw_mode"] == "R"
+        # 新增两类已补齐，且顺序与默认表一致
+        assert [t["name"] for t in s.issue_types] == [
+            t["name"] for t in DEFAULT_ISSUE_TYPES
+        ]
+        for name in ("文字描边粗细错误", "文字颜色错误"):
+            assert name in keys and keys[name]
         assert s.shortcut_conflicts() == {}
 
-        # 用户已自行改绑（redraw_mode 不是 R）→ 尊重用户，不动
+        # 已是 v2 的配置：不再迁移
+        current = Path(tmp) / "v2.json"
+        current.write_text(json.dumps({
+            "issue_types_version": ISSUE_TYPES_VERSION,
+            "issue_types": [{"name": "漏字", "key": "F9"}, {"name": "自建类型", "key": "F10"}],
+        }, ensure_ascii=False), encoding="utf-8")
+        s2 = SettingsManager(current).settings
+        keys2 = {t["name"]: t["key"] for t in s2.issue_types}
+        assert keys2["漏字"] == "F9", "v2 配置不应再被改写"
+        assert keys2["自建类型"] == "F10", "用户自建类型应保留（排在末尾）"
+        assert s2.issue_types[-1]["name"] == "自建类型"
+
+        # v1 文件里用户自己改过的键位 → 迁移时保持不动
         custom = Path(tmp) / "custom.json"
         custom.write_text(json.dumps({
-            "keybindings": {"redraw_mode": "F8"},
-            "issue_types": [{"name": "漏字", "key": "R"}],
+            "issue_types": [{"name": "字号错误", "key": "F5"}],
         }, ensure_ascii=False), encoding="utf-8")
-        s2 = SettingsManager(custom).settings
-        assert s2.issue_types[0]["key"] == "R", "用户自定配置不应被擅自改写"
-        assert s2.keybindings["redraw_mode"] == "F8"
+        s3 = SettingsManager(custom).settings
+        keys3 = {t["name"]: t["key"] for t in s3.issue_types}
+        assert keys3["字号错误"] == "F5", "用户改过的键位不应被迁移覆盖"
+        assert keys3["字体选择错误"] == "2", "没改过的默认键位跟随新表"
 
     # 3) 快捷键子对话框：即时提示冲突，且冲突时不允许保存
     s3 = Settings()
@@ -2021,8 +2042,10 @@ def test_shortcut_conflict_detection_and_fixes() -> None:
         kb_dlg.accept()
         assert warn.called, "冲突时应弹窗拦截"
     assert kb_dlg.result() != KeybindingsDialog.DialogCode.Accepted
-    # 改回不冲突的键 → 可正常保存
-    kb_dlg._issue_edits[row].setKeySequence(QKeySequence("P"))
+    # 改回不冲突的键 → 可正常保存（用该类型当前默认键，避免撞上新表）
+    kb_dlg._issue_edits[row].setKeySequence(
+        QKeySequence(s3.issue_types[row].get("key") or "F9")
+    )
     app.processEvents()
     assert kb_dlg.conflicts() == {}
     assert kb_dlg.conflict_label.isVisible() is False
@@ -2113,9 +2136,8 @@ def test_shortcut_actions_take_effect() -> None:
             app.processEvents()
             assert window.viewer.redraw_mode is False, "R 再按一次应退出"
 
-            # P：漏字（原 R 撞车后挪到 P）
-            QTest.keyClick(window, Qt.Key.Key_P)
-            app.processEvents()
+            # 问题类型快捷键：漏字（键位随版本调整，这里按当前绑定按）
+            _press_issue_shortcut(window, "漏字")
             assert window.viewer.pending_type == "漏字"
 
             # Esc：取消待创建的问题
@@ -2161,6 +2183,20 @@ def test_shortcut_actions_take_effect() -> None:
         app.processEvents()
 
     print("PASS test_shortcut_actions_take_effect")
+
+
+def _press_issue_shortcut(window: MainWindow, type_name: str) -> None:
+    """按某问题类型「当前绑定」的快捷键。
+
+    键位会随版本调整（v2 整体重排过），测试不写死键位，改键位后依然有效。
+    """
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtTest import QTest
+
+    key = window.settings.key_for_issue(type_name)
+    assert key, f"问题类型「{type_name}」没有绑定快捷键"
+    QTest.keyClick(window, QKeySequence(key)[0].key())
+    app.processEvents()
 
 
 def _drag_rect(viewer, wx0: float, wy0: float, wx1: float, wy1: float) -> None:
@@ -2262,8 +2298,7 @@ def test_one_shot_annotation_and_continuous_toggle() -> None:
             assert viewer.redraw_mode is False
 
             # 4) 问题类型快捷键：一标一退（类型不再保持）
-            QTest.keyClick(window, Qt.Key.Key_P)      # 漏字
-            app.processEvents()
+            _press_issue_shortcut(window, "漏字")
             assert viewer.pending_type == "漏字"
             assert "自动退出" in window.issue_panel.hint_label.text()
             _drag_rect(viewer, 70, 70, 170, 130)
@@ -2290,8 +2325,7 @@ def test_one_shot_annotation_and_continuous_toggle() -> None:
             app.processEvents()
             assert viewer.redraw_mode is False
 
-            QTest.keyClick(window, Qt.Key.Key_P)      # 漏字
-            app.processEvents()
+            _press_issue_shortcut(window, "漏字")
             assert viewer.pending_type == "漏字"
             _drag_rect(viewer, 100, 100, 200, 160)
             assert len(window.task.issues) == 6
@@ -2426,8 +2460,7 @@ def test_auto_box_current_layer() -> None:
             assert window.issue_panel.auto_box_btn.isEnabled() is False
 
             # 4) 问题类型快捷键 + 自动框选：直接建该类型
-            QTest.keyClick(window, Qt.Key.Key_P)          # 漏字
-            app.processEvents()
+            _press_issue_shortcut(window, "漏字")
             assert window.viewer.pending_type == "漏字"
             assert window.issue_panel.auto_box_btn.isEnabled() is True
             info = window.current_doc.layers[window._current_index]
@@ -2485,7 +2518,7 @@ def test_auto_box_type_picker_dialog() -> None:
     # 按数字快捷键 → 选中该类型 + 收起下拉栏 + 自动跳到批注输入框
     QTest.keyClick(dlg.type_combo.view(), Qt.Key.Key_7)
     app.processEvents()
-    assert dlg.type_combo.currentText() == "气泡处理错误"
+    assert dlg.type_combo.currentData() == "气泡处理错误"
     assert dlg.result_values()[0] == "气泡处理错误"
     assert not dlg.type_combo.view().isVisible(), "选定后应收起下拉栏"
     assert dlg.focusWidget() is dlg.comment_edit, "应自动跳转到文本输入框"
@@ -2498,7 +2531,7 @@ def test_auto_box_type_picker_dialog() -> None:
     app.processEvents()
     QTest.keyClick(dlg2.type_combo.view(), Qt.Key.Key_P)
     app.processEvents()
-    assert dlg2.type_combo.currentText() == "漏字"
+    assert dlg2.type_combo.currentData() == "漏字"
     assert dlg2.focusWidget() is dlg2.comment_edit
     dlg2.close()
 
@@ -2508,7 +2541,7 @@ def test_auto_box_type_picker_dialog() -> None:
     app.processEvents()
     app.processEvents()
     assert not dlg3.type_combo.view().isVisible()
-    assert dlg3.type_combo.currentText() == "漏字"
+    assert dlg3.type_combo.currentData() == "漏字"
     assert dlg3.focusWidget() is dlg3.comment_edit
     dlg3.close()
 
@@ -2518,10 +2551,10 @@ def test_auto_box_type_picker_dialog() -> None:
     app.processEvents()
     app.processEvents()
     assert not dlg4.type_combo.view().isVisible()
-    before = dlg4.type_combo.currentText()
+    before = dlg4.type_combo.currentData()
     QTest.keyClick(dlg4, Qt.Key.Key_7)
     app.processEvents()
-    assert dlg4.type_combo.currentText() == before
+    assert dlg4.type_combo.currentData() == before
     dlg4.close()
 
     # 4) 端到端：自动框选走 auto_pick，手动拖框不走
@@ -2549,16 +2582,19 @@ def test_auto_box_type_picker_dialog() -> None:
             app.processEvents()          # 让 singleShot(0) 的展开动作执行
             seen["popup"] = self.type_combo.view().isVisible()
             if seen["popup"]:
-                QTest.keyClick(self.type_combo.view(), Qt.Key.Key_7)
+                # 按下「气泡处理错误」当前绑定的快捷键（键位会变，不写死）
+                from PySide6.QtGui import QKeySequence
+                seq = QKeySequence(window.settings.key_for_issue("气泡处理错误"))
+                QTest.keyClick(self.type_combo.view(), seq[0].key())
                 app.processEvents()
-            seen["type"] = self.type_combo.currentText()
+            seen["type"] = self.type_combo.currentData()
             seen["focus_comment"] = self.focusWidget() is self.comment_edit
             self.close()
             return QDialog.DialogCode.Accepted
 
         with patch.object(mw.IssueDialog, "exec", fake_exec), patch.object(
             mw.IssueDialog, "result_values",
-            lambda self: (self.type_combo.currentText(), ""),
+            lambda self: (self.type_combo.currentData(), ""),
         ):
             # 红框模式 + 自动框选 → 展开下拉 + 快捷键选类型
             QTest.keyClick(window, Qt.Key.Key_R)
@@ -2573,8 +2609,7 @@ def test_auto_box_type_picker_dialog() -> None:
 
             # 问题类型快捷键 + 自动框选 → 类型已定，不展开下拉、直奔批注框
             seen.clear()
-            QTest.keyClick(window, Qt.Key.Key_P)
-            app.processEvents()
+            _press_issue_shortcut(window, "漏字")
             QTest.keyClick(window, Qt.Key.Key_A)
             app.processEvents()
             assert seen == {
@@ -2694,6 +2729,91 @@ def test_issue_dialog_enter_submits_shift_enter_newline() -> None:
         app.processEvents()
 
     print("PASS test_issue_dialog_enter_submits_shift_enter_newline")
+
+
+def test_issue_type_picker_shows_keys() -> None:
+    """问题类型下拉显示「快捷键 类型名」，取值仍是纯类型名；新增两类排在前排。"""
+    from PySide6.QtTest import QTest
+
+    from mangaproof.config.settings import (
+        DEFAULT_ISSUE_TYPES,
+        DEFAULT_KEYBINDINGS,
+        shortcut_conflicts,
+    )
+    from mangaproof.ui.dialogs import IssueDialog
+
+    keys = {t["name"]: t["key"] for t in DEFAULT_ISSUE_TYPES}
+    names = [t["name"] for t in DEFAULT_ISSUE_TYPES]
+
+    # 1) 新增的「文字描边粗细错误」「文字颜色错误」在文字外观类里、键位靠前
+    assert names[:6] == [
+        "居中错误", "字体选择错误", "字体字重错误",
+        "文字描边粗细错误", "文字颜色错误", "字号错误",
+    ]
+    assert keys["文字描边粗细错误"] == "4"
+    assert keys["文字颜色错误"] == "5"
+    # 键位唯一、不与核心快捷键冲突（含 R 红框模式 / A 自动框选）
+    assert len(set(keys.values())) == len(keys) == 21
+    for reserved in ("R", "A"):
+        assert reserved not in keys.values(), reserved
+    assert shortcut_conflicts(DEFAULT_KEYBINDINGS, DEFAULT_ISSUE_TYPES) == {}
+
+    # 2) 下拉项文本带快捷键前缀，itemData 是纯类型名
+    dlg = IssueDialog(names, None, type_keys=keys, auto_pick=True)
+    dlg.show()
+    app.processEvents()
+    app.processEvents()
+    assert dlg.type_combo.count() == len(names)
+    for i, name in enumerate(names):
+        assert dlg.type_combo.itemData(i) == name
+        assert dlg.type_combo.itemText(i) == f"{keys[name]}　{name}"
+    # 取值不能被前缀污染（问题记录里必须是纯类型名）
+    assert dlg.result_values()[0] == "居中错误"
+
+    # 3) 下拉栏里按新类型的快捷键 → 直接选中它
+    QTest.keyClick(dlg.type_combo.view(), Qt.Key.Key_4)
+    app.processEvents()
+    assert dlg.type_combo.currentData() == "文字描边粗细错误"
+    assert dlg.result_values()[0] == "文字描边粗细错误"
+    dlg.close()
+
+    # 4) 端到端：新类型入库时也是纯类型名
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+        assert "文字描边粗细错误" in window.settings.issue_type_names()
+
+        def fake_exec(self):
+            self.show()
+            app.processEvents()
+            app.processEvents()
+            idx = self.type_combo.findData("文字颜色错误")
+            assert idx >= 0
+            self.type_combo.setCurrentIndex(idx)
+            self.accept()
+            self.close()
+            return self.result()
+
+        with patch.object(mw.IssueDialog, "exec", fake_exec):
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            window._on_rect_drawn(10, 10, 60, 60)
+            app.processEvents()
+        assert window.task.issues[-1].type == "文字颜色错误", window.task.issues[-1].type
+        window.close()
+        app.processEvents()
+
+    print("PASS test_issue_type_picker_shows_keys")
 
 
 def test_issue_panel_long_layer_name() -> None:

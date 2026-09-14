@@ -87,9 +87,14 @@ class IssueDialog(QDialog):
         form = QFormLayout()
 
         self.type_combo = NoWheelComboBox()
-        self.type_combo.addItems(issue_types)
+        # 下拉项显示「快捷键 类型名」（问题类型快捷键直接对应，键盘流不必记忆）；
+        # 真实类型名放在 userData 里，取用一律走 currentData()。
+        key_of = {name: key for key, name in self._type_keys.items()}
+        for name in issue_types:
+            key = key_of.get(name, "")
+            self.type_combo.addItem(f"{key}　{name}" if key else name, name)
         if default_type is not None and default_type in issue_types:
-            self.type_combo.setCurrentText(default_type)
+            self.type_combo.setCurrentIndex(self.type_combo.findData(default_type))
 
         self.comment_edit = _CommentEdit()
         self.comment_edit.setPlaceholderText("自定义批注（可留空），例如：这里应该使用 Bold，而不是 Regular。")
@@ -99,7 +104,7 @@ class IssueDialog(QDialog):
 
         if issue is not None:
             if issue.type in issue_types:
-                self.type_combo.setCurrentText(issue.type)
+                self.type_combo.setCurrentIndex(self.type_combo.findData(issue.type))
             self.comment_edit.setPlainText(issue.comment)
             if rect is None:
                 rect = issue.rect
@@ -165,7 +170,7 @@ class IssueDialog(QDialog):
         self.type_combo.showPopup()
 
     def _select_type(self, name: str) -> bool:
-        idx = self.type_combo.findText(name)
+        idx = self.type_combo.findData(name)
         if idx < 0:
             return False
         self.type_combo.setCurrentIndex(idx)
@@ -187,7 +192,8 @@ class IssueDialog(QDialog):
         return super().eventFilter(obj, event)
 
     def result_values(self) -> Tuple[str, str]:
-        return self.type_combo.currentText(), self.comment_edit.toPlainText().strip()
+        # 下拉项文本含快捷键前缀，真实类型名取 userData
+        return str(self.type_combo.currentData()), self.comment_edit.toPlainText().strip()
 
 
 class ReportDialog(QDialog):
