@@ -1689,6 +1689,93 @@ def test_layer_outline_paint_path() -> None:
     print("PASS test_layer_outline_paint_path")
 
 
+def test_settings_dialog_scroll_area() -> None:
+    """设置对话框：分组可滚动、底部按钮常驻，滚动区下拉框不抢滚轮。
+
+    历史问题：分组全部平铺，minimumSizeHint 高达 717px，768p 笔记本上
+    按钮会被挤出屏幕且无法缩小。
+    """
+    from mangaproof.config.settings import Settings
+    from mangaproof.ui.settings_dialog import SettingsDialog, WheelSafeComboBox
+
+    dlg = SettingsDialog(Settings())
+    dlg.resize(560, 480)
+    dlg.show()
+    app.processEvents()
+
+    # 1) 结构：分组在滚动区内，底部按钮在滚动区外（任何高度都可见可点）
+    sa = dlg.scroll_area
+    body = sa.widget()
+    assert body is not None
+    for group_child in (
+        dlg.ratio_combo, dlg.issue_scope_combo, dlg.layer_outline_check,
+        dlg.memory_policy_combo, dlg.report_hide_clean_check, dlg.kb_button,
+    ):
+        assert body.isAncestorOf(group_child), group_child
+    assert not body.isAncestorOf(dlg.button_box)
+    assert not sa.isAncestorOf(dlg.button_box)
+
+    # 2) 小屏可用：可缩到 480px 以内，且内容溢出时出现滚动条
+    assert dlg.minimumSizeHint().height() < 480, dlg.minimumSizeHint()
+    assert dlg.height() == 480, dlg.size()
+    vbar = sa.verticalScrollBar()
+    assert vbar.maximum() > 0, "内容高于视口时应有滚动条"
+    assert dlg.button_box.geometry().bottom() <= dlg.height() + 1
+    dlg.resize(560, 380)
+    app.processEvents()
+    assert dlg.height() == 380, dlg.size()
+    assert dlg.button_box.geometry().bottom() <= dlg.height() + 1
+
+    # 3) 滚到底部：最后一组（快捷键与滚轮）可达
+    vbar.setValue(vbar.maximum())
+    app.processEvents()
+    vp = sa.viewport()
+    assert 0 <= dlg.wheel_mode_combo.mapTo(vp, QPoint(0, 0)).y() < vp.height()
+
+    # 4) 下拉框不抢滚轮：未聚焦时忽略（原生 QComboBox 会直接改值）
+    def wheel_event() -> QWheelEvent:
+        p = QPointF(10.0, 10.0)
+        return QWheelEvent(
+            p, p, QPoint(0, 0), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        )
+
+    assert isinstance(dlg.ratio_combo, WheelSafeComboBox)
+    combo = dlg.issue_scope_combo
+    combo.clearFocus()
+    assert not combo.hasFocus()
+    before = combo.currentIndex()
+    ev = wheel_event()
+    QApplication.sendEvent(combo, ev)
+    assert not ev.isAccepted(), "未聚焦时应忽略滚轮，交回滚动区"
+    assert combo.currentIndex() == before
+
+    # 对照：原生 QComboBox 未聚焦也会被滚轮改值（说明该保护确有作用）
+    from PySide6.QtWidgets import QComboBox as _QComboBox
+
+    plain = _QComboBox()
+    plain.addItems(["a", "b", "c"])
+    plain.clearFocus()
+    ev = wheel_event()
+    QApplication.sendEvent(plain, ev)
+    assert ev.isAccepted() and plain.currentIndex() == 1
+
+    # 聚焦后仍可用滚轮快速改值
+    combo.setFocus()
+    app.processEvents()
+    assert combo.hasFocus()
+    before = combo.currentIndex()
+    ev = wheel_event()
+    QApplication.sendEvent(combo, ev)
+    assert ev.isAccepted() and combo.currentIndex() != before
+
+    dlg.close()
+    app.processEvents()
+
+    print("PASS test_settings_dialog_scroll_area")
+
+
 def test_issue_panel_long_layer_name() -> None:
     """当前图层问题面板：超长图层名单行省略显示（不撑宽、不换行）。"""
     from mangaproof.ui.issue_panel import IssuePanel

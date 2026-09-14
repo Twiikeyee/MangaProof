@@ -6,13 +6,17 @@
   问题类型快捷键、自定义批注键——主对话框只保留入口按钮，
   避免设置页过长挤压；
 - PDF 生成开关、返修单自定义名称、递归扫描；
-- 问题红框显示范围（当前页全部问题 / 仅当前图层）、内存回收策略档位。
+- 问题红框显示范围（当前页全部问题 / 仅当前图层）、蓝色虚线边界框开关、
+  内存回收策略档位。
+
+主对话框的分组放在滚动区内，底部按钮固定可见（768p 笔记本友好）。
 """
 
 from __future__ import annotations
 
 from typing import Dict, Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,11 +24,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QKeySequenceEdit,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -66,6 +72,21 @@ CORE_ACTION_LABELS: Dict[str, str] = {
     "generate_report": "生成返修单",
     "redraw_mode": "红框模式",
 }
+
+
+class WheelSafeComboBox(QComboBox):
+    """滚动区内的下拉框：未获得焦点时忽略滚轮。
+
+    Fusion 风格默认允许滚轮直接改下拉框的值（SH_ComboBox_AllowWheelScrolling），
+    放进滚动区后会导致"滚页面顺手改掉设置"。忽略后事件冒泡给滚动区正常滚动；
+    需要改值时先点击聚焦（或键盘操作），语义更明确。
+    """
+
+    def wheelEvent(self, event) -> None:   # noqa: N802（Qt 命名）
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 class KeybindingsDialog(QDialog):
@@ -163,20 +184,41 @@ class KeybindingsDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
+    """程序设置主对话框。
+
+    设置分组放在滚动区里（内容随版本增长，768p 笔记本上按钮不能被挤到
+    屏幕外）；底部「恢复默认设置 / 确定 / 取消」固定在滚动区之外，
+    任何窗口高度下都可见可点。
+    """
+
     def __init__(self, settings: Settings, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("MangaProof 设置")
-        self.resize(560, 480)
+        self.resize(560, 560)   # 与快捷键子对话框一致；小屏可自由缩小（内容滚动）
         self._settings = settings
         self._kb_dialog: Optional[KeybindingsDialog] = None
         self._kb_reset_defaults = False
 
         layout = QVBoxLayout(self)
 
+        # 滚动区：高度不足时出现滚动条，宽度始终跟随对话框
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        # 底部留一点空隙：滚到底时最后一组不贴边
+        body_layout.setContentsMargins(0, 0, 0, 6)
+        self.scroll_area.setWidget(body)
+        layout.addWidget(self.scroll_area, 1)
+
         # ---- 显示 ----
         display_group = QGroupBox("显示")
         display_form = QFormLayout(display_group)
-        self.ratio_combo = QComboBox()
+        self.ratio_combo = WheelSafeComboBox()
         for r in DISPLAY_RATIOS:
             self.ratio_combo.addItem(f"{int(r * 100)}%", r)
         current_ratio = settings.layer_display_ratio
@@ -186,7 +228,7 @@ class SettingsDialog(QDialog):
         self.ratio_combo.setCurrentIndex(max(0, idx))
         display_form.addRow("图层自动显示比例：", self.ratio_combo)
 
-        self.issue_scope_combo = QComboBox()
+        self.issue_scope_combo = WheelSafeComboBox()
         self.issue_scope_combo.addItem("当前页全部问题（默认，跨图层显示红框）", "page")
         self.issue_scope_combo.addItem("仅当前图层的问题（旧版行为）", "layer")
         scope_idx = self.issue_scope_combo.findData(settings.issue_scope)
@@ -207,19 +249,19 @@ class SettingsDialog(QDialog):
             "切换图层、翻页、改设置均即时生效。"
         )
         display_form.addRow(self.layer_outline_check)
-        layout.addWidget(display_group)
+        body_layout.addWidget(display_group)
 
         # ---- 自动对比 ----
         compare_group = QGroupBox("自动对比")
         compare_form = QFormLayout(compare_group)
-        self.compare_mode_combo = QComboBox()
+        self.compare_mode_combo = WheelSafeComboBox()
         self.compare_mode_combo.addItem("自动切换（定时来回闪切）", "auto")
         self.compare_mode_combo.addItem("手动切换（按一下切一次）", "manual")
         mode_idx = self.compare_mode_combo.findData(settings.compare_mode)
         self.compare_mode_combo.setCurrentIndex(max(0, mode_idx))
         compare_form.addRow("对比模式：", self.compare_mode_combo)
 
-        self.compare_speed_combo = QComboBox()
+        self.compare_speed_combo = WheelSafeComboBox()
         for hz, name in COMPARE_SPEED_TIERS:
             self.compare_speed_combo.addItem(
                 f"{name} · {hz} 次/秒（每张 {hz_to_interval_ms(hz)}ms）", hz
@@ -238,7 +280,7 @@ class SettingsDialog(QDialog):
             self._update_compare_speed_enabled
         )
         self._update_compare_speed_enabled()
-        layout.addWidget(compare_group)
+        body_layout.addWidget(compare_group)
 
         # ---- 任务 ----
         task_group = QGroupBox("任务")
@@ -263,7 +305,7 @@ class SettingsDialog(QDialog):
         task_form.addRow(self.console_check)
 
         # 内存回收策略（三档：宽松/平衡/激进），运行时热应用
-        self.memory_policy_combo = QComboBox()
+        self.memory_policy_combo = WheelSafeComboBox()
         self.memory_policy_combo.addItem("宽松（LRU 768MB，bg 预生成池 768MB）", "relaxed")
         self.memory_policy_combo.addItem("平衡（LRU 512MB，bg 预生成池 512MB）", "balanced")
         self.memory_policy_combo.addItem("激进（LRU 256MB，bg 预生成仅留 2 张）", "aggressive")
@@ -274,7 +316,7 @@ class SettingsDialog(QDialog):
             "三档均会驱逐窗口外文档结构（内存与书本页数无关）。"
         )
         task_form.addRow("内存策略：", self.memory_policy_combo)
-        layout.addWidget(task_group)
+        body_layout.addWidget(task_group)
 
         # ---- 返修单 ----
         report_group = QGroupBox("MangaProof 返修单")
@@ -292,7 +334,7 @@ class SettingsDialog(QDialog):
         self.report_name_edit.setPlaceholderText("留空使用默认名称（PSD 名 / 文件夹名）")
         report_form.addRow("返修单名称：", self.report_name_edit)
 
-        self.report_image_combo = QComboBox()
+        self.report_image_combo = WheelSafeComboBox()
         self.report_image_combo.addItem("PNG 无损（默认，体积大）", "png")
         self.report_image_combo.addItem("JPEG 压缩（体积小，有损）", "jpeg")
         fmt_idx = self.report_image_combo.findData(settings.report_image_format)
@@ -305,7 +347,7 @@ class SettingsDialog(QDialog):
         )
         report_form.addRow("页面图像：", self.report_image_combo)
 
-        self.report_quality_combo = QComboBox()
+        self.report_quality_combo = WheelSafeComboBox()
         for q in JPEG_QUALITY_CHOICES:
             self.report_quality_combo.addItem(
                 f"{q}%" + ("（默认）" if q == DEFAULT_JPEG_QUALITY else ""), q
@@ -329,12 +371,12 @@ class SettingsDialog(QDialog):
             self._update_report_quality_enabled
         )
         self._update_report_quality_enabled()
-        layout.addWidget(report_group)
+        body_layout.addWidget(report_group)
 
         # ---- 快捷键（入口按钮 → 独立子对话框）----
         shortcut_group = QGroupBox("快捷键与滚轮")
         shortcut_form = QFormLayout(shortcut_group)
-        self.wheel_mode_combo = QComboBox()
+        self.wheel_mode_combo = WheelSafeComboBox()
         self.wheel_mode_combo.addItem("上下移动视图（默认）", "pan")
         self.wheel_mode_combo.addItem("缩放视图", "zoom")
         wheel_idx = self.wheel_mode_combo.findData(settings.wheel_mode)
@@ -349,7 +391,7 @@ class SettingsDialog(QDialog):
         self.kb_button.setToolTip("在独立窗口中设置核心快捷键与问题类型快捷键")
         self.kb_button.clicked.connect(self._open_keybindings_dialog)
         shortcut_form.addRow("核心 / 问题类型快捷键：", self.kb_button)
-        layout.addWidget(shortcut_group)
+        body_layout.addWidget(shortcut_group)
 
         # ---- 按钮 ----
         button_row = QHBoxLayout()
