@@ -170,6 +170,23 @@ class StatisticsPanel(QWidget):
 
     # -- 总体 --------------------------------------------------------------
 
+    def clear(self) -> None:
+        """回到「未打开任务」的初始状态（关闭当前任务用）。"""
+        for chip in self._chips:
+            self.chip_layout.removeWidget(chip)
+            chip.setParent(None)
+            chip.deleteLater()
+        self._chips = []
+        self._chip_file = None
+        self._layer_names = []
+        self.psd_name_label.setText("当前 PSD：-")
+        self._set_cell(self.psd_cells["reviewed"], "0 / 0")
+        for key in ("passed", "failed", "unreviewed"):
+            self._set_cell(self.psd_cells[key], "0")
+        for key in ("files", "layers", "passed", "failed", "unreviewed", "issues"):
+            self._set_cell(self.total_cells[key], "0")
+        self.progress_bar.setValue(0)
+
     def set_total(self, counts: dict) -> None:
         total = counts["total"]
         self._set_cell(self.total_cells["files"], str(counts["files"]))

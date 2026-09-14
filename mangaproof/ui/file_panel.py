@@ -57,6 +57,13 @@ class FilePanel(QWidget):
         kind = "文件夹任务" if task_type == "folder" else "单文件任务"
         self.title_label.setText(f"PSD 文件 — {task_name}（{kind}）")
 
+    def clear(self) -> None:
+        """回到「未打开任务」的初始状态（关闭当前任务用）。"""
+        self._files = []
+        self._statuses = {}
+        self.list_widget.clear()
+        self.title_label.setText("PSD 文件")
+
     def set_files(self, files: List[str]) -> None:
         self._files = list(files)
         self.list_widget.clear()

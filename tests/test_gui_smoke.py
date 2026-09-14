@@ -1920,8 +1920,11 @@ def test_all_default_shortcuts_fire() -> None:
                  QFileDialog, "getExistingDirectory",
                  lambda *a, **k: (opened.append("folder"), "")[1],
              ):
+            # 「关闭当前任务」会卸载任务（之后再按别的键就无任务可操作了），
+            # 因此留到最后单独按
+            close_seq = DEFAULT_KEYBINDINGS["close_task"]
             # 先测不触发异步切换的键，导航键最后单独测
-            order = [s for s in groups if s not in ("Up", "Down")]
+            order = [s for s in groups if s not in ("Up", "Down", close_seq)]
             for seq in order:
                 fired.clear()
                 combo = QKeySequence(seq)[0]
@@ -1938,6 +1941,13 @@ def test_all_default_shortcuts_fire() -> None:
                 assert fired == [seq], f"{seq} 应恰好触发自身，实际 {fired}"
                 _wait_for_file(window, window._current_file)
             window._compare.interrupt()
+            # 关闭任务的快捷键：真的关闭且回到未打开状态
+            fired.clear()
+            combo = QKeySequence(close_seq)[0]
+            QTest.keyClick(window, combo.key(), combo.keyboardModifiers())
+            app.processEvents()
+            assert fired == [close_seq], f"{close_seq} 应恰好触发自身，实际 {fired}"
+            assert window.task is None, f"{close_seq}（关闭当前任务）应卸载当前任务"
 
         window.close()
         app.processEvents()

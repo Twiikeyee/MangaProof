@@ -146,6 +146,18 @@ class IssuePanel(QWidget):
 
     # -- 更新 --------------------------------------------------------------
 
+    def clear(self) -> None:
+        """回到「未打开任务」的初始状态（关闭当前任务用）。"""
+        self._issues = []
+        self._status = UNREVIEWED
+        self.layer_name_label.setText("图层：-")
+        self.layer_name_label.setToolTip("图层：-")
+        self.status_label.setText("状态：○ 未监制")
+        self.issue_list.clear()
+        self.set_hint("")
+        self.set_buttons_enabled(False)
+        self.set_auto_box_enabled(False)
+
     def set_current(self, layer_name: str, status: str, issues: List[Issue]) -> None:
         self._issues = list(issues)
         self._status = status

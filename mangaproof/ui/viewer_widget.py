@@ -32,6 +32,7 @@ from mangaproof.ui.theme import (
     COLOR_CHECKER_A,
     COLOR_CHECKER_B,
     COLOR_FAIL,
+    COLOR_TEXT_DIM,
 )
 
 log = logging.getLogger("mangaproof.ui.viewer")
@@ -105,6 +106,7 @@ class ViewerWidget(QWidget):
         self._pending_type: Optional[str] = None
         self._drag: Optional[dict] = None
         self._wheel_mode = "pan"   # 裸滚轮行为："pan" 上下移动 / "zoom" 缩放
+        self._empty_hint = "未打开任务"   # 未打开/已关闭任务时的画布提示
 
     def set_wheel_mode(self, mode: str) -> None:
         """裸滚轮（不按修饰键）行为：'pan' 上下移动 / 'zoom' 缩放。
@@ -112,6 +114,17 @@ class ViewerWidget(QWidget):
         触控板双指滚（pixelDelta）不受影响，恒为双轴平移。
         """
         self._wheel_mode = mode if mode in ("pan", "zoom") else "pan"
+
+    def set_empty_hint(self, text: str) -> None:
+        """无文档时画布中央的提示文案（由主窗口按当前快捷键绑定生成）。"""
+        self._empty_hint = text
+        if self._doc is None:
+            self.update()
+
+    @property
+    def empty_hint(self) -> str:
+        """当前空画布提示（仅供测试/调试）。"""
+        return self._empty_hint
 
     # ------------------------------------------------------------------ API
 
@@ -229,6 +242,21 @@ class ViewerWidget(QWidget):
                     QColor(COLOR_CHECKER_A if even else COLOR_CHECKER_B),
                 )
 
+    def _draw_empty_hint(self, painter: QPainter) -> None:
+        """未打开 / 已关闭任务：棋盘格上给出下一步指引，不留一块无信息的空画布。
+
+        文案由主窗口按「当前快捷键绑定」生成（set_empty_hint），改绑后同步。
+        """
+        if not self._empty_hint:
+            return
+        painter.setPen(QColor(COLOR_TEXT_DIM))
+        font = painter.font()
+        font.setPointSizeF(max(font.pointSizeF(), 11.0))
+        painter.setFont(font)
+        painter.drawText(
+            self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_hint
+        )
+
     def _qimage(self, source: str) -> Optional[QImage]:
         if self._doc is None:
             return None
@@ -275,6 +303,7 @@ class ViewerWidget(QWidget):
         self._paint_checkerboard(painter)
 
         if self._doc is None:
+            self._draw_empty_hint(painter)
             painter.end()
             return
 

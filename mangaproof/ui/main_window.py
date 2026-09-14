@@ -154,6 +154,9 @@ class MainWindow(QMainWindow):
         # 之后再改动内容会复位，下次完成/Enter 时重新生成）
         self._completion_announced = False
 
+        # 最近一次保存失败的原因（关闭任务时据此中止关闭，避免丢进度）
+        self._save_error = ""
+
         # PSD 预加载线程（切换大文件不卡顿）
         self._preload = PreloadWorker(lambda rel: self._docs.get(rel), self)
         self._preload.task_done.connect(self._on_preload_done)
@@ -255,6 +258,13 @@ class MainWindow(QMainWindow):
         self.action_open_folder = self._add_tool_action(
             toolbar, "打开文件夹", "Ctrl+Shift+O", self.open_folder_dialog
         )
+        self.action_close = self._add_tool_action(
+            toolbar, "关闭任务", "Ctrl+W", self.close_task
+        )
+        self.action_close.setToolTip(
+            "关闭当前任务（文件夹 / 单个 PSD），回到未打开状态\n"
+            "进度已自动保存，随时可从「文件 → 最近打开」回来继续"
+        )
         toolbar.addSeparator()
         self.action_save = self._add_tool_action(toolbar, "保存", "Ctrl+S", self.save_task)
         self.action_renumber = self._add_tool_action(
@@ -327,6 +337,7 @@ class MainWindow(QMainWindow):
         # 启动即填充：旧版要等本次会话打开过一次任务才出现记录（菜单恒为空）
         self._rebuild_recent_menu()
         file_menu.addSeparator()
+        file_menu.addAction(self.action_close)
         file_menu.addAction(self.action_save)
         file_menu.addAction(self.action_renumber)
         file_menu.addAction(self.action_report)
@@ -431,11 +442,20 @@ class MainWindow(QMainWindow):
             f"{d(kb.get('toggle_compare', 'Space'))} 对比　"
             f"{d(kb.get('cancel_operation', 'Esc'))} 取消　"
             f"{d(kb.get('save_task', 'Ctrl+S'))} 保存　"
+            f"{d(kb.get('close_task', 'Ctrl+W'))} 关闭　"
             f"Ctrl+滚轮 缩放　Alt+滚轮 左右移动"
+        )
+        # 空画布（未打开 / 已关闭任务）提示：随当前绑定更新，不写死默认键
+        self.viewer.set_empty_hint(
+            "未打开任务\n\n"
+            f"{d(kb.get('open_psd', 'Ctrl+O'))}　打开单个 PSD　　"
+            f"{d(kb.get('open_folder', 'Ctrl+Shift+O'))}　打开漫画文件夹\n"
+            "「文件 → 最近打开」可回到打开过的任务"
         )
         # 工具栏/菜单按钮同步显示当前绑定（需求 §30）
         self.action_open_psd.setText(f"打开 PSD ({d(kb.get('open_psd', 'Ctrl+O'))})")
         self.action_open_folder.setText(f"打开文件夹 ({d(kb.get('open_folder', 'Ctrl+Shift+O'))})")
+        self.action_close.setText(f"关闭任务 ({d(kb.get('close_task', 'Ctrl+W'))})")
         self.action_save.setText(f"保存 ({d(kb.get('save_task', 'Ctrl+S'))})")
         self.action_report.setText(f"生成返修单 ({d(kb.get('generate_report', 'Ctrl+R'))})")
         self.action_redraw.setText(f"红框模式 ({d(kb.get('redraw_mode', 'R'))})")
@@ -492,6 +512,7 @@ class MainWindow(QMainWindow):
         # 没绑 QShortcut，按下去没有任何反应）
         bind(kb.get("open_psd", "Ctrl+O"), self.open_psd_dialog)
         bind(kb.get("open_folder", "Ctrl+Shift+O"), self.open_folder_dialog)
+        bind(kb.get("close_task", "Ctrl+W"), self.close_task)
         bind(kb.get("generate_report", "Ctrl+R"), self.generate_report_dialog)
 
         # 问题类型快捷键（需求 §35）：文本输入框聚焦时不触发
@@ -822,6 +843,95 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.recenter_current_layer)
         self.viewer.setFocus()
         log.info("任务已加载：%s（%s）", task.task_name, task.task_type)
+
+    # ================================================================= 关闭任务
+
+    def close_task(self) -> None:
+        """关闭当前任务（文件夹 / 单个 PSD），回到「未打开」状态。
+
+        Ctrl+W /「文件 → 关闭当前任务」。任务文件**不会被删除**：状态、红框、
+        批注都留在磁盘上，下次打开同一文件夹或从「最近打开」回来即可继续。
+
+        - 先落盘再关闭：自动保存有 1.5s 防抖，标完最后一项立刻关闭会丢掉改动，
+          所以这里同步保存一次；保存失败则中止关闭并说明原因（磁盘满 / 只读 /
+          权限），保留现场让用户处理，不静默丢进度；
+        - 停掉自动对比与拖框标注、作废预加载队列、释放文档与图层像素缓存，
+          长时间开着多个任务不会积累内存。
+        """
+        if self.task is None:
+            return
+        name = self.task.task_name
+
+        # 后台仍在读任务数据的 worker（返修单 / 编号检查）：先取消并等待，
+        # 避免它们回调到已经清空的窗口状态（与 closeEvent 同一策略）
+        for worker in (self._report_worker, self._numbering_worker):
+            if worker is not None and worker.isRunning():
+                worker.request_cancel()
+                worker.wait(5000)
+
+        self._autosave_timer.stop()
+        if not self.save_task():
+            QMessageBox.warning(
+                self,
+                "关闭当前任务",
+                "任务保存失败，已取消关闭以免丢失监制进度。\n"
+                "请检查磁盘空间 / 文件权限后重试。\n\n"
+                f"原因：{self._save_error}",
+            )
+            return
+
+        # 交互状态复位：停对比（回 Original）→ 退出拖框/待标注
+        self._compare.interrupt()
+        self.viewer.cancel_pending()
+        self.action_redraw.setChecked(False)
+
+        # 预加载：作废队列与在途请求（后台线程只读已创建文档，清空 _docs 后空转）
+        self._preload.set_preloads([], [])
+        self._preload.cancel_open()
+        self._pending_open = None
+        self._open_restore = False
+        self._close_open_progress()
+
+        # 任务数据与缓存
+        self.task = None
+        self._base_dir = None
+        self._current_file = ""
+        self._current_index = -1
+        self._docs.clear()
+        self._layer_ids_by_file.clear()
+        self._layer_names_by_file.clear()
+        self._layer_cache.clear()
+        self._warned_no_composite.clear()
+        self._pending_qimages.clear()
+        self._preload_targets.clear()
+        self._extra_targets.clear()
+        self._keep_set.clear()
+        self._pinned_bg_key = None
+        self._preload_scheduled = False
+        self._completion_announced = False
+
+        # 画布与面板回到初始空态
+        self.viewer.set_document(None)
+        self.viewer.set_issues([])
+        self.viewer.set_layer_outline(None)
+        self.viewer.set_source(SOURCE_MERGED)
+        camera = self.viewer.camera
+        camera.center_x = camera.center_y = 0.0
+        camera.zoom = 1.0
+        self.zoom_label.setText("缩放：100%")
+
+        self.file_panel.clear()
+        self.layer_panel.set_layers([])
+        self.stats_panel.clear()
+        self.issue_panel.clear()
+
+        self._update_preload_label()          # 清空状态栏两阶段提示
+        self._update_save_label(initial=True)
+        self._refresh_enabled_state()
+        self._refresh_title()
+        self.viewer.setFocus()
+        self.statusBar().showMessage("已关闭当前任务", 3000)
+        log.info("任务已关闭：%s", name)
 
     # ================================================================= 文档管理
 
@@ -1906,23 +2016,33 @@ class MainWindow(QMainWindow):
         else:
             self._autosave_timer.start()
 
-    def save_task(self) -> None:
+    def save_task(self) -> bool:
+        """保存任务，返回是否成功（无任务 / 无进度文件路径时视为成功）。
+
+        自动保存、Ctrl+S、生成返修单都不看返回值；只有「关闭当前任务」用它
+        判断要不要中止关闭——保存失败（磁盘满 / 只读 / 权限）时宁可留在原地，
+        也不静默丢弃监制进度。
+        """
         if self.task is None:
-            return
+            return True
         path = self.progress_file_path()
         if path is None:
-            return
+            return True
         try:
             persistence.save_task(self.task, path)
         except OSError as exc:
             log.exception("保存任务失败")
+            self._save_error = str(exc)
             self._update_save_label(initial=False, error=str(exc))
-            return
+            return False
+        self._save_error = ""
         self._update_save_label(initial=False, saved=True)
         log.info("任务已保存：%s", path)
+        return True
 
     def _update_save_label(self, initial: bool = False, saved: bool = False, error: str = ""):
         if initial:
+            self._save_error = ""
             self.save_label.setText("未打开任务")
         elif error:
             self.save_label.setText(f"保存失败：{error}")
@@ -2178,8 +2298,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_issue_panel(self) -> None:
         if self.task is None or self.current_doc is None or self._current_index < 0:
-            self.issue_panel.set_current("", UNREVIEWED, [])
-            self.issue_panel.set_buttons_enabled(False)
+            self.issue_panel.clear()
             return
         info = self.current_doc.layers[self._current_index]
         status = self.task.status_of(self._current_file, info.id)
@@ -2189,6 +2308,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_enabled_state(self) -> None:
         has_task = self.task is not None
+        self.action_close.setEnabled(has_task)
         self.action_save.setEnabled(has_task)
         self.action_renumber.setEnabled(has_task)
         self.action_report.setEnabled(has_task)
