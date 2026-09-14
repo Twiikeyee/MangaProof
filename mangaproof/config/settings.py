@@ -38,6 +38,7 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "open_folder": "Ctrl+Shift+O",
     "generate_report": "Ctrl+R",
     "redraw_mode": "R",
+    "auto_box": "A",
 }
 
 # 核心快捷键的中文名（设置对话框表格 + 冲突提示共用）
@@ -56,6 +57,7 @@ CORE_SHORTCUT_LABELS: dict[str, str] = {
     "open_folder": "打开文件夹",
     "generate_report": "生成返修单",
     "redraw_mode": "红框模式",
+    "auto_box": "自动框选当前图层",
 }
 
 # 预制问题类型（需求 §34）及其默认快捷键（需求 §35，均可配置）

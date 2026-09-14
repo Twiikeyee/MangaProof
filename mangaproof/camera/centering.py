@@ -18,6 +18,9 @@ from mangaproof.psd.layer_model import LayerInfo, compute_visual_bounds
 
 log = logging.getLogger("mangaproof.camera.centering")
 
+# 自动框选：在视觉边界（画布上的蓝色虚线框）基础上，上下左右各外扩的像素数。
+AUTO_BOX_MARGIN = 5.0
+
 
 def layer_visual_bounds(info: LayerInfo, alpha_threshold: float = 0.0) -> Optional[Tuple[int, int, int, int]]:
     """返回图层视觉边界（世界坐标）。
@@ -50,3 +53,31 @@ def compute_center_target(info: LayerInfo, alpha_threshold: float = 0.0) -> Tupl
         return info.center
     # Bounds 也不可用 → 保持当前 Camera（调用方不移动相机即可）
     return info.center
+
+
+def auto_box_rect(
+    info: LayerInfo,
+    margin: float = AUTO_BOX_MARGIN,
+    alpha_threshold: float = 0.0,
+) -> Optional[Tuple[float, float, float, float]]:
+    """自动框选矩形（世界坐标 x, y, w, h）。
+
+    以图层视觉边界（画布上那个蓝色虚线框）为准，上下左右**各外扩 margin
+    像素**——对称外扩，所以中心与虚线框中心完全一致。
+
+    视觉边界为空（整层透明）时回退到 Layer Bounds；两者都不可用返回 None
+    （调用方不生成红框）。
+    """
+    bounds = layer_visual_bounds(info, alpha_threshold)
+    if bounds is None:
+        left, top, right, bottom = info.bounds
+        if right <= left or bottom <= top:
+            return None
+        bounds = (float(left), float(top), float(right), float(bottom))
+    left, top, right, bottom = (float(v) for v in bounds)
+    return (
+        left - margin,
+        top - margin,
+        (right - left) + 2 * margin,
+        (bottom - top) + 2 * margin,
+    )

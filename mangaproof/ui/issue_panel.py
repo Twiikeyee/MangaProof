@@ -60,6 +60,7 @@ class IssuePanel(QWidget):
     status_change_requested = Signal(str)     # UNREVIEWED / PASSED / FAILED
     add_issue_requested = Signal()            # 进入拖框模式（方式 B）
     continuous_toggled = Signal(bool)         # 「连续标注」开关
+    auto_box_requested = Signal()             # 自动框选当前图层
     custom_comment_requested = Signal()       # 自定义批注（Ctrl+Enter）
     edit_issue_requested = Signal(str)        # issue_id（双击编辑）
     delete_issue_requested = Signal(str)      # issue_id
@@ -122,6 +123,13 @@ class IssuePanel(QWidget):
         add_row.addWidget(self.continuous_btn, 2)
         layout.addLayout(add_row)
         self._update_continuous_visual()
+
+        # 自动框选：按当前图层视觉边界自动生成红框（仅在拖框模式下可用）
+        self.auto_box_btn = QPushButton("▣ 自动框选")
+        self.auto_box_btn.clicked.connect(self.auto_box_requested.emit)
+        self.auto_box_btn.setEnabled(False)
+        layout.addWidget(self.auto_box_btn)
+        self._update_auto_box_visual()
 
         self.custom_btn = QPushButton("✎ 自定义批注")
         self.custom_btn.clicked.connect(self.custom_comment_requested.emit)
@@ -190,6 +198,19 @@ class IssuePanel(QWidget):
             f"当前：{'开启' if on else '关闭'}"
         )
 
+    # -- 自动框选 ----------------------------------------------------------
+
+    def set_auto_box_enabled(self, enabled: bool) -> None:
+        """自动框选仅在拖框模式（红框模式 / 已选问题类型）下可用。"""
+        self.auto_box_btn.setEnabled(bool(enabled))
+
+    def _update_auto_box_visual(self) -> None:
+        self.auto_box_btn.setToolTip(
+            "自动框选：按当前图层的视觉内容范围自动生成红框\n"
+            "（上下左右各外扩 5 像素，中心与蓝色虚线框一致）。\n"
+            "需先进入拖框模式：按 R 红框模式，或按问题类型快捷键。"
+        )
+
     def set_shortcut_labels(self, bindings: dict, issue_type_tips: str = "") -> None:
         """动态显示当前绑定的快捷键（需求 §30）。
 
@@ -201,6 +222,7 @@ class IssuePanel(QWidget):
         self.fail_btn.setText(f"✗ 未通过 ({bindings.get('fail', '/')})")
         self.fail_btn.setToolTip(f"标记当前图层未通过　快捷键：{bindings.get('fail', '/')}")
         self.add_btn.setText(f"＋ 添加问题 ({bindings.get('redraw', 'R')})")
+        self.auto_box_btn.setText(f"▣ 自动框选 ({bindings.get('auto_box', 'A')})")
         self.custom_btn.setText(f"✎ 自定义批注 ({bindings.get('custom', 'Ctrl+Enter')})")
         if issue_type_tips:
             self.add_btn.setToolTip(issue_type_tips)

@@ -2334,6 +2334,131 @@ def test_one_shot_annotation_and_continuous_toggle() -> None:
     print("PASS test_one_shot_annotation_and_continuous_toggle")
 
 
+def test_auto_box_current_layer() -> None:
+    """自动框选：按视觉边界（蓝色虚线框）四周各外扩 5px，中心不变。
+
+    覆盖几何计算（含视觉边界为空的 Layer Bounds 回退）、按钮可用状态、
+    快捷键 A、以及红框模式 / 问题类型两条路径 + 连续标注语义。
+    """
+    from PySide6.QtTest import QTest
+
+    from mangaproof.camera.centering import (
+        AUTO_BOX_MARGIN,
+        auto_box_rect,
+        layer_visual_bounds,
+    )
+    from mangaproof.config.settings import DEFAULT_KEYBINDINGS
+    from mangaproof.psd.layer_model import LayerInfo
+
+    # 1) 几何：对称外扩 margin，中心与视觉边界中心完全一致
+    assert DEFAULT_KEYBINDINGS["auto_box"] == "A"
+    assert AUTO_BOX_MARGIN == 5.0
+
+    class _Info(LayerInfo):
+        """测试替身：直接给出视觉边界 / Layer Bounds。"""
+
+        def __init__(self, bounds, visual):
+            super().__init__(
+                id="0.0", name="stub", bounds=bounds, visible=True, layer_type="pixel"
+            )
+            self._visual = visual
+
+        def visual_bounds(self, alpha_threshold: float = 0.0, image=None):
+            return self._visual
+
+    stub = _Info((100, 200, 300, 400), (0, 0, 200, 200))   # 视觉边界 → 世界 (100,200)-(300,400)
+    rect = auto_box_rect(stub)
+    assert rect == (95.0, 195.0, 210.0, 210.0), rect
+    vb = layer_visual_bounds(stub)
+    assert vb == (100, 200, 300, 400)
+    assert (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2) == (
+        (vb[0] + vb[2]) / 2, (vb[1] + vb[3]) / 2
+    ), "中心必须与蓝色虚线框一致"
+    assert rect[2] == (vb[2] - vb[0]) + 2 * AUTO_BOX_MARGIN
+    assert rect[3] == (vb[3] - vb[1]) + 2 * AUTO_BOX_MARGIN
+    # 整层透明 → 回退 Layer Bounds；Bounds 也不可用 → 不生成
+    assert auto_box_rect(_Info((10, 20, 110, 220), None)) == (5.0, 15.0, 110.0, 210.0)
+    assert auto_box_rect(_Info((0, 0, 0, 0), None)) is None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = _copy_fixtures(root / "chapter01")
+        window = MainWindow(SettingsManager(root / "settings.json"))
+        window.resize(1200, 800)
+        window.show()
+        app.processEvents()
+        with patch.object(
+            QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+        ):
+            window.open_folder(folder)
+        _wait_for_task(window)
+        window.activateWindow()
+        app.processEvents()
+
+        # 2) 未进入拖框模式：按钮禁用、快捷键只给提示、不产生问题
+        assert window.issue_panel.auto_box_btn.isEnabled() is False
+        assert "自动框选" in window.issue_panel.auto_box_btn.text()
+        assert "A" in window.issue_panel.auto_box_btn.text()
+        QTest.keyClick(window, Qt.Key.Key_A)
+        app.processEvents()
+        assert window.task.issues == []
+        assert "拖框模式" in window.statusBar().currentMessage()
+
+        accepted = patch.object(
+            mw.IssueDialog, "exec", return_value=mw.IssueDialog.DialogCode.Accepted
+        )
+        values = patch.object(
+            mw.IssueDialog, "result_values", return_value=("漏字", "")
+        )
+        with accepted, values:
+            # 3) 红框模式 + 自动框选：红框 = 视觉边界四周各 +5
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            assert window.issue_panel.auto_box_btn.isEnabled() is True
+            info = window.current_doc.layers[window._current_index]
+            expect = auto_box_rect(info)
+            window.issue_panel.auto_box_btn.click()
+            app.processEvents()
+            assert len(window.task.issues) == 1
+            assert window.task.issues[0].rect == expect, window.task.issues[0].rect
+            # 一标一退：模式与按钮同时复位
+            assert window.viewer.redraw_mode is False
+            assert window.issue_panel.auto_box_btn.isEnabled() is False
+
+            # 4) 问题类型快捷键 + 自动框选：直接建该类型
+            QTest.keyClick(window, Qt.Key.Key_P)          # 漏字
+            app.processEvents()
+            assert window.viewer.pending_type == "漏字"
+            assert window.issue_panel.auto_box_btn.isEnabled() is True
+            info = window.current_doc.layers[window._current_index]
+            expect = auto_box_rect(info)
+            QTest.keyClick(window, Qt.Key.Key_A)          # 快捷键路径
+            app.processEvents()
+            assert len(window.task.issues) == 2
+            assert window.task.issues[1].type == "漏字"
+            assert window.task.issues[1].rect == expect
+            assert window.viewer.pending_type is None, "默认一标一退"
+
+            # 5) 连续标注开启：自动框选后保持待标状态
+            window.issue_panel.continuous_btn.click()
+            app.processEvents()
+            QTest.keyClick(window, Qt.Key.Key_R)
+            app.processEvents()
+            window.issue_panel.auto_box_btn.click()
+            app.processEvents()
+            assert len(window.task.issues) == 3
+            assert window.viewer.redraw_mode is True, "连续标注应保持红框模式"
+            assert window.issue_panel.auto_box_btn.isEnabled() is True
+            QTest.keyClick(window, Qt.Key.Key_Escape)
+            app.processEvents()
+            assert window.issue_panel.auto_box_btn.isEnabled() is False
+
+        window.close()
+        app.processEvents()
+
+    print("PASS test_auto_box_current_layer")
+
+
 def test_issue_panel_long_layer_name() -> None:
     """当前图层问题面板：超长图层名单行省略显示（不撑宽、不换行）。"""
     from mangaproof.ui.issue_panel import IssuePanel

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from mangaproof import APP_NAME, __version__
-from mangaproof.camera.centering import layer_visual_bounds
+from mangaproof.camera.centering import auto_box_rect, layer_visual_bounds
 from mangaproof.compare.controller import BG_ONLY, ORIGINAL, CompareController, hz_to_interval_ms
 from mangaproof.config.settings import (
     DISPLAY_RATIOS,
@@ -222,6 +222,7 @@ class MainWindow(QMainWindow):
         self.issue_panel.status_change_requested.connect(self._on_status_change_requested)
         self.issue_panel.add_issue_requested.connect(self._on_add_issue_requested)
         self.issue_panel.continuous_toggled.connect(self._on_continuous_toggled)
+        self.issue_panel.auto_box_requested.connect(self.auto_box_current_layer)
         self.issue_panel.custom_comment_requested.connect(self._on_custom_comment)
         self.issue_panel.edit_issue_requested.connect(self._on_edit_issue)
         self.issue_panel.delete_issue_requested.connect(self._on_delete_issue)
@@ -442,6 +443,9 @@ class MainWindow(QMainWindow):
             )
             self._shortcuts.append(sc)
 
+        # 单键快捷键在文本输入框聚焦时不触发（问题类型、自动框选等）
+        issue_guard = self._focus_not_text_input
+
         bind(kb.get("prev_psd", "Up"), self.prev_psd)
         bind(kb.get("next_psd", "Down"), self.next_psd)
         bind(kb.get("prev_layer", "Left"), self.prev_layer)
@@ -453,6 +457,8 @@ class MainWindow(QMainWindow):
         bind(kb.get("save_task", "Ctrl+S"), self.save_task)
         bind(kb.get("custom_comment", "Ctrl+Return"), self._on_custom_comment)
         bind(kb.get("redraw_mode", "R"), self.toggle_redraw_mode)
+        # 自动框选：仅在拖框模式下生效（否则给提示，见 auto_box_current_layer）
+        bind(kb.get("auto_box", "A"), self.auto_box_current_layer, guard=issue_guard)
         # 工具栏/菜单上标注的这三个也必须真的绑定（历史缺陷：只印了提示文本，
         # 没绑 QShortcut，按下去没有任何反应）
         bind(kb.get("open_psd", "Ctrl+O"), self.open_psd_dialog)
@@ -460,7 +466,6 @@ class MainWindow(QMainWindow):
         bind(kb.get("generate_report", "Ctrl+R"), self.generate_report_dialog)
 
         # 问题类型快捷键（需求 §35）：文本输入框聚焦时不触发
-        issue_guard = self._focus_not_text_input
         for item in self.settings.issue_types:
             key = item.get("key", "")
             name = item["name"]
@@ -521,6 +526,7 @@ class MainWindow(QMainWindow):
             "pass": d(kb.get("pass_layer", "Return")),
             "fail": d(kb.get("fail_layer", "/")),
             "redraw": d(kb.get("redraw_mode", "R")),
+            "auto_box": d(kb.get("auto_box", "A")),
             "custom": d(self.settings.custom_comment_key or "Ctrl+Return"),
             "cancel": d(kb.get("cancel_operation", "Esc")),
         }
@@ -1508,6 +1514,46 @@ class MainWindow(QMainWindow):
             self._commit_new_issue(*dialog.result_values(), rect=(x, y, w, h))
         self._after_issue_draw(rearm_type=None)
 
+    def auto_box_current_layer(self) -> None:
+        """自动框选当前图层：按视觉边界自动生成红框（拖框模式内可用）。
+
+        矩形 = 蓝色虚线框（图层视觉边界）上下左右各外扩 5 像素，对称外扩，
+        因此中心与虚线框中心完全一致。随后走与手动拖框完全相同的流程：
+        已选问题类型 → 直接建该类型；否则弹对话框选类型。
+        """
+        if self.task is None or self.current_doc is None or self._current_index < 0:
+            return
+        if not self.viewer.any_issue_mode():
+            self.statusBar().showMessage(
+                f"自动框选：请先进入拖框模式（"
+                f"{self._display_key(self.settings.binding('redraw_mode') or 'R')} 红框模式，"
+                f"或按问题类型快捷键）",
+                5000,
+            )
+            self.issue_panel.set_hint(
+                self._annotation_hint(
+                    "自动框选需先进入拖框模式：按 "
+                    f"{self._display_key(self.settings.binding('redraw_mode') or 'R')}"
+                    " 或问题类型快捷键"
+                )
+            )
+            return
+        info = self.current_doc.layers[self._current_index]
+        rect = auto_box_rect(info)
+        if rect is None:
+            self.statusBar().showMessage(
+                f"自动框选：图层「{info.name}」没有可框选的内容", 5000
+            )
+            return
+        self._compare.interrupt()
+        x, y, w, h = rect
+        pending = self.viewer.pending_type
+        log.info("自动框选：%s %s → %s", self._current_file, info.id, rect)
+        if pending is not None:
+            self._on_issue_drawn(pending, x, y, w, h)
+        else:
+            self._on_rect_drawn(x, y, w, h)
+
     def _annotation_hint(self, prefix: str) -> str:
         """拖框提示：说明标完是否自动退出 + 退出键。"""
         tail = (
@@ -1782,6 +1828,8 @@ class MainWindow(QMainWindow):
 
     def _on_pending_changed(self) -> None:
         self.action_redraw.setChecked(self.viewer.redraw_mode)
+        # 自动框选只在拖框模式下可用（进入/退出模式即时反映在按钮上）
+        self.issue_panel.set_auto_box_enabled(self.viewer.any_issue_mode())
         if not self.viewer.any_issue_mode():
             self.issue_panel.set_hint("")
 
