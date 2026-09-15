@@ -217,9 +217,9 @@ https://download.qt.io/official_releases/QtForPython/shiboken6/shiboken6-6.11.2-
 |----|------------|-----------|
 | numpy | ✅ | `v2.3.0`，`url=git+https://github.com/numpy/numpy`（源码构建）——低于闭包的 2.5.2 |
 | Pillow | ✅ | `11.3.0`，`depends=['png','jpeg','freetype']`，带 `setup.py.patch`——低于闭包的 12.3.0 |
-| reportlab | ✅（较旧） | 指向 hg 修订 `fe660f227cac`（`hg.reportlab.com`），`depends=['freetype']` |
+| reportlab | ❌ **已失效** | p4a 内置 recipe 指向 hg 修订 `fe660f227cac`（`hg.reportlab.com`），该地址实测 **HTTP 403**（run 34914649124 因此失败）→ 已用本地 recipe 覆盖为 PyPI **5.0.1** sdist（见 §5.10 ③） |
 | setuptools / cython / cffi / libffi / openssl / sqlite3 / freetype / harfbuzz / libwebp / png / jpeg / lxml / pycryptodome / scipy / pyjnius / android | ✅ | 供 recipe 内部或可选功能使用 |
-| **attrs / typing-extensions / charset-normalizer / psd-tools** | ❌ | 需自建本地 recipe（闭包内的 4 个纯 Python 包，正好就是它们） |
+| **attrs / typing-extensions / charset-normalizer / psd-tools / reportlab** | ❌ | 需自建本地 recipe（闭包内的 4 个纯 Python 包 + 因上游失效而被迫覆盖的 reportlab） |
 
 - **p4a recipe 基类**（自建 recipe 的正确姿势）【源码】`pythonforandroid/recipe.py`：
   - `PythonRecipe`：`pip install . --compile --target <site-packages>`；
@@ -747,6 +747,22 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 - Qt 模块自动探测正确：`['Gui', 'Core', 'Widgets']`，并解析出 Qt6Gui/Qt6Widgets 的 .so 依赖 ✅
 - buildozer 已 clone p4a（develop）、自动装好 ANT 1.9.4、找到 JDK17 的 javac/keytool、找到 SDK 与 NDK r27c ✅
 - 宿主环境 UTF-8 正常（`locale = C.UTF-8 / encoding = utf-8`）——即此前的编码怀疑不成立，已由日志排除 ✅
+
+**③ run 34914649124 —— p4a 编译阶段：Pillow 下载成功、reportlab 下载 403**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | 已进入 p4a 真正编译：Qt bootstrap 参数正确（`--bootstrap=qt --requirements=… --local-recipes …/deployment/recipes --qt-libs=Widgets,Gui,Core --load-local-libs=plugins_platforms_qtforandroid --display-cutout shortEdges`）；`numpy`（git v2.3.0）与 `Pillow`（GitHub 11.3.0）下载正常，随后在 reportlab 处失败 |
+| 日志关键行 | `Downloading reportlab from https://hg.reportlab.com/hg-public/reportlab/archive/fe660f227cac.tar.gz` → `urllib.error.HTTPError: HTTP Error 403: Forbidden`（重试 1/2/4/8s 后放弃） |
+| **根因** | p4a 内置的 reportlab recipe 指向 **hg.reportlab.com 上 2017 年的 hg 修订**；实测该地址现在**恒返回 403**（本机 curl 复核：403，非网络抖动） |
+| 修复 | 新增本地 recipe `packaging/android/recipes/reportlab/`，改用 **PyPI 5.0.1 sdist**（对齐 `uv.lock`）：`https://files.pythonhosted.org/packages/source/r/reportlab/reportlab-5.0.1.tar.gz`（实测 200） |
+| 依据 | ① p4a `Recipe.recipe_dirs()` 把 `--local-recipes` **排在首位**（`recipe.py:701-708`），同名本地 recipe 覆盖内置实现；② reportlab 5.0.1 的 sdist 是标准 `setuptools.build_meta` 构建、**不含需编译的 C 扩展**（加速件是独立可选包 `rl_accel`，本项目 lock 里没有）→ `depends` 只需 `python3 / pillow / charset-normalizer`，连内置 recipe 带的 freetype 都可以省 |
+| 顺手排雷 | 其它相关内置 recipe 的源实测可达：`png 1.6.37`（GitHub zip）、`jpeg 2.0.1`（GitHub tar.gz）、`freetype 2.14.1`（savannah）、`libwebp`（googleapis）、`harfbuzz`（freedesktop）✅ |
+
+**下一轮的风险预告（未发生，先记录）**
+
+- `numpy` 走的是 p4a 内置 recipe（git tag **v2.3.0**）与 `Pillow`（**11.3.0**），二者与 `uv.lock` 的 2.5.2 / 12.3.0 不一致 → 若真机运行期出现 API 差异，再补钉版本 recipe（P1 计划内）。
+- `psd-tools` 要用 NDK 交叉编译 Cython 扩展 `_rle`；失败时的兜底已写在 recipe 注释里（`--no-isolation` + hostpython 提供 cython），最差情况可退化为纯 Python 的 `rle.py`（功能不受影响，仅慢）。
 
 ### 5.11 失败可观测性（为什么必须做）
 
