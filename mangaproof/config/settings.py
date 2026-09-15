@@ -236,9 +236,22 @@ DEFAULT_MEMORY_POLICY = "balanced"
 # utils/platform.is_android_strict() 的编译期平台判定保证，与设置文件内容、
 # 环境变量均无关。
 DEFAULT_UI_SCALE = 1.0
-# Android 默认 0.75：在 1097 dp 宽设备上"整行工具栏不折叠"的最大 5% 档
-# （0.80 时工具栏逻辑宽约 1396 > 1097/0.8 ≈ 1371，会折叠）。
-ANDROID_DEFAULT_UI_SCALE = 0.75
+# Android 默认缩放按**设备形态**分档：
+#   · 手机（最小宽度 < 600 dp）→ 0.55：屏幕小、逻辑空间只有 ~390 dp 宽，
+#     不缩得更小连界面都放不下；
+#   · 折叠屏内屏 / 平板（≥ 600 dp）→ 0.75：1097 dp 宽设备上"整行工具栏不折叠"
+#     的最大 5% 档（0.80 时工具栏逻辑宽约 1396 > 1097/0.8 ≈ 1371，会折叠）。
+# 判定口径是"最小宽度 dp"= min(屏宽,屏高) ÷ 密度，也就是 Android 自己的
+# sw600dp 约定；**不能只看 dpi**——折叠屏内屏的密度与手机同为 420 上下，
+# 单看 dpi 会把折叠屏误判成手机。见 docs/Android端界面适配_缩放与菜单栏.md。
+ANDROID_PHONE_UI_SCALE = 0.55
+ANDROID_LARGE_UI_SCALE = 0.75
+#: 设备形态分界（最小宽度 dp）：与 Android 的 sw600dp 一致
+ANDROID_PHONE_MAX_SW_DP = 600
+#: Android 侧（A11yEnvProvider）写入进程环境的最小宽度 dp
+ANDROID_SW_DP_ENV = "MANGAPROOF_SW_DP"
+#: 兼容旧名（原默认值）
+ANDROID_DEFAULT_UI_SCALE = ANDROID_LARGE_UI_SCALE
 UI_SCALE_MIN = 0.5
 UI_SCALE_MAX = 1.5
 UI_SCALE_STEP = 0.05
@@ -253,6 +266,58 @@ def ui_scale_choices() -> list[float]:
     return [round(UI_SCALE_MIN + i * UI_SCALE_STEP, 2) for i in range(count + 1)]
 
 
+def android_sw_dp() -> int | None:
+    """当前设备的最小宽度（dp）：min(屏宽,屏高) ÷ 密度；拿不到返回 None。
+
+    两个来源，按可靠性排序：
+
+    1. **环境变量 `MANGAPROOF_SW_DP`**：Android 侧 ContentProvider
+       （packaging/android/java/.../A11yEnvProvider.java）在任何 Activity 之前、
+       用 DisplayMetrics 算好写进进程环境。这是**唯一在 QApplication 创建之前**
+       （也就是写入 QT_SCALE_FACTOR 之前）能拿到的屏幕信息；
+    2. **QScreen 逻辑尺寸兜底**：Qt 在 Android 上 1 逻辑像素 = 1 dp，所以
+       min(宽,高) 就是最小宽度 dp；但只有 QApplication 创建之后才可用。
+    """
+    raw = os.environ.get(ANDROID_SW_DP_ENV)
+    if raw:
+        try:
+            value = int(float(raw))
+        except (TypeError, ValueError):
+            value = 0
+        if 100 <= value <= 4000:      # 明显不合理就当作没拿到
+            return value
+    return _sw_dp_from_screen()
+
+
+def _sw_dp_from_screen() -> int | None:
+    """从 QScreen 读最小宽度 dp（需 QApplication 已创建，否则返回 None）。"""
+    try:
+        from PySide6.QtGui import QGuiApplication
+
+        if QGuiApplication.instance() is None:
+            return None
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+        geometry = screen.geometry()
+        return min(geometry.width(), geometry.height())
+    except Exception:  # pragma: no cover - Qt 不可用等极端情况
+        log.debug("读取 QScreen 尺寸失败", exc_info=True)
+        return None
+
+
+def android_device_class() -> str:
+    """设备形态：``"phone"`` / ``"large"``（折叠屏内屏、平板）/ ``"unknown"``。
+
+    按 Android 的 sw600dp 约定分类；拿不到屏幕信息时返回 "unknown"
+    （默认值按 large 处理，宁可少缩也不要在未知设备上缩过头）。
+    """
+    sw_dp = android_sw_dp()
+    if sw_dp is None:
+        return "unknown"
+    return "phone" if sw_dp < ANDROID_PHONE_MAX_SW_DP else "large"
+
+
 def android_ui_scaling() -> bool:
     """界面缩放是否适用于当前平台（**仅 Android**）。
 
@@ -264,8 +329,18 @@ def android_ui_scaling() -> bool:
 
 
 def default_ui_scale() -> float:
-    """当前平台的默认缩放：Android 0.75，桌面 1.0。"""
-    return ANDROID_DEFAULT_UI_SCALE if android_ui_scaling() else DEFAULT_UI_SCALE
+    """当前平台的默认缩放。
+
+    - 桌面（Windows / Linux / macOS）：恒 1.0；
+    - Android：按设备形态分档——手机（最小宽度 < 600 dp）**0.55**；
+      折叠屏内屏 / 平板（≥ 600 dp）**0.75**；机型未知时按 0.75（少缩为妙）。
+    """
+    if not android_ui_scaling():
+        return DEFAULT_UI_SCALE
+    device_class = android_device_class()
+    if device_class == "phone":
+        return ANDROID_PHONE_UI_SCALE
+    return ANDROID_LARGE_UI_SCALE
 
 
 def clamp_ui_scale(value: Any, *, default: float = DEFAULT_UI_SCALE) -> float:
@@ -305,15 +380,17 @@ def resolve_ui_scale(app_dir: Path | None = None) -> float:
 
     **桌面端直接返回 1.0**（连设置文件都不读）：即使 settings.json 里写着 0.5、
     即使环境里存在 ANDROID_ROOT 之类的变量，也不缩放——见 utils/platform.py。
-    Android：读 settings.json 的 ui_scale；缺键 → 0.75；非法/越界 → 0.75。
+    Android：读 settings.json 的 ui_scale；**缺键 → 按设备形态给默认值**
+    （手机 0.55 / 折叠屏内屏与平板 0.75，见 default_ui_scale）；非法/越界 → 同默认。
     """
     if not android_ui_scaling():
         return DEFAULT_UI_SCALE
+    fallback = default_ui_scale()
     directory = Path(app_dir) if app_dir is not None else paths.get_app_dir()
     raw = _read_raw_settings(directory / "settings.json")
     if "ui_scale" not in raw:
-        return ANDROID_DEFAULT_UI_SCALE
-    return clamp_ui_scale(raw.get("ui_scale"), default=ANDROID_DEFAULT_UI_SCALE)
+        return fallback
+    return clamp_ui_scale(raw.get("ui_scale"), default=fallback)
 
 
 def apply_startup_ui_scale(app_dir: Path | None = None) -> float:
@@ -343,6 +420,37 @@ def apply_startup_ui_scale(app_dir: Path | None = None) -> float:
 def effective_ui_scale() -> float:
     """本次启动实际生效的界面缩放（未调用 apply_startup_ui_scale 时为 1.0）。"""
     return DEFAULT_UI_SCALE if _effective_ui_scale is None else _effective_ui_scale
+
+
+def reconcile_android_ui_scale(manager: "SettingsManager") -> float | None:
+    """运行期兜底：把"按设备形态得到的默认缩放"写回设置（**仅当用户从未设置过**）。
+
+    正常路径不会做任何事：Android 侧 ContentProvider 在任何 Activity 之前就把
+    最小宽度 dp 写进了进程环境（MANGAPROOF_SW_DP），启动前的 resolve_ui_scale()
+    已经用对了默认值。
+
+    兜底路径：环境变量缺失（provider 未生效等）时，启动前只能按"机型未知 → 0.75"
+    处理；这里在 QApplication 已就绪后用 QScreen 重新判定，若得到的默认值与本次
+    启动实际生效值不同，就写回设置（下次启动生效）并记一条警告日志。
+    返回写入的值；无需修正时返回 None。
+    """
+    if not android_ui_scaling():
+        return None
+    raw = _read_raw_settings(paths.settings_path())
+    if "ui_scale" in raw:
+        return None                      # 用户已明确设置过（或上次已确定），不覆盖
+    desired = default_ui_scale()
+    current = effective_ui_scale()
+    if abs(desired - current) < 1e-9:
+        return None
+    manager.settings.ui_scale = desired
+    manager.save()
+    log.warning(
+        "设备形态默认缩放 = %.2f，与本次启动生效值 %.2f 不一致：已写入设置，重启应用后生效",
+        desired,
+        current,
+    )
+    return desired
 
 
 @dataclass

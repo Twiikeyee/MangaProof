@@ -1,4 +1,7 @@
-"""python-for-android hook：为 MangaProof 注入「不参与辅助功能」所需的 ContentProvider。
+"""python-for-android hook：为 MangaProof 注入「进程环境预置」用的 ContentProvider。
+
+这个 provider（`A11yEnvProvider`）在任何 Activity 之前、同一进程内写入两个环境
+变量；两件事都必须在 Qt 启动前完成，理由分别如下。
 
 为什么需要这个 hook
 ------------------
@@ -12,6 +15,14 @@ Qt 的 `AndroidDeadlockProtector` → 死锁/崩溃。
 `QtAccessibilityDelegate.onAccessibilityStateChanged()` 会直接 return，
 不再创建覆盖在 Qt 布局上的无障碍 View，系统根本不来查（源码见
 qtbase:src/android/jar/src/org/qtproject/qt/android/QtAccessibilityDelegate.java:94）。
+
+**`MANGAPROOF_SW_DP=<最小宽度 dp>`——界面缩放默认值按机型分档**
+
+界面缩放要在 QApplication 之前写进 `QT_SCALE_FACTOR`（Qt 只在启动时读一次），
+那一刻 PySide6 拿不到屏幕信息（没有 QJniObject，QScreen 也还不存在），所以由
+Java 侧用 `DisplayMetrics` 算好 `min(宽,高) / density` 写进环境变量；Python 侧
+据此把默认缩放分成"手机 0.55 / 折叠屏内屏与平板 0.75"（见
+docs/Android端界面适配_缩放与菜单栏.md §2.1）。
 
 而这个环境变量必须**在任何 Activity 之前**写入进程（该监听的注册与首次触发都在
 QtLayout/Activity 初始化时）。Android 的生命周期保证 ContentProvider 早于所有
@@ -46,7 +57,8 @@ PROVIDER_AUTHORITY = "com.priloba.mangaproof.a11y.env"
 
 _PROVIDER_XML = (
     "\n        <!-- MangaProof: 在 Activity 之前把 QT_ANDROID_DISABLE_ACCESSIBILITY=1"
-    " 写入进程环境，避免系统读屏查询触发 Qt 主线程死锁（见 packaging/android/p4a_hook.py） -->\n"
+    " 与 MANGAPROOF_SW_DP（最小宽度 dp，供界面缩放按机型分档）写入进程环境"
+    "（见 packaging/android/p4a_hook.py） -->\n"
     f'        <provider android:name="{PROVIDER_CLASS}"\n'
     f'                  android:authorities="{PROVIDER_AUTHORITY}"\n'
     '                  android:exported="false" />\n    '

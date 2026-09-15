@@ -330,6 +330,7 @@ class SettingsDialog(QDialog):
             self.ui_scale_combo.setCurrentIndex(max(0, idx))
             self.ui_scale_combo.setToolTip(
                 "整个界面（含对话框）的显示缩放，安卓端专有；桌面端恒为 100%。\n"
+                "默认值按机型给出：手机 55%，折叠屏内屏 / 平板 75%。\n"
                 "改动需要**重启应用**后完全生效——Qt 只在启动时读取一次缩放。\n"
                 "提示：50% 时文字会非常小；折叠屏内屏上想让顶部工具栏整行不折叠，\n"
                 "经验值是 75% 及以下（与设备宽度有关）。"

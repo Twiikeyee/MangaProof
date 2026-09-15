@@ -98,15 +98,23 @@ def main(argv=None) -> int:
     # 初始化时取值），因此这里先算好并写入环境变量；桌面端由平台判定硬保证
     # 恒为 1.0（Windows/macOS 是编译期平台类型、Linux 为 Unknown，且不看任何
     # 环境变量），所以桌面显示逻辑不受影响，详见 config/settings.py。
-    from mangaproof.config.settings import apply_startup_ui_scale
+    # 默认值按设备形态分档（手机 0.55 / 折叠屏内屏与平板 0.75）：机型信息由
+    # Android 侧 ContentProvider 通过 MANGAPROOF_SW_DP 提前注入进程环境。
+    from mangaproof.config.settings import (
+        android_device_class,
+        android_sw_dp,
+        apply_startup_ui_scale,
+    )
     from mangaproof.utils.platform import is_android_strict, qt_os_type_name
 
     ui_scale = apply_startup_ui_scale(app_dir)
+    sw_dp = android_sw_dp() if is_android_strict() else None
     log.info(
-        "界面缩放 = %.2f（Qt 平台类型：%s，Android 专有判定：%s）",
+        "界面缩放 = %.2f（Qt 平台类型：%s，Android 专有判定：%s%s）",
         ui_scale,
         qt_os_type_name(),
         "是" if is_android_strict() else "否",
+        f"，最小宽度 {sw_dp} dp → {android_device_class()}" if sw_dp else "",
     )
 
     from PySide6.QtCore import QTimer
@@ -143,6 +151,11 @@ def main(argv=None) -> int:
     install_dark_titlebar(app)
     apply_app_icon(app)
     settings_manager = SettingsManager()
+    # Android 兜底自愈：万一机型信息没能提前注入（provider 未生效），此时用 QScreen
+    # 重新判定，把按机型该用的默认缩放写回设置（下次启动生效）。正常情况下无事发生。
+    from mangaproof.config.settings import reconcile_android_ui_scale
+
+    reconcile_android_ui_scale(settings_manager)
     # 控制台可见性：直接运行 py 始终保留；打包产物默认隐藏（设置可关）
     apply_console_visibility(settings_manager.settings)
 

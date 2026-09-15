@@ -55,6 +55,17 @@ public class A11yEnvProvider extends ContentProvider {
     /** 与 Qt `QtAccessibilityDelegate` 约定的开关名。 */
     private static final String KEY_DISABLE_ACCESSIBILITY = "QT_ANDROID_DISABLE_ACCESSIBILITY";
 
+    /**
+     * 设备最小宽度（dp）的环境变量名，供 Python 侧决定「界面缩放」的默认值。
+     *
+     * 为什么必须在这里（Java）算：界面缩放要在 **QApplication 创建之前**写成
+     * `QT_SCALE_FACTOR`（Qt 只在启动时读一次），那时 Python 侧拿不到屏幕信息
+     * （PySide6 没有 QJniObject，QScreen 也还不存在）。ContentProvider 运行在
+     * 任何 Activity 之前、且在同一个进程里，用 DisplayMetrics 算最小宽度 dp
+     * （= min(宽,高) ÷ density，即 Android 自己的 sw600dp 口径）最合适。
+     */
+    private static final String KEY_SW_DP = "MANGAPROOF_SW_DP";
+
     @Override
     public boolean onCreate() {
         try {
@@ -67,7 +78,23 @@ public class A11yEnvProvider extends ContentProvider {
             android.util.Log.w("MangaProofA11y",
                     "无法设置 " + KEY_DISABLE_ACCESSIBILITY + "，Qt 无障碍桥将保持默认行为: " + t);
         }
+        reportSmallestWidthDp();
         return true;
+    }
+
+    /** 把当前显示的最小宽度（dp）写进进程环境，供 Python 侧按机型决定默认缩放。 */
+    private void reportSmallestWidthDp() {
+        try {
+            android.util.DisplayMetrics dm = getContext().getResources().getDisplayMetrics();
+            int swDp = Math.round(Math.min(dm.widthPixels, dm.heightPixels) / dm.density);
+            Os.setenv(KEY_SW_DP, Integer.toString(swDp), true);
+            android.util.Log.i("MangaProofA11y", KEY_SW_DP + "=" + swDp
+                    + "（宽高 " + dm.widthPixels + "x" + dm.heightPixels
+                    + "，density=" + dm.density + "）");
+        } catch (Throwable t) {
+            // 失败不影响启动：Python 侧会退回"未知机型 → 平板/折叠屏默认值"。
+            android.util.Log.w("MangaProofA11y", "无法计算最小宽度 dp: " + t);
+        }
     }
 
     @Override

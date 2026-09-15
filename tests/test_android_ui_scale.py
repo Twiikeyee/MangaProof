@@ -31,12 +31,20 @@ import mangaproof.config.settings as settings_mod
 import mangaproof.ui.settings_dialog as sd_mod
 from mangaproof.config.settings import (
     ANDROID_DEFAULT_UI_SCALE,
+    ANDROID_LARGE_UI_SCALE,
+    ANDROID_PHONE_MAX_SW_DP,
+    ANDROID_PHONE_UI_SCALE,
+    ANDROID_SW_DP_ENV,
     DEFAULT_UI_SCALE,
     Settings,
     SettingsManager,
+    android_device_class,
+    android_sw_dp,
     apply_startup_ui_scale,
     clamp_ui_scale,
+    default_ui_scale,
     effective_ui_scale,
+    reconcile_android_ui_scale,
     resolve_ui_scale,
     ui_scale_choices,
 )
@@ -45,9 +53,14 @@ from mangaproof.utils.platform import is_android_strict
 
 @pytest.fixture(autouse=True)
 def _reset_scale_state(monkeypatch):
-    """每个用例都从"本次启动还没应用过缩放、环境里没有 QT_SCALE_FACTOR"开始。"""
+    """每个用例都从"本次启动还没应用过缩放、环境里没有缩放相关变量"开始。
+
+    `MANGAPROOF_SW_DP` 也清掉：单测里设备形态一律由用例显式给出，避免依赖
+    offscreen 屏幕尺寸（否则分类结果会随运行环境变化）。
+    """
     settings_mod._effective_ui_scale = None
     monkeypatch.delenv("QT_SCALE_FACTOR", raising=False)
+    monkeypatch.delenv(ANDROID_SW_DP_ENV, raising=False)
     yield
     settings_mod._effective_ui_scale = None
 
@@ -110,7 +123,9 @@ def test_effective_scale_defaults_to_one_without_apply():
 
 
 def test_android_default_when_no_settings(monkeypatch, tmp_path):
+    """无 ui_scale 键时按设备形态给默认值；这里给平板/折叠屏口径（≥600 dp）。"""
     monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "1097")          # 平板/折叠屏内屏口径
     assert resolve_ui_scale(tmp_path) == ANDROID_DEFAULT_UI_SCALE
 
 
@@ -127,9 +142,108 @@ def test_android_uses_stored_value_and_writes_env(monkeypatch, tmp_path):
 @pytest.mark.parametrize("bad", ["abc", None, 0.1, 3.0, -1, float("nan")])
 def test_android_invalid_value_falls_back(monkeypatch, tmp_path, bad):
     monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "1097")
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"ui_scale": bad}), encoding="utf-8")
     assert resolve_ui_scale(tmp_path) == ANDROID_DEFAULT_UI_SCALE
+
+
+# ------------------------------------------------- 设备形态分支（手机 vs 大屏）
+
+
+def test_android_sw_dp_from_env(monkeypatch):
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "393")
+    assert android_sw_dp() == 393
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "0", "50", "99999", "-3"])
+def test_android_sw_dp_ignores_unreasonable_env(monkeypatch, raw):
+    """环境变量不合理时忽略它（改用 QScreen 兜底），不参与分类。"""
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, raw)
+    monkeypatch.setattr(settings_mod, "_sw_dp_from_screen", lambda: None)
+    assert android_sw_dp() is None
+    assert android_device_class() == "unknown"
+
+
+@pytest.mark.parametrize(
+    "sw_dp,expected_class,expected_scale",
+    [
+        (393, "phone", ANDROID_PHONE_UI_SCALE),      # 主流手机（1080x2400@440）
+        (360, "phone", ANDROID_PHONE_UI_SCALE),      # 小屏手机
+        (599, "phone", ANDROID_PHONE_UI_SCALE),      # 分界之下
+        (600, "large", ANDROID_LARGE_UI_SCALE),      # 分界（Android sw600dp）
+        (617, "large", ANDROID_LARGE_UI_SCALE),      # 1920x1080@280 平板模拟器
+        (690, "large", ANDROID_LARGE_UI_SCALE),      # 折叠屏内屏（Fold 类）
+        (800, "large", ANDROID_LARGE_UI_SCALE),      # 10 寸平板
+    ],
+)
+def test_android_device_class_branch(monkeypatch, sw_dp, expected_class, expected_scale):
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, str(sw_dp))
+    assert android_sw_dp() == sw_dp
+    assert android_device_class() == expected_class
+    assert default_ui_scale() == expected_scale
+
+
+def test_android_phone_default_flows_into_startup(monkeypatch, tmp_path):
+    """手机（393 dp）首次启动就用 0.55（不是先 0.75 再重启）。"""
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "393")
+    assert apply_startup_ui_scale(tmp_path) == ANDROID_PHONE_UI_SCALE
+    assert os.environ["QT_SCALE_FACTOR"] == "0.55"
+
+
+def test_android_class_from_screen_fallback(monkeypatch):
+    """环境变量缺失时用 QScreen 兜底（此时 QApplication 已存在）。"""
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setattr(settings_mod, "_sw_dp_from_screen", lambda: 393)
+    assert android_device_class() == "phone"
+    assert default_ui_scale() == ANDROID_PHONE_UI_SCALE
+
+
+def test_explicit_setting_beats_device_default(monkeypatch, tmp_path):
+    """用户明确设过 ui_scale 时，设备形态默认值不参与。"""
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "393")           # 手机
+    _write_raw(tmp_path, {"ui_scale": 1.0})
+    assert resolve_ui_scale(tmp_path) == 1.0
+
+
+def test_reconcile_writes_device_default_only_when_unset(monkeypatch, tmp_path):
+    """兜底自愈：机型信息缺失时按 QScreen 判定并写回设置；已有设置则不覆盖。"""
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setattr(settings_mod.paths, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(settings_mod, "_sw_dp_from_screen", lambda: 393)   # 手机
+
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()                       # 文件存在但**没有** ui_scale 键？→ 会写入 0.75
+    raw = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    raw.pop("ui_scale", None)            # 清掉，模拟"从未确定过"
+    (tmp_path / "settings.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    monkeypatch.setattr(settings_mod, "_effective_ui_scale", ANDROID_LARGE_UI_SCALE)
+    assert reconcile_android_ui_scale(manager) == ANDROID_PHONE_UI_SCALE
+    assert json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))["ui_scale"] == 0.55
+
+    # 已经有 ui_scale 键 → 不再改写
+    assert reconcile_android_ui_scale(manager) is None
+
+
+def test_reconcile_noop_when_scale_already_matches(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setattr(settings_mod.paths, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(settings_mod, "_sw_dp_from_screen", lambda: 800)   # 平板口径
+    manager = SettingsManager(tmp_path / "settings.json")
+    (tmp_path / "settings.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(settings_mod, "_effective_ui_scale", ANDROID_LARGE_UI_SCALE)
+    assert reconcile_android_ui_scale(manager) is None
+
+
+def test_reconcile_disabled_on_desktop(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_mod, "is_android_strict", lambda: False)
+    monkeypatch.setattr(settings_mod.paths, "settings_path", lambda: tmp_path / "settings.json")
+    manager = SettingsManager(tmp_path / "settings.json")
+    assert reconcile_android_ui_scale(manager) is None
 
 
 def test_existing_env_value_is_never_overwritten(monkeypatch, tmp_path):
@@ -183,7 +297,11 @@ def test_missing_key_uses_platform_default(monkeypatch, tmp_path):
     path = tmp_path / "settings.json"
 
     monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "1097")          # 平板/折叠屏口径
     assert SettingsManager(path).settings.ui_scale == ANDROID_DEFAULT_UI_SCALE
+
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "393")           # 手机口径
+    assert SettingsManager(path).settings.ui_scale == ANDROID_PHONE_UI_SCALE
 
     monkeypatch.setattr(settings_mod, "is_android_strict", lambda: False)
     assert SettingsManager(path).settings.ui_scale == DEFAULT_UI_SCALE
@@ -192,6 +310,7 @@ def test_missing_key_uses_platform_default(monkeypatch, tmp_path):
 def test_no_settings_file_uses_platform_default(monkeypatch, tmp_path):
     path = tmp_path / "settings.json"      # 不创建文件
     monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "1097")
     assert SettingsManager(path).settings.ui_scale == ANDROID_DEFAULT_UI_SCALE
 
 
@@ -209,6 +328,7 @@ def test_settings_dialog_hides_ui_scale_on_desktop(monkeypatch, qapp):
 
 def test_settings_dialog_shows_choices_and_writes_back_on_android(monkeypatch, qapp):
     monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)
+    monkeypatch.setenv(ANDROID_SW_DP_ENV, "1097")          # 平板口径 → 默认 75%
     settings = Settings()
     settings.ui_scale = ANDROID_DEFAULT_UI_SCALE
 
@@ -224,9 +344,14 @@ def test_settings_dialog_shows_choices_and_writes_back_on_android(monkeypatch, q
         dialog.apply_to(out)
         assert out.ui_scale == 1.25
 
-        # 恢复默认 → 平台默认（Android 75%），而不是硬编码 1.0
+        # 恢复默认 → 平台默认（平板 75%），而不是硬编码 1.0
         dialog._reset_defaults()
         assert combo.currentData() == ANDROID_DEFAULT_UI_SCALE
+
+        # 手机口径下恢复默认 → 55%
+        monkeypatch.setenv(ANDROID_SW_DP_ENV, "393")
+        dialog._reset_defaults()
+        assert combo.currentData() == ANDROID_PHONE_UI_SCALE
     finally:
         dialog.deleteLater()
 
