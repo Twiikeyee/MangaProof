@@ -782,6 +782,21 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 | 依据 | `get_recipe_dir()` 全仓只有 4 处调用点（apply_patch / copy_file / 同类 / IncludedFilesBehaviour），都只用于定位 recipe 自带文件 → 覆写安全 |
 | 附带确认 | `hostpython3.download()` 里有**强制版本校验**（python3 与 hostpython3 必须同版本）→ 两个一起钉 3.11.5 是必须的；上游 3.11 需要的 4 个补丁文件均可达（HTTP 200） |
 
+**⑦ 真机复测 —— 部分系统（HyperOS）读屏导致启动死锁/崩溃**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | 应用已能正常启动，但在开启辅助功能（读屏）的 HyperOS 等系统上，启动阶段（Qt 主线程创建"首次运行自动弹出的设置窗口"）与读屏查询并发 → 死锁/崩溃 |
+| 机制（读源码确认） | Qt 用一块 Surface 画整个界面，系统读屏只能整块查询；每次查询都走 `androidjniaccessibility.cpp` 的 `runInObjectContext()` → **`Qt::BlockingQueuedConnection` 阻塞回 Qt 主线程** → 由 `AndroidDeadlockProtector` 保护（超时则打日志并放弃）。主线程此时正忙于创建窗口 → 保护器与其竞争 → 死锁/崩溃 |
+| **官方开关** | qtbase `src/android/jar/src/org/qtproject/qt/android/QtAccessibilityDelegate.java:94`：<br>`final String isA11yOff = Os.getenv("QT_ANDROID_DISABLE_ACCESSIBILITY");`<br>命中 `"1"`/`"true"` 就 **直接 return**：不再创建覆盖在 Qt 布局上的无障碍 View、不注册代理 → 系统根本不查询 Qt ✓ **完全不触碰死锁保护器**（按需求方要求） |
+| 为什么不用"让查询返回空" | 查询在进 C++ 时**先**做阻塞调用（`runInObjectContext`）**再**查接口，所以"返回空"挡不住那条阻塞路径；要让 C++ 提前返回就得改 Qt 源码或绕过保护器 ✗ |
+| 为什么必须在 Java 侧设 | 该变量在"无障碍状态变化"时读取，而监听器在 QtLayout/Activity 初始化时就注册并可能立即触发 → Python 侧 `os.environ` 对"启动时读屏已开启"这一情形来不及 |
+| 落地方案 | p4a hook（`packaging/android/p4a_hook.py`，阶段 `before_apk_build` / `after_apk_build` / `before_apk_assemble`，hook 的 cwd 即 dist 目录）：① 把 `A11yEnvProvider.java` 放进 Gradle 源码集 `src/main/java/...`；② 在生成的 `AndroidManifest.xml` 的 `<application>` 内注入 `<provider … exported="false">` |
+| 为什么用 ContentProvider | Android 生命周期保证 provider 早于**任何** Activity（`ActivityThread.handleBindApplication()` 里先 `installContentProviders()`）→ 足够早；且 provider 只用 framework API（不依赖 Qt jar 参与编译），也**不必替换** `<application android:name>`（p4a qt 模板硬编码 `…QtApplication`，再注入一个 `android:name` 会变成重复属性、aapt2 直接报错） |
+| 本地验证 | 用假 dist 目录实跑 hook：provider 注入成功、Java 落入源码集、重复调用幂等、缺清单时必须硬失败 ✅ |
+| 真机验证方式 | `adb logcat \| grep MangaProofA11y` 应出现 `QT_ANDROID_DISABLE_ACCESSIBILITY=1 已设置`；开启读屏后应用可正常启动 |
+| 取舍（需知悉） | 这意味着本应用**对系统辅助功能完全不可见**（读屏读不到任何内容）——这是需求方明确选择的行为；若将来要做真正的无障碍支持，需要换用能暴露可访问性信息的 UI 栈（QML/原生控件 + 可访问性元数据），是独立的大工程 |
+
 **下一轮的风险预告（未发生，先记录）**
 
 - `numpy` 走的是 p4a 内置 recipe（git tag **v2.3.0**）与 `Pillow`（**11.3.0**），二者与 `uv.lock` 的 2.5.2 / 12.3.0 不一致 → 若真机运行期出现 API 差异，再补钉版本 recipe（P1 计划内）。

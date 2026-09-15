@@ -93,6 +93,7 @@ BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
 | 任务文件 | `.mangaproof.json` 写回打开文件/文件夹所在目录（与桌面一致） | 需求方确认；普通文件写入即可 |
 | 异步 | 目录扫描 / 哈希 / 预加载 / PDF 生成仍走现有 `QThread` worker（不再需要"导入 worker"） | 复用现有架构 |
 | 云端验证 | 模拟器矩阵（API 30/34 + `google_apis_ps16k` 16KB 镜像）跑安装 + 启动 + `adb shell ls /storage` 冒烟 | `ReactiveCircus/android-emulator-runner@v2` |
+| 辅助功能（无障碍） | **主动声明不参与**：通过 p4a hook 注入 `A11yEnvProvider`（ContentProvider）在 Activity 之前设置 `QT_ANDROID_DISABLE_ACCESSIBILITY=1`，用 Qt 官方开关让无障碍桥不安装覆盖 View | 【源码】`QtAccessibilityDelegate.java:94`；**取舍**：应用对读屏完全不可见（需求方选定，见打包文档 §5.10 ⑦） |
 
 **权限语义逐条（官方原文，`developer.android.com/training/data-storage/manage-all-files`）**
 

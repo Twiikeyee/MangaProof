@@ -39,6 +39,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECIPES_DIR = REPO_ROOT / "packaging" / "android" / "recipes"
+#: p4a hook：往清单注入「不参与辅助功能」的 provider（见 packaging/android/p4a_hook.py）
+P4A_HOOK_PATH = REPO_ROOT / "packaging" / "android" / "p4a_hook.py"
 SPEC_PATH = REPO_ROOT / "pysidedeploy.spec"
 
 # 打进 APK 的资源：font/ 的 ttf 与 ico/ 的 png 必须在列
@@ -316,6 +318,16 @@ def patch_buildozer_config(*, requirements: list[str], icons: dict[str, str],
             # 6) p4a 参数：刘海/挖孔区域可绘制（buildozer 无对应键）
             extra_args = (self.get_value("app", "p4a.extra_args") or "").strip()
             put("app", "p4a.extra_args", f"{extra_args} --display-cutout shortEdges".strip())
+
+            # 7) p4a hook：注入「不参与辅助功能」的 provider。
+            #    某些系统（实测 HyperOS）的读屏会在启动时并发查询 Qt 画布，撞上 Qt 的
+            #    无障碍桥（BlockingQueuedConnection 回主线程）与死锁保护逻辑 → 死锁/崩溃。
+            #    解法是用 Qt 官方开关 QT_ANDROID_DISABLE_ACCESSIBILITY=1（不触碰死锁保护器），
+            #    但该变量必须由 Java 在**任何 Activity 之前**写入进程环境 → 用 ContentProvider。
+            if P4A_HOOK_PATH.is_file():
+                put("app", "p4a.hook", str(P4A_HOOK_PATH))
+            else:
+                raise FileNotFoundError(f"p4a hook 缺失：{P4A_HOOK_PATH}")
 
             self.update_config()
 
