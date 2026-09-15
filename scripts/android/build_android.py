@@ -66,6 +66,19 @@ REQUIREMENT_TOKENS = {
 }
 QT_PACKAGES = {"pyside6", "pyside6-essentials", "pyside6-addons", "shiboken6"}
 
+# 自适应图标资源（file:res 相对路径）。p4a 处理 --add-resource 的文件模式时会
+# 先 ensure_dir(目录) 再复制，所以 mipmap-anydpi-v26/ 会被创建出来 —— 这正是
+# 绕开 p4a"写 XML 却不建目录"那个 bug 的关键。
+#   · mipmap/（无密度限定）= 兜底，保证 @mipmap/icon_foreground 在任何密度都能解析
+#   · mipmap-xxxhdpi/ = 432×432 主图，高密度设备直接用原图（避免被当作 mdpi 放大）
+RESOURCE_ENTRIES = ",".join([
+    "ico/Android-foreground.png:mipmap/icon_foreground.png",
+    "ico/Android-background.png:mipmap/icon_background.png",
+    "ico/Android-foreground.png:mipmap-xxxhdpi/icon_foreground.png",
+    "ico/Android-background.png:mipmap-xxxhdpi/icon_background.png",
+    "ico/android/res/mipmap-anydpi-v26/icon.xml:mipmap-anydpi-v26/icon.xml",
+])
+
 
 def log(msg: str) -> None:
     print(f"[mangaproof-android] {msg}", flush=True)
@@ -287,8 +300,13 @@ def patch_buildozer_config(*, requirements: list[str], icons: dict[str, str],
             put("app", "version", version)
             put("app", "android.numeric_version", str(numeric_version(version)))
             put("app", "icon.filename", icons["fallback"])
-            put("app", "icon.adaptive_foreground.filename", icons["foreground"])
-            put("app", "icon.adaptive_background.filename", icons["background"])
+            # ⚠️ 刻意**不设** icon.adaptive_foreground/background.filename：
+            #    p4a 的 bootstraps/common/build/build.py 生成自适应图标时会直接
+            #      open('res/mipmap-anydpi-v26/icon.xml', "w")
+            #    却从不创建该目录（SDL 模板里有、Qt 模板里没有，git 又不跟踪空目录）
+            #    → 构建最后打包阶段必然 FileNotFoundError（run 34914938082 即如此）。
+            #    自适应图标改由自带资源投放（见 RESOURCE_ENTRIES）。
+            put("app", "android.add_resources", RESOURCE_ENTRIES)
 
             # 5) 权限叠加（全文件访问：Android 11+ 直接路径读写的关键）
             perms = [p for p in (self.get_value("app", "android.permissions") or "").split(",") if p]
@@ -348,6 +366,7 @@ def main() -> int:
         "fallback": "ico/Android-fallback.png",
         "foreground": "ico/Android-foreground.png",
         "background": "ico/Android-background.png",
+        "adaptive_xml": "ico/android/res/mipmap-anydpi-v26/icon.xml",
     }
     for key, rel in icons.items():
         if not (REPO_ROOT / rel).is_file():

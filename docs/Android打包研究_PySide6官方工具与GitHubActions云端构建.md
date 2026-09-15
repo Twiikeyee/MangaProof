@@ -692,7 +692,9 @@ jobs:
 | `packaging/android/recipes/{attrs,typing-extensions,charset-normalizer,psd-tools}/__init__.py` | ✅ | 4 个本地 p4a recipe（版本取自 `uv.lock`，URL 已逐个实测 HTTP 200） |
 | `.github/workflows/android.yml` | ✅ | 手动触发的 Android 构建（**按需求不做冒烟测试**）：依赖覆盖卡口 → 宿主 venv → Qt wheel → 构建 → 断言产物 → 16KB 告警 → 签名 → 上传 artifact |
 | `.gitignore` 增补 | ✅ | `pysidedeploy.spec`、`buildozer.spec`、`deployment/`、`*.apk`、`*.aab` |
-| `packaging/android/recipes/{numpy,Pillow,reportlab}/__init__.py` | 🚧 | 可选：钉版本 recipe（覆盖 p4a 官方旧版本），P1 再做 |
+| `packaging/android/recipes/reportlab/__init__.py` | ✅ | **必须**覆盖：p4a 内置 recipe 的 hg 源已 403（§5.10 ③） |
+| `ico/android/res/mipmap-anydpi-v26/icon.xml` | ✅ | 自带自适应图标 XML（绕开 p4a 不建目录的 bug，§5.10 ④） |
+| `packaging/android/recipes/{numpy,Pillow}/__init__.py` | 🚧 | 可选：钉版本 recipe（对齐 lock 的 2.5.2 / 12.3.0），P1 再做 |
 | `packaging/android/README.md` | 🚧 | Android 构建说明（本地不构建，指向 CI） |
 | `mangaproof/storage/**`（应用代码） | 🚧 | 存储薄层：SAF 选目录、`content://`→真实路径映射、全文件访问权限检测、扫描/导出 worker（姊妹文档 §2.3） |
 
@@ -763,6 +765,17 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 
 - `numpy` 走的是 p4a 内置 recipe（git tag **v2.3.0**）与 `Pillow`（**11.3.0**），二者与 `uv.lock` 的 2.5.2 / 12.3.0 不一致 → 若真机运行期出现 API 差异，再补钉版本 recipe（P1 计划内）。
 - `psd-tools` 要用 NDK 交叉编译 Cython 扩展 `_rle`；失败时的兜底已写在 recipe 注释里（`--no-isolation` + hostpython 提供 cython），最差情况可退化为纯 Python 的 `rle.py`（功能不受影响，仅慢）。
+
+**④ run 34914938082 —— 全部依赖编译通过，卡在 p4a 生成自适应图标（p4a 自身 bug）**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | 已走到打包最后一步：`dists/mangaproof/build.py` 的 `make_package` 抛异常；reportlab 覆盖生效、全部 recipe 编译通过 |
+| 日志关键行 | `File ".../dists/mangaproof/build.py", line 433, in make_package` → `with open(join(res_dir, 'mipmap-anydpi-v26/icon.xml'), "w")` → `FileNotFoundError: [Errno 2] No such file or directory: 'src/main/res/mipmap-anydpi-v26/icon.xml'` |
+| **根因** | p4a `bootstraps/common/build/build.py:433` 写自适应图标 XML 时**从不创建 `mipmap-anydpi-v26/` 目录**；该目录只存在于 SDL bootstrap 的模板里，**Qt bootstrap 模板里没有**，而 git 不跟踪空目录 → 必然失败（不是我们的配置问题） |
+| 修复 | 改用"自带图标资源"：**不设** `icon.adaptive_foreground/background.filename`（p4a 就不会执行那段代码），改由 `android.add_resources` 投放 `mipmap-anydpi-v26/icon.xml` + 两层 PNG（`mipmap/` 兜底 + `mipmap-xxxhdpi/` 主图）。p4a 的文件模式会先 `ensure_dir(dirname(dest))` 再复制（`build.py:414-421`），目录自然被创建 |
+| 新增资产 | `ico/android/res/mipmap-anydpi-v26/icon.xml`（自带 `<adaptive-icon>`；将来加 `<monochrome>` 即可支持 Android 13 主题图标，无需改构建脚本） |
+| 附带确认 | buildozer → p4a 的命令行完全符合预期：`--permission …MANAGE_EXTERNAL_STORAGE`、`--orientation landscape`、`--manifest-orientation sensorLandscape`、`--numeric-version 10000`、`--icon/--icon-fg/--icon-bg`、`--enable-androidx`、`--local-recipes deployment/recipes` 均正确传入 ✅ |
 
 ### 5.11 失败可观测性（为什么必须做）
 

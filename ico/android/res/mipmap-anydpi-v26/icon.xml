@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MangaProof Android 自适应图标（随 android.add_resources 投放）
+
+  为什么自己写这个文件，而不是用 buildozer 的 icon.adaptive_* 键：
+    p4a 的 bootstraps/common/build/build.py 在生成自适应图标时，直接
+      open(join(res_dir, 'mipmap-anydpi-v26/icon.xml'), "w")
+    却**从不创建这个目录**（SDL bootstrap 的模板里有该目录，Qt bootstrap
+    的模板里没有，而 git 不跟踪空目录 → 必然不存在），于是构建在最后打包
+    阶段抛 FileNotFoundError（CI run 34914938082 即如此）。
+    改为自带资源后：不设 icon.adaptive_* → p4a 不会走那段代码；
+    android.add_resources 的目录创建 + 复制由 p4a 正常路径完成。
+
+  引用说明：icon_foreground / icon_background 由 android.add_resources
+  投放到 mipmap/（无密度限定，兜底）与 mipmap-xxxhdpi/（432×432 主图）。
+  未使用 monochrome 层（需求方明确不做）；将来若要做，在这里加
+  <monochrome android:drawable="@mipmap/icon_monochrome"/> 即可。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/icon_background"/>
+    <foreground android:drawable="@mipmap/icon_foreground"/>
+</adaptive-icon>

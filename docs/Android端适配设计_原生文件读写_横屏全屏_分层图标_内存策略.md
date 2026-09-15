@@ -430,6 +430,7 @@ def content_uri_to_path(uri: str) -> str | None:
 | manifest | `android:icon="@mipmap/icon"` → API 26+ 自动使用 `mipmap-anydpi-v26/icon.xml`【源码】p4a qt 模板 `AndroidManifest.tmpl.xml` |
 | 附加资源通道 | `android.add_resources = <src>:<dest>` → 复制到 `src/main/res/<dest>`（可用来补密度专用图或自定义 XML）【源码】p4a `common/build/build.py:414-421` |
 | ⚠️ **顺序坑** | p4a 先复制用户资源、**后**生成图标资源 → 若同时设置 `icon.adaptive_*` 与自定义 `mipmap-anydpi-v26/icon.xml`，**自定义文件会被覆盖**。所以只有两条自洽路线：(a) 用 `icon.adaptive_*` 键（不支持 monochrome）；(b) 完全不设 `icon.adaptive_*`，全部用 `android.add_resources` 提供 XML + 各密度层 |
+| ❌ **p4a bug ⇒ 路线 (a) 在 Qt 路线下不可用** | p4a `bootstraps/common/build/build.py:433` 生成自适应图标时直接 `open(join(res_dir, 'mipmap-anydpi-v26/icon.xml'), "w")`，**却从不创建该目录**；该目录在 SDL bootstrap 模板里有、**Qt bootstrap 模板里没有**，git 又不跟踪空目录 → 必然 `FileNotFoundError`（CI run 34914938082 实测）。**因此本项目改用路线 (b)**：不设 `icon.adaptive_*`，改由 `android.add_resources` 自带 `mipmap-anydpi-v26/icon.xml` + 两层 PNG —— p4a 的文件模式会先 `ensure_dir(dirname(dest))` 再复制，目录自然被创建【源码】`common/build/build.py:414-421` |
 
 ### 4.3 美术资源规格契约（与安卓官方一致，可直接发给美术）
 
@@ -455,48 +456,34 @@ ico/android/ic_launcher_monochrome.png     # 可选，432×432，单色（Alpha 
 
 > 换算给美术的口径：`432 px = 108 dp`（xxxhdpi，4×）；安全区 `66 dp = 264 px`；logo 建议 `48–66 dp = 192–264 px`。
 
-### 4.4 接入步骤（资源就位后）
+### 4.4 接入步骤 —— ✅ 已采用路线 (b)（路线 (a) 被 p4a 的 bug 堵死）
 
-**路线 (a)：用 buildozer 的图标键（最省事，推荐先用这条）**
+**路线 (b)：自带图标资源（本项目现行实现，见 `scripts/android/build_android.py` 的 `RESOURCE_ENTRIES`）**
 
-1. 把两个 PNG 放到 §4.3 的约定路径；
-2. 包装脚本写入（`icon.filename` 继续保留作 legacy 兜底）：
-   ```
-   icon.filename                     = ico/ico.png
-   icon.adaptive_foreground.filename = ico/android/ic_launcher_foreground.png
-   icon.adaptive_background.filename = ico/android/ic_launcher_background.png
-   ```
-3. 密度增强（可选，绕开"无密度 PNG 被放大"）：把 432×432 图另存到多个密度目录后按目录投放（**dest 必须相对 `src/main/res/`**，p4a 会 `copytree(src → src/main/res/<dest>)`）：
-   ```
-   android.add_resources = ico/android/mipmap-anydpi-v26:mipmap-anydpi-v26, ico/android/mipmap-xxxhdpi:mipmap-xxxhdpi
-   ```
-   ⚠️ 不要在同一路线里覆盖 `mipmap-anydpi-v26/icon.xml`（会被 p4a 覆盖，见 §4.2 顺序坑）。
+```
+android.add_resources =
+  ico/Android-foreground.png:mipmap/icon_foreground.png              # 无密度兜底，保证 @mipmap 引用在任何密度可解析
+  ico/Android-background.png:mipmap/icon_background.png
+  ico/Android-foreground.png:mipmap-xxxhdpi/icon_foreground.png      # 432×432 主图，高密度设备直接用原图
+  ico/Android-background.png:mipmap-xxxhdpi/icon_background.png
+  ico/android/res/mipmap-anydpi-v26/icon.xml:mipmap-anydpi-v26/icon.xml   # 自适应图标入口（同时把该目录创建出来）
+```
 
-**路线 (b)：全手工资源（支持密度细分与 monochrome 主题图标）**
+配套：`icon.filename = ico/Android-fallback.png`（legacy `mipmap/icon.png`）；**不设** `icon.adaptive_foreground/background.filename`。
+文件模式投放时 p4a 会先 `ensure_dir(dirname(dest))` 再复制（`common/build/build.py:414-421`），因此 `mipmap-anydpi-v26/` 会被创建——这既满足资源引用，也正好绕开 p4a 那个"写 XML 不建目录"的 bug。
+将来要做 Android 13 主题图标：只需在 `ico/android/res/mipmap-anydpi-v26/icon.xml` 里加一行 `<monochrome android:drawable="@mipmap/icon_monochrome"/>` 并投放对应 PNG，**不需要**动构建脚本。
 
-1. **不要**设置 `icon.adaptive_foreground/background.filename`（一旦设置，p4a 就会写 `mipmap-anydpi-v26/icon.xml` 并覆盖同名文件）；
-2. 自备资源目录，例如：
-   ```
-   ico/android/res/mipmap-anydpi-v26/icon.xml      # <adaptive-icon> 含 background/foreground/monochrome
-   ico/android/res/mipmap-xxxhdpi/icon_foreground.png
-   ico/android/res/mipmap-xxxhdpi/icon_background.png
-   ico/android/res/mipmap-xxxhdpi/icon_monochrome.png   # 可选
-   ico/android/res/mipmap/icon.png                      # legacy（或继续用 icon.filename）
-   ```
-3. `android.add_resources` **按目录逐条投放**（dest 相对 `src/main/res/`）：
-   ```
-   android.add_resources = ico/android/mipmap-anydpi-v26:mipmap-anydpi-v26, ico/android/mipmap-xxxhdpi:mipmap-xxxhdpi, ico/android/mipmap:mipmap
-   ```
-   （文件也可精确投放：`ico/android/icon.png:mipmap/icon.png`）。这些资源在图标生成**之前**复制，因此不会被覆盖。
+**（已废弃）路线 (a)：用 buildozer 的 `icon.adaptive_*` 键**
 
-**两条路线共同的 CI 校验**（Pillow，桌面 Python 即可跑）：尺寸 = 432×432、前景层含透明通道、背景层无透明、前景图形像素落在中央 264×264 px 安全区内（包围盒断言）。
+p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不建目录，Qt bootstrap 模板里也没有该目录 → 构建在打包阶段必然 `FileNotFoundError`（run 34914938082）。除非上游修掉，否则不要走这条。
+
+**CI 校验**（Pillow，桌面 Python 即可跑）：尺寸 = 432×432、前景层含透明通道、背景层无透明、前景图形像素落在中央 264×264 px 安全区内（包围盒断言）。
 
 ### 4.5 接入时的注意事项（资源已就位）
 
-- 三层一起给：`icon.filename = ico/Android-fallback.png`（legacy `mipmap/icon.png`）+ `icon.adaptive_foreground.filename` + `icon.adaptive_background.filename`；
-- **不要**只设 fg 或只设 bg（p4a 会忽略并打 warning）；
+- 三层一起给：`icon.filename`（legacy）+ 自适应 XML + 两层 PNG（**走路线 b**，不要设 `icon.adaptive_*` 键）；
 - minSdk 30 下自适应图标（API 26+）**始终生效**，`Android-fallback.png` 实际只在极端/老启动器场景被用到——保留即可，不必为它优化；
-- **可选增强（CI 自动做，不用美术重做）**：把 432×432 主图用 Pillow 缩成 mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi 五套，通过 `android.add_resources` 投放到 `mipmap-*`（p4a 只会把图放进**无密度限定**的 `mipmap/`，系统按 mdpi 解释后再缩放）。
+- **可选增强**：把 432×432 主图用 Pillow 缩成 mdpi/hdpi/xhdpi/xxhdpi 各套并逐条投放（现只投了无密度 + xxxhdpi 两档，中低密度由系统下采样，观感已可接受）。
 
 ### 4.6 图标资源实测核验（2026-09-15 复验）
 
