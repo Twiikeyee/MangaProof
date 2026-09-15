@@ -209,12 +209,18 @@ jobs:
             tail -n 80 "$LOG"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          grep -nE "Traceback|Error|error:|Exception|not found|No such|failed|❌" "$LOG" | tail -n 40 > "$RUNNER_TEMP/err.log" || true
-          [ -s "$RUNNER_TEMP/err.log" ] || tail -n 40 "$LOG" > "$RUNNER_TEMP/err.log"
+          # annotation 有数量上限（每步约 10 条），所以只发最有信息量的 10 行：
+          # 优先"最后一次 Traceback 之后的全部内容"，否则退回尾部。
+          awk '/^Traceback|Traceback \(most recent call last\)/{n=0; buf=""} {buf=buf $0 "\n"; n++} END{printf "%s", buf}' "$LOG" > "$RUNNER_TEMP/err.log"
+          if [ ! -s "$RUNNER_TEMP/err.log" ]; then
+            grep -E "Error|error:|Exception|not found|No such|failed|❌" "$LOG" | tail -n 10 > "$RUNNER_TEMP/err.log" || true
+          fi
+          [ -s "$RUNNER_TEMP/err.log" ] || tail -n 10 "$LOG" > "$RUNNER_TEMP/err.log"
+          tail -n 10 "$RUNNER_TEMP/err.log" > "$RUNNER_TEMP/err10.log"
           while IFS= read -r line; do
             line="${line//%/%25}"; line="${line//$'\r'/}"
             echo "::error::${line:0:190}"
-          done < "$RUNNER_TEMP/err.log"
+          done < "$RUNNER_TEMP/err10.log"
 
       # 工具的 main() 会吞掉异常（退出码恒为 0），所以必须自己断言产物存在
       - name: Assert APK produced
