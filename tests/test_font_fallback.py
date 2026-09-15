@@ -2,30 +2,31 @@
 
 背景：Android 版 Qt 的平台字体回退几乎是空的
 （`QAndroidPlatformFontDatabase::fallbacksForFamily()` 只加 emoji / 按语言的 CJK /
-`QT_ANDROID_FONTS` 名单），而 MiSans 缺若干符号字形（✗ U+2717、⚠ U+26A0 等），
-于是平板上显示成空白。Qt 的逐字回退候选其实来自**字体家族链**：
-`QFont.setFamilies([A, B, C])` → `fallBackFamilies = [B, C]` → `QFontEngineMulti`
-按链查找【源码】qfontdatabase.cpp:2847-2876、810-827。
+`QT_ANDROID_FONTS` 名单），而 MiSans 缺 5 个界面在用符号的字形（✗ U+2717、
+▣ U+25A3、✎ U+270E、🗑 U+1F5D1、⚠ U+26A0），于是平板上显示成空白。
+Qt 的逐字回退候选其实来自**字体家族链**：`QFont.setFamilies([A, B, C])` →
+`fallBackFamilies = [B, C]` → `QFontEngineMulti` 按链查找
+【源码】qfontdatabase.cpp:2847-2876、810-827。
 
 本测试守住这条链：
-- 回退字体（font/JetBrainsMonoNerdFont-Regular-v1.2.ttf）能找到、能注册、家族名正确；
+- 回退字体（font/NotoSansSymbols2-Regular.ttf，OFL-1.1）能找到、能注册、家族名正确；
 - **只在 Android** 挂进链（桌面返回空，观感不变）；
 - 主题的 QSS 家族链顺序为 MiSans → 回退字体 → 桌面默认家族；
-- MiSans 确实没有 ✗/⚠ 字形（说明为什么需要回退）；
-- 关键行为：链 `[MiSans, 回退字体]` 渲染 ✗/⚠ 的结果，与单独用回退字体渲染**逐像素相同**
-  ⇒ 字形确实来自回退字体（这正是 Android 上补字形所依赖的机制）。
+- MiSans 确实没有这 5 个字形（说明为什么需要回退）；
+- 回退字体确实覆盖这 5 个字形（含非 BMP 的 🗑，用渲染非空白来判定）；
+- 关键行为：链 `[MiSans, 回退字体]` 渲染这 5 个字符的结果，与单独用回退字体渲染
+  **逐像素相同且非空白** ⇒ 字形确实来自回退字体（这正是 Android 上补字形所依赖的机制）。
 
 运行：QT_QPA_PLATFORM=offscreen uv run python -m pytest tests/test_font_fallback.py -v
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
-
-import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -42,11 +43,11 @@ from mangaproof.fonts import (
 )
 from mangaproof.ui.theme import DEFAULT_FONT_FAMILIES, apply_dark_theme
 
-FALLBACK_FAMILY = "JetBrainsMono Nerd Font"
-#: 回退字体确实提供、MiSans 确实缺失的字形（本轮修复依赖这两个）
-FALLBACK_COVERED = ("✗", "⚠")
-#: 这两个字体都没有、Android 上仍会空白的字形（▣ 自动框选 / ✎ 自定义批注 / 🗑 删除）
-STILL_UNCOVERED = ("▣", "✎", "🗑")
+FALLBACK_FAMILY = "Noto Sans Symbols2"
+#: 界面上在用、而 MiSans 没有字形的 5 个字符（回退字体必须全部覆盖）
+NEEDED_GLYPHS = ("✗", "▣", "✎", "🗑", "⚠")
+#: 其中属于 BMP、可用 reportlab 的 cmap 解析直接判定覆盖的（🗑 是非 BMP，见下）
+BMP_GLYPHS = ("✗", "▣", "✎", "⚠")
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +90,12 @@ def _render(ch: str, families: list[str], size: int = 64) -> bytes:
     return bytes(image.constBits())
 
 
+def _cmap(path: Path) -> dict:
+    from reportlab.pdfbase.ttfonts import TTFontFile
+
+    return TTFontFile(str(path)).charToGlyph
+
+
 def test_fallback_font_family_name(fonts):
     assert fonts[1] == FALLBACK_FAMILY
 
@@ -111,8 +118,7 @@ def test_theme_family_chain_order(qapp, fonts):
     label = QLabel("✗ 未通过")
     label.show()
     qapp.processEvents()
-    expected = [misans, fallback, *DEFAULT_FONT_FAMILIES]
-    assert label.font().families() == expected
+    assert label.font().families() == [misans, fallback, *DEFAULT_FONT_FAMILIES]
     label.close()
 
 
@@ -127,47 +133,50 @@ def test_desktop_chain_unchanged_without_fallback(qapp, fonts):
     label.close()
 
 
-def test_misans_lacks_the_fallback_glyphs(fonts):
-    """MiSans 确实没有 ✗/⚠ 字形（否则不需要回退）。"""
-    from reportlab.pdfbase.ttfonts import TTFontFile
-
+def test_misans_lacks_the_needed_glyphs(fonts):
+    """MiSans 确实没有这些字形（否则不需要回退）。"""
     misans_path = find_font_path()
     assert misans_path is not None
-    cmap = TTFontFile(str(misans_path)).charToGlyph
-    for ch in FALLBACK_COVERED:
+    cmap = _cmap(misans_path)
+    for ch in BMP_GLYPHS:
         assert ord(ch) not in cmap, f"MiSans 竟然有 {ch}（U+{ord(ch):04X}）字形"
 
 
+def test_fallback_covers_all_needed_glyphs(fonts):
+    """回退字体覆盖全部 5 个字形。
+
+    - BMP 的 4 个：直接查 cmap；
+    - 🗑 U+1F5D1 是非 BMP，reportlab 的 cmap 解析看不到它，改用"渲染非空白"判定
+      （空白基准 = 私用区字符，任何字体都没有）。
+    """
+    fb_path = next((p for p in fallback_font_candidates() if p.exists()), None)
+    assert fb_path is not None
+    cmap = _cmap(fb_path)
+
+    for ch in BMP_GLYPHS:
+        assert ord(ch) in cmap, f"回退字体缺 {ch}（U+{ord(ch):04X}）"
+
+    _, fallback = fonts
+    blank = _render("\uE000", [fallback])       # 私用区：回退字体也没有
+    for ch in NEEDED_GLYPHS:
+        assert _render(ch, [fallback]) != blank, f"回退字体渲染 {ch} 是空白"
+
+
 def test_glyphs_come_from_fallback_font(fonts):
-    """核心断言：链 [MiSans, 回退字体] 渲染 ✗/⚠ 与单独用回退字体渲染逐像素相同，
-    且该渲染**非空白** ⇒ 字形确实来自家族链里的回退字体。
+    """核心断言：链 [MiSans, 回退字体] 渲染这 5 个字符与单独用回退字体渲染
+    逐像素相同，且该渲染**非空白** ⇒ 字形确实来自家族链里的回退字体。
 
     这正是 Android 上能补出字形的机制——字形来自家族链，而不是依赖平台字体回退
     （Android 上那条路是空的；桌面本机有平台回退，所以要额外断言非空白，
     以免"两边都是空白"造成假阳性）。
     """
     misans, fallback = fonts
-    blank = _render("\uE000", [fallback])   # 私用区：回退字体也没有 → 空白基准
-    for ch in FALLBACK_COVERED:
+    blank = _render("\uE000", [fallback])
+    for ch in NEEDED_GLYPHS:
         from_fallback_alone = _render(ch, [fallback])
         through_chain = _render(ch, [misans, fallback])
         assert from_fallback_alone != blank, f"{ch} 在回退字体里是空白（覆盖结论有误）"
         assert through_chain == from_fallback_alone, f"{ch} 未从回退字体取字形"
-
-
-def test_known_uncovered_glyphs_are_still_missing(fonts):
-    """记录当前缺口：▣/✎/🗑 两个字体都没有（Android 上仍会空白，待后续决定）。
-
-    这个测试不是"要求它们缺失"，而是把现状钉住：一旦将来补了覆盖它们的字体，
-    这里会失败并提醒同步更新按钮文案/文档。
-    """
-    from reportlab.pdfbase.ttfonts import TTFontFile
-
-    fb_path = next((p for p in fallback_font_candidates() if p.exists()), None)
-    assert fb_path is not None
-    cmap = TTFontFile(str(fb_path)).charToGlyph
-    for ch in STILL_UNCOVERED[:2]:   # ▣ ✎ 是 BMP，reportlab 可判定
-        assert ord(ch) not in cmap
 
 
 if __name__ == "__main__":

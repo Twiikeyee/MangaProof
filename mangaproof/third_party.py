@@ -183,11 +183,13 @@ MISANS_LICENSE = """MiSans 字体知识产权许可协议
 
 # JetBrains Mono（Nerd Fonts 补丁版）——符号图标回退字体，OFL-1.1。
 # 官方许可原文同时随包分发在 font/LICENSE-JetBrainsMonoNerdFont.txt。
-JETBRAINSMONO_LICENSE = """Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+# Noto Sans Symbols 2（符号回退字体，OFL-1.1）。
+# 官方许可原文同时随包分发在 font/LICENSE-NotoSansSymbols2.txt。
+NOTO_SYMBOLS2_LICENSE = """Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
-https://openfontlicense.org
+https://scripts.sil.org/OFL
 
 
 -----------------------------------------------------------
@@ -374,12 +376,11 @@ def build_third_party_items() -> list[ThirdPartyItem]:
             MISANS_LICENSE,
         ),
         ThirdPartyItem(
-            "JetBrains Mono Nerd Font",
-            "JetBrainsMonoNerdFont-Regular v1.2（Nerd Fonts 补丁版，"
-            "随软件分发，未做任何修改）",
+            "Noto Sans Symbols 2",
+            "NotoSansSymbols2-Regular（随软件分发，未做任何修改）",
             "OFL-1.1",
-            "© 2020 The JetBrains Mono Project Authors；图标字形由 Nerd Fonts 项目补丁加入",
-            "https://github.com/ryanoasis/nerd-fonts",
-            JETBRAINSMONO_LICENSE,
+            "© 2022 The Noto Project Authors",
+            "https://github.com/notofonts/symbols",
+            NOTO_SYMBOLS2_LICENSE,
         ),
     ]

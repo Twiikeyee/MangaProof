@@ -131,7 +131,7 @@ def main(argv=None) -> int:
     # 统一字体：先注册 MiSans（直接运行 → 程序目录/font/；
     # 打包产物 → 冻结资源目录），再以其为首选字体应用主题。
     # Android 上再把符号回退字体挂进**字体家族链**：该平台的 Qt 没有系统字体回退，
-    # MiSans 缺字形（✗ U+2717、⚠ U+26A0 等）会显示成空白；桌面不挂、观感不变。
+    # MiSans 缺 5 个界面符号的字形（✗ ▣ ✎ 🗑 ⚠）会显示成空白；桌面不挂、观感不变。
     font_family = load_app_fonts(app)
     symbol_fallbacks = load_symbol_fallback_families()
     apply_dark_theme(

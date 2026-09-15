@@ -204,31 +204,41 @@ if (!request.fallBackFamilies.isEmpty()) {
 
 | 文件 | 内容 |
 |---|---|
-| `font/JetBrainsMonoNerdFont-Regular-v1.2.ttf` | 回退字体（家族名 `JetBrainsMono Nerd Font`），随包分发 |
-| `font/LICENSE-JetBrainsMonoNerdFont.txt` | OFL-1.1 原文；同时在「帮助 → 第三方许可」里以内嵌文本展示（`third_party.py`） |
+| `font/NotoSansSymbols2-Regular.ttf` | 回退字体（家族名 `Noto Sans Symbols2`，641 KB），随包分发 |
+| `font/LICENSE-NotoSansSymbols2.txt` | OFL-1.1 原文；同时在「帮助 → 第三方许可」里以内嵌文本展示（`third_party.py`） |
 | `mangaproof/fonts.py` | `fallback_font_candidates()` / `load_symbol_fallback_families()`：注册回退字体并返回家族名；**`is_android_strict()` 为假时直接返回空**（桌面不挂链） |
 | `mangaproof/ui/theme.py` | `apply_dark_theme(app, primary_family, fallback_families=())`：家族链 = 主字体 → 回退字体 → 桌面默认家族；`app.font()` 同步带上同一条链（QSS 覆盖不到的场合也能回退） |
 | `mangaproof/main.py` | 组合并打印启动日志 `字体家族链：[...]`（真机核对用） |
-| `tests/test_font_fallback.py` | 家族名、Android-only 门控、链顺序、桌面链不变、MiSans 确实缺字形、**链渲染 ✗/⚠ 与回退字体单独渲染逐像素相同且非空白** |
+| `tests/test_font_fallback.py` | 家族名、Android-only 门控、链顺序、桌面链不变、MiSans 确实缺字形、回退字体确实覆盖 5 个字形、**链渲染与回退字体单独渲染逐像素相同且非空白** |
 
-### 当前覆盖情况（重要）
+### 为什么自带这份字体（而不是用设备上的）
 
-| 字符 | 用途 | MiSans | `JetBrainsMono Nerd Font` | 结果 |
+`Noto Sans Symbols 2` 正是 Android 自己在 `fonts.xml` 里给 `und-Zsym` 家族用的那支
+（`NotoSansSymbols-Regular-Subsetted2.ttf`），但：
+
+1. **部分 OEM ROM 会换掉或裁掉它**（"部分安卓系统用了 OEM 自己的字体"），覆盖范围不可保证；
+2. Qt for Android 本来也不会把系统字体当逐字回退（见上文第 2 条根因）。
+
+所以自带一份（OFL-1.1，641 KB）才能保证所有机型表现一致。
+
+### 覆盖情况
+
+**全部 5 个字形都由这份回退字体补上，界面文字/图标一个都没有改：**
+
+| 字符 | 用途 | MiSans | `Noto Sans Symbols2` | 结果 |
 |---|---|---|---|---|
-| `✗` U+2717 | 未通过（状态/按钮/芯片/提示） | 缺 | **有** | ✅ 回退后正常 |
-| `⚠` U+26A0 | 重要提醒/警告文案 | 缺 | **有** | ✅ 回退后正常 |
-| `▣` U+25A3 | `▣ 自动框选` | 缺 | 缺 | ⛔ 仍会空白（**待产品决策**） |
-| `✎` U+270E | `✎ 自定义批注` | 缺 | 缺 | ⛔ 仍会空白（**待产品决策**） |
-| `🗑` U+1F5D1 | `🗑 删除选中问题` | 缺 | 缺 | ⛔ 仍会空白（**待产品决策**） |
+| `✗` U+2717 | 未通过（状态/按钮/芯片/提示） | 缺 | **有** | ✅ 正常 |
+| `▣` U+25A3 | `▣ 自动框选` | 缺 | **有** | ✅ 正常 |
+| `✎` U+270E | `✎ 自定义批注` | 缺 | **有** | ✅ 正常 |
+| `🗑` U+1F5D1 | `🗑 删除选中问题` | 缺 | **有** | ✅ 正常 |
+| `⚠` U+26A0 | 重要提醒 / 警告文案 | 缺 | **有** | ✅ 正常 |
 
-后三个字符该回退字体里没有（它的强项是 Nerd Fonts 私有区图标）。可选处置（**尚未实施，等确认**）：
+选型时对比过：Ubuntu 系统里只有这一支同时覆盖这 5 个字形（✗ ⚠ ▣ ✎ 平时回退到
+DejaVu Sans，🗑 才落到它）；上游完整版 1.2 MB / 2955 码位，与这份 641 KB / 2655 码位
+在**箭头、几何图形、杂项符号、装饰符**四个区块的覆盖完全一致，因此取小的一份。
 
-1. 改用回退字体里的**真正的图标字形**（仅加进家族链即可显示，桌面也一致）：
-   - 自动框选：Codicon `U+EA85`（选区）或 Font Awesome `U+F096`（空心方框）/ `U+F05B`（准星）
-   - 自定义批注：Codicon `U+EA73` 或 FA `U+F040`（铅笔）
-   - 删除选中问题：Codicon `U+EA81` 或 FA `U+F1F8`（垃圾桶）
-2. 再带一份覆盖这三个字形的字体（例如 Noto Sans Symbols 2，约 +1.2 MB），保留原字符；
-3. 保持原样（Android 上这三个按钮的图标继续空白，文字仍可读）。
+已知未覆盖（与 MiSans 现状一致，界面未使用）：`⑪`～`⑳`（回退字体也没有；返修单 PDF 早已
+按"覆盖到第 N 个"回退成 `(11)` 写法）。
 
 ### 以后要加符号/图标的规矩
 

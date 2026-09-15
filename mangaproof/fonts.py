@@ -26,12 +26,19 @@ log = logging.getLogger("mangaproof.fonts")
 
 FONT_FILENAME = "MiSans-Medium.ttf"
 #: 字形回退字体（**仅 Android 挂进家族链**）：
-#: MiSans 缺若干符号字形（✗ U+2717、⚠ U+26A0 等），而 Android 版 Qt 的平台字体
-#: 回退几乎是空的（QAndroidPlatformFontDatabase::fallbacksForFamily() 只加 emoji/
-#: CJK/环境变量名单，不会把 /system/fonts 当逐字回退），于是缺字形就显示成空白。
-#: 桌面三平台靠系统回退（DirectWrite/CoreText/fontconfig）本来就能补，所以桌面
-#: 不挂这条链，既有观感保持不变。详见 docs/Android端界面适配_缩放与菜单栏.md。
-FALLBACK_FONT_FILENAME = "JetBrainsMonoNerdFont-Regular-v1.2.ttf"
+#: MiSans 缺 5 个界面在用符号的字形（✗ U+2717、▣ U+25A3、✎ U+270E、🗑 U+1F5D1、
+#: ⚠ U+26A0），而 Android 版 Qt 的平台字体回退几乎是空的
+#: （QAndroidPlatformFontDatabase::fallbacksForFamily() 只加 emoji / 按系统语言的
+#: CJK / QT_ANDROID_FONTS 名单，**不会**把 /system/fonts 当逐字回退），于是缺字形
+#: 直接显示成空白；桌面三平台靠系统回退（DirectWrite/CoreText/fontconfig）本来就能
+#: 补，所以桌面不挂这条链，既有观感保持不变。
+#:
+#: 为什么自带而不是用系统字体：Noto Sans Symbols 2 正是 Android 自己在
+#: `fonts.xml` 里给 `und-Zsym` 家族用的那支（NotoSansSymbols-Regular-Subsetted2.ttf），
+#: 但**部分 OEM ROM 会换掉/裁掉它**，且 Qt 本来也不会调用系统回退——自带一份才能
+#: 保证所有机型一致。OFL-1.1，随包分发（许可原文见 font/LICENSE-NotoSansSymbols2.txt）。
+#: 详见 docs/Android端界面适配_缩放与菜单栏.md 第 8 节。
+FALLBACK_FONT_FILENAME = "NotoSansSymbols2-Regular.ttf"
 
 
 def _candidates(filename: str) -> list[Path]:
