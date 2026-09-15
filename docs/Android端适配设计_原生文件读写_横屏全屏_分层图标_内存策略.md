@@ -24,6 +24,7 @@
 | 内存只用激进 | **必须改代码**：当前默认是 `balanced`，且设置页三档可选；Android 需强制 `aggressive` 并隐藏其它档 + 加后台释放钩子 | 【源码】`config/settings.py:217-253`、`ui/main_window.py:1313`、`ui/settings_dialog.py:368-378` |
 | 强制横屏 + 全面屏全屏 | **必须显式覆盖 buildozer 默认值**：buildozer 1.5.0 的 `default.spec` 写死 `orientation = portrait` 与 `fullscreen = 0`；刘海适配需要给 p4a 传 `--display-cutout shortEdges`（buildozer 无对应键）；运行时用 `showFullScreen()` + `QWindow.safeAreaMargins()`（Qt 6.9+，PySide6 6.11.2 已有） | 【源码】buildozer `default.spec:54,77`；p4a `bootstraps/common/build/build.py:877`、qt 模板 `strings.tmpl.xml`；Qt `qandroidplatformwindow.cpp:249-266`、`qwindow.cpp:1975-2025` |
 | 分层图标 | 链路已具备：`icon.adaptive_foreground.filename` + `icon.adaptive_background.filename` → 生成 `res/mipmap-anydpi-v26/icon.xml`；美术规格为 **两层各 108×108 dp、安全区 66×66 dp**；资源未就位时先只用 `icon.filename` 兜底 | 【源码】buildozer `targets/android.py:1144-1150`、p4a `common/build/build.py:430-443`；【官方文档】Android Adaptive icons |
+| 退出时闪退（真机复测新增） | **改代码即可**：Android 上退出走 `os._exit()`，跳过 CPython finalize 与 Qt/C++ 析构 —— 即 QTBUG-85449 家族的绕行做法（与 Qt 官方 `QT_ANDROID_NO_EXIT_CALL` 同向）；桌面保持 `sys.exit()` 语义。收敛在 `mangaproof/utils/shutdown.py` 一处 | 【官方文档】Qt for Android Environment Variables → `QT_ANDROID_NO_EXIT_CALL`（机制原文见 §8）；【上游 bug】QTBUG-85449「Android: crash on exit」；【本仓库】`utils/shutdown.py`、根 `main.py`（APK 入口，`input_file`）、`ui/main_window.py:2443`（关窗落盘先于退出）；详见打包文档 §5.10 ⑧ |
 
 **总体判断**：四条需求里，**第 1、2、5 条基本是"配置 + 少量适配代码"**；**第 4 条是"配置 + 布局适配"**；**第 3 条是确定的小改动**。真正的工作量仍然集中在"SAF 读写的架构落地"（因为 Python 侧 `open()` 无法直接访问 `content://`，而本项目现有的 psd-tools/Pillow 读取链路都基于路径）与后续的触屏交互改造。
 
@@ -562,6 +563,7 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 | 8 | 首屏启动底色/Logo | **做**：纯色底 `#2b2d30` + 用 `ico/ico.png` 作居中 logo；通过自定义主题 `android:windowBackground` 实现（注意 `.Fullscreen` 后缀） |
 | 9（新增·待确认） | 无法映射的目录（云盘/网络位置、媒体库入口、其他应用专属目录） | 方案按**直接拒绝 + 提示"请从『本机存储』入口选择文件夹"**处理（§2.9）——如无异议即按此实现 |
 | 10 | 辅助功能（无障碍 / 读屏） | **永久不适配**（需求方明确：本项目是效率工具，未来也不准备适配无障碍）。Android 端的做法是用 Qt 官方开关 `QT_ANDROID_DISABLE_ACCESSIBILITY=1` **主动声明不参与**，以规避部分系统（HyperOS）读屏查询与 Qt 主线程建窗并发导致的死锁——实现见打包文档 §5.10 ⑦ |
+| 11 | 退出阶段的闪退 | **Android 上直接 `os._exit()`**（跳过 CPython finalize 与 Qt/C++ 析构），桌面仍是 `sys.exit()`。理由：退出阶段崩溃来自 QTBUG-85449 家族，且数据/日志早已落盘（`closeEvent` 先于 `exec()` 返回，日志逐条 flush）→ 跳过收尾无副作用。**不设** `QT_ANDROID_NO_EXIT_CALL=1`：对本路径无效，且其"让进程别退出"的语义在异常路径下会从"崩溃"变成"卡死"。见打包文档 §5.10 ⑧ |
 
 ---
 
@@ -615,5 +617,9 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 | 媒体库 provider 的 docId 前缀（`image:`/`video:`/`audio:`/`document:`）→ 需 MediaStore 查询 → 本方案拒绝 | AOSP `MediaProvider/src/com/android/providers/media/MediaDocumentsProvider.java:118-133` |
 | 平台把 `com.android.externalstorage.documents` 作为已知常量 | AOSP `frameworks/base/core/java/android/provider/DocumentsContract.java:245` |
 | 三个图标资源的量化核验结果 | 本机 Pillow 实测（§4.6） |
+| 退出阶段崩溃的官方机制描述（"C++ threads… destroying these without joining them terminates an application"）与官方绕行方式（不调用 `exit()`、交给 Android 系统处理） | Qt 官方 [Qt for Android Environment Variables](https://doc.qt.io/qt-6/android-environment-variables.html) → `QT_ANDROID_NO_EXIT_CALL`（Qt 6.11 页，已复核） |
+| `QT_ANDROID_NO_EXIT_CALL` 只管 Qt 自己那条收尾 | qtbase `androidjnimain.cpp`（main 返回后 `if (!qEnvironmentVariableIsSet("QT_ANDROID_NO_EXIT_CALL")) exit(ret);`）；bug tracker **QTBUG-85449**「Android: crash on exit」 |
+| 关窗时数据先落盘、退出不依赖 atexit/析构 | 本仓库 `ui/main_window.py:2443-2462`（`closeEvent` → `save_task()` + `_save_settings()`）；`utils/logging_setup.py:100`（`RotatingFileHandler`，`StreamHandler.emit` 每条记录后 flush） |
+| APK 的真正入口就是仓库根 `main.py` | PySide6 `scripts/deploy_lib/config.py:106,268`（`input_file` → buildozer.spec `[app] input_file`）；本仓库 `main.py` |
 
 > 未能直接抓到的证据：AOSP **ExternalStorageProvider** 的源码（该 git 仓库路径已迁移/不可直接访问）→ `primary:<rel>` / `<UUID>:<rel>` 规则标为"高置信度、待真机核验"（§2.10 第一项）。

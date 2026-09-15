@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from mangaproof import APP_NAME, __version__
+from mangaproof.utils.shutdown import exit_app
 
 
 def apply_app_icon(app, icon_path: Path | None = None) -> Path | None:
@@ -94,4 +95,6 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 与仓库根 main.py 保持一致：Android 上跳过收尾（QTBUG-85449 家族），
+    # 桌面仍是 sys.exit 语义。
+    exit_app(main())

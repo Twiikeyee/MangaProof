@@ -797,6 +797,18 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 | 真机验证方式 | `adb logcat \| grep MangaProofA11y` 应出现 `QT_ANDROID_DISABLE_ACCESSIBILITY=1 已设置`；开启读屏后应用可正常启动 |
 | 产品决策（需求方确认） | 本应用是**效率工具，永久不适配无障碍**：对系统辅助功能完全不可见是**预期结果**，不是待偿还的技术债。因此不安排任何后续无障碍工作；仅当将来产品定位变化时才需重新评估（那将意味着换用能暴露可访问性信息的 UI 栈，属于重写级别的改动） |
 
+**⑧ 真机复测 —— 退出时闪退（QTBUG-85449 家族）→ 应用侧修复**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | 前面几处问题（解释器版本、自适应图标、辅助功能）都解决后：应用能正常启动、能正常使用；但**关闭/退出应用时闪退**（界面已消失、进程崩溃，属"退出阶段崩溃"，不影响数据可用性但体验差） |
+| **根因** | `Qt for Android` 退出阶段要做全局对象析构 / `exit()` 收尾，这条路径在部分设备与系统版本上必崩 —— 即 **QTBUG-85449 家族**（"Android: crash on exit"）。PySide6 的 Python 收尾还会额外叠一层解释器 finalize，同样会触碰到已开始被销毁的 Qt 对象。**官方对机制的描述**（Qt for Android Environment Variables 页，`QT_ANDROID_NO_EXIT_CALL` 条目）：*"an Android app might not be able to safely clean all threads while calling `exit()` and it might crash. This is because there are C++ threads running and destroying these without joining them terminates an application."* |
+| 修复 | 新增 `mangaproof/utils/shutdown.py`：`is_android()`（三重判定：`sys.platform == "android"` / `ANDROID_ROOT` / Qt `QOperatingSystemVersion.OSType.Android`）+ `exit_app(code)`；**Android 上直接 `os._exit(code)`**，跳过 CPython 收尾与 Qt/C++ 析构，由系统回收进程；桌面仍是 `sys.exit(code)`（atexit、析构、缓冲区 flush 全部照常）。入口两处统一改为 `exit_app(main())`：仓库根 `main.py`（APK 真正的入口，`pysidedeploy.spec` 的 `input_file = main.py`）与 `mangaproof/main.py` 的 `__main__` 兜底。**方向与 Qt 官方绕行方式一致**（官方：不调用 `exit()`、交给 Android 系统处理，代价是不跑全局析构） |
+| 为什么安全（逐条在代码里核实，不是假设） | ① **数据不丢**：`MainWindow.closeEvent()` 在 `QApplication.exec()` 返回**之前**就已完成 `save_task()` + `_save_settings()`（并先 `wait()` 各 worker），退出逻辑不依赖析构或 atexit；② **日志不丢**：`logging_setup` 用 `RotatingFileHandler`，每条记录即 flush，另有实时 stderr 代理；③ 线程/子进程已在 `closeEvent()` 里请求取消并等待 |
+| 为什么不用 `QT_ANDROID_NO_EXIT_CALL=1` | 该变量只作用于 Qt 自己那条收尾（qtbase `androidjnimain.cpp`：main 返回后 `if (!qEnvironmentVariableIsSet("QT_ANDROID_NO_EXIT_CALL")) exit(ret);`），而本进程的退出由 Python 主导 → 对我们的路径**无效**；更关键的是它的语义是"让进程不要退出"，一旦某条原生路径先返回而我们的 `os._exit()` 没跑到，就变成**卡死**（比崩溃更糟）→ 决定**不设**该变量，仅作为文档保留 |
+| 本地验证 | 两个分支各跑一次子进程：桌面（`atexit` 打点）→ 退出码 7 且打点**出现**（收尾照常）；置 `ANDROID_ROOT=/system` 走 Android 判定 → 退出码 7 且打点**不出现**（`os._exit` 生效，收尾被跳过）。另用 `QT_QPA_PLATFORM=offscreen` 以**真实入口** `main.py` 起一次应用并在 1.5 s 后关窗：退出码 0、`atexit` 打点出现、`settings.json` / `recent.json` 内容与测试前**逐字节一致**（即关窗落盘不受影响） |
+| 预期验收 | 真机：关窗/退出应用不再闪退；退出前后 `settings.json`、`recent.json`、`logs/mangaproof.log` 正常更新 |
+
 **下一轮的风险预告（未发生，先记录）**
 
 - `numpy` 走的是 p4a 内置 recipe（git tag **v2.3.0**）与 `Pillow`（**11.3.0**），二者与 `uv.lock` 的 2.5.2 / 12.3.0 不一致 → 若真机运行期出现 API 差异，再补钉版本 recipe（P1 计划内）。
