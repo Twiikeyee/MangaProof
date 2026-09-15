@@ -43,10 +43,15 @@ SPEC_PATH = REPO_ROOT / "pysidedeploy.spec"
 
 # 打进 APK 的资源：font/ 的 ttf 与 ico/ 的 png 必须在列
 SOURCE_INCLUDE_EXTS = "py,png,jpg,ttf,json,qml,js"
+# 注意：这里**只放 ASCII 目录名**。PySide6 的 deploy_lib 写 buildozer.spec 用的是
+# open(path, "w")（不带 encoding，依赖进程 locale），一旦 locale 不是 UTF-8，
+# 写入非 ASCII（比如仓库里那个中文资料目录）就会 UnicodeEncodeError，而这个异常
+# 会被工具的 try/except 吞掉、只留下 traceback。中文目录名本身已在 .gitignore 里，
+# CI 检出根本不包含它，因此这里不需要（也不该）列它。
 SOURCE_EXCLUDE_DIRS = ",".join([
     ".git", ".github", ".venv", ".uv-cache", ".pytest_cache", ".benchmarks",
     "deployment", "docs", "scripts", "tests", "packaging", "logs",
-    "local_samples", "README.assets", "美术素材原文件",
+    "local_samples", "README.assets",
 ])
 
 # 依赖名（uv.lock 中的名字）→ p4a requirements token
@@ -64,6 +69,28 @@ QT_PACKAGES = {"pyside6", "pyside6-essentials", "pyside6-addons", "shiboken6"}
 
 def log(msg: str) -> None:
     print(f"[mangaproof-android] {msg}", flush=True)
+
+
+def _force_utf8_locale() -> None:
+    """把进程 locale 切到 UTF-8。
+
+    部署工具在若干地方用 `open(path, "w")` 写文件（不带 encoding），行为取决于
+    进程 locale；CI runner 的 locale 若不是 UTF-8，写入非 ASCII 内容会抛
+    UnicodeEncodeError（且被工具的 try/except 吞掉）。这里在进程内兜一层，不依赖
+    CI 环境变量（workflow 里也设了 PYTHONUTF8=1，属双保险）。
+    """
+    import locale  # noqa: PLC0415
+
+    for candidate in ("C.UTF-8", "en_US.UTF-8", ""):
+        try:
+            locale.setlocale(locale.LC_ALL, candidate)
+        except locale.Error:
+            continue
+        encoding = (locale.getpreferredencoding(False) or "").lower()
+        if encoding.replace("-", "").startswith("utf8"):
+            log(f"locale = {candidate or '(系统默认)'} / encoding = {encoding}")
+            return
+    log("⚠️ 无法将 locale 切到 UTF-8，非 ASCII 内容写盘可能失败")
 
 
 def _prepare_pyside_scripts() -> None:
@@ -305,6 +332,7 @@ def main() -> int:
 
     os.chdir(REPO_ROOT)                                    # 工具要求 cwd 下有 main.py
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+    _force_utf8_locale()
     _check_host_requirements()
 
     for label, path in (("pyside wheel", args.pyside_wheel), ("shiboken wheel", args.shiboken_wheel)):

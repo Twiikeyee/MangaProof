@@ -35,6 +35,11 @@ env:
   ANDROID_API: "35"                      # targetSdk：35 才能保住平板上的强制横屏
   ANDROID_MIN_API: "30"                  # minSdk：MANAGE_EXTERNAL_STORAGE（全文件访问）下限
   QT_WHEEL_BASE: "https://download.qt.io/official_releases/QtForPython"
+  # UTF-8 强制：生成 buildozer.spec 时会写入中文目录名（source.exclude_dirs），
+  # 而 PySide6 的 deploy_lib 用 open(path, "w") 写文件（依赖 locale）；runner 的
+  # locale 若为 C/POSIX，默认编码可能是 ASCII → UnicodeEncodeError。强制 UTF-8 后无此风险。
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
 
 jobs:
   build-android:
@@ -132,6 +137,31 @@ jobs:
           pip install -q "pyside6==${PYSIDE_VERSION}" jinja2 pkginfo tqdm "packaging==24.1"
           echo "$RUNNER_TEMP/android-venv/bin" >> "$GITHUB_PATH"
 
+      # 预检：把"导入/版本/locale"这类问题在进入构建前暴露出来（失败信息清晰，
+      # 也更容易被 Report build failure details 步骤转成 annotation）
+      - name: Preflight check (imports, versions, locale)
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/android-venv/bin/activate"
+          set -euo pipefail
+          python - <<'PY'
+          import importlib, locale, pathlib, sys
+          print("python:", sys.version.split()[0], "| stdout encoding:", sys.stdout.encoding)
+          print("preferred encoding:", locale.getpreferredencoding(False))
+          for name in ("jinja2", "pkginfo", "tqdm", "packaging", "PySide6"):
+              mod = importlib.import_module(name)
+              print(f"  {name}: {getattr(mod, '__version__', 'ok')}")
+          import PySide6
+          scripts = pathlib.Path(PySide6.__file__).resolve().parent / "scripts"
+          sys.path.insert(0, str(scripts))
+          import android_deploy, deploy_lib  # 顶层导入，与官方 CLI 一致
+          print("android_deploy:", android_deploy.__file__)
+          print("deploy_lib:", deploy_lib.__file__)
+          # 中文写盘自检（buildozer.spec 里会出现中文目录名）
+          probe = pathlib.Path("/tmp/utf8-probe.txt"); probe.write_text("中文写入自检", encoding="utf-8")
+          print("utf-8 write probe:", probe.read_text(encoding="utf-8"))
+          PY
+
       # ---------- Qt Android wheel ----------
       - name: Cache Qt Android wheels
         uses: actions/cache@v6
@@ -151,15 +181,40 @@ jobs:
 
       # ---------- 构建 ----------
       - name: Build APK
+        id: build
         shell: bash
         run: |
           source "$RUNNER_TEMP/android-venv/bin/activate"
+          set -o pipefail
           python scripts/android/build_android.py \
             --pyside-wheel   "$RUNNER_TEMP/qt-wheels/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ inputs.arch }}.whl" \
             --shiboken-wheel "$RUNNER_TEMP/qt-wheels/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ inputs.arch }}.whl" \
             --ndk-path "$ANDROID_NDK_PATH" --sdk-path "$ANDROID_HOME" \
             --name MangaProof --mode "${{ inputs.mode }}" --arch "${{ inputs.arch }}" \
-            --apk-out "$RUNNER_TEMP/apk_path.txt" -v
+            --apk-out "$RUNNER_TEMP/apk_path.txt" -v 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      # 构建失败时把日志尾部转成 annotation + job summary：
+      # job 日志下载接口要求仓库 admin（匿名 403），但 check-run annotations 接口公开可读，
+      # 把关键行变成 ::error:: 就能在外部读到失败原因。
+      - name: Report build failure details
+        if: failure() && steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          LOG="$RUNNER_TEMP/build.log"
+          [ -f "$LOG" ] || { echo "::error::构建步骤没有产出日志文件"; exit 0; }
+          {
+            echo "### Android 构建失败 — 日志尾部"
+            echo
+            echo '```'
+            tail -n 80 "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -nE "Traceback|Error|error:|Exception|not found|No such|failed|❌" "$LOG" | tail -n 40 > "$RUNNER_TEMP/err.log" || true
+          [ -s "$RUNNER_TEMP/err.log" ] || tail -n 40 "$LOG" > "$RUNNER_TEMP/err.log"
+          while IFS= read -r line; do
+            line="${line//%/%25}"; line="${line//$'\r'/}"
+            echo "::error::${line:0:190}"
+          done < "$RUNNER_TEMP/err.log"
 
       # 工具的 main() 会吞掉异常（退出码恒为 0），所以必须自己断言产物存在
       - name: Assert APK produced
