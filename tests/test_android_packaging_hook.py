@@ -207,8 +207,74 @@ def test_unexpected_template_activity_is_hard_failure(hook, fake_dist, monkeypat
                                      "org.qtproject.qt.android.SomeOtherActivity"),
                         encoding="utf-8")
     monkeypatch.chdir(fake_dist)
-    with pytest.raises(RuntimeError, match="无法安全替换入口 Activity"):
+    with pytest.raises(RuntimeError, match="无法定位入口 Activity"):
         hook._apply(require_manifest=True)
+
+
+# ---------------------------------------- 入口 Activity 的 Jinja 变量写法（CI run 34947644803）
+
+def _p4a_style_manifest(entry: str) -> str:
+    """p4a Qt 模板的入口写法：`android:name="{{args.android_entrypoint}}"`。"""
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
+        '    <application android:name="org.qtproject.qt.android.bindings.QtApplication"\n'
+        '                 android:label="@string/app_name"\n'
+        '                 >\n'
+        '                <!--\n'
+        '                 android:extractNativeLibs="true" = needed for smaller apk size\n'
+        '                -->\n'
+        f'        <activity android:name="{entry}"\n'
+        '                  android:exported="true">\n'
+        '            <intent-filter>\n'
+        '                <action android:name="android.intent.action.MAIN" />\n'
+        '            </intent-filter>\n'
+        '        </activity>\n'
+        '    </application>\n'
+        '</manifest>\n'
+    )
+
+
+@pytest.mark.parametrize("entry", [
+    "{{args.android_entrypoint}}",
+    "{{ args.android_entrypoint }}",
+])
+def test_swap_handles_jinja_entrypoint_variable(hook, entry):
+    """入口写成模板变量时必须也能替换。
+
+    本轮 CI 失败就是这个：只匹配字面类名 → 出现 0 次 → 我那道硬失败断言把
+    **正确的构建**挡死了（run 34947644803）。
+    """
+    out, ok = hook._swap_entry_activity(_p4a_style_manifest(entry))
+    assert ok is True
+    assert 'android:name="com.mangaproof.picker.PickerActivity"' in out
+    assert entry not in out
+
+
+def test_swap_handles_rendered_class_name(hook):
+    """渲染成 buildozer.spec 里的 entrypoint 类名时（原路径）也要能替换。"""
+    out, ok = hook._swap_entry_activity(
+        _p4a_style_manifest("org.qtproject.qt.android.bindings.QtActivity"))
+    assert ok is True
+    assert 'android:name="com.mangaproof.picker.PickerActivity"' in out
+
+
+def test_swap_is_idempotent_for_both_shapes(hook):
+    for entry in ("{{args.android_entrypoint}}",
+                  "org.qtproject.qt.android.bindings.QtActivity"):
+        once, _ = hook._swap_entry_activity(_p4a_style_manifest(entry))
+        twice, _ = hook._swap_entry_activity(once)
+        assert twice == once
+
+
+def test_swap_failure_message_lists_actual_activity_names(hook):
+    """定位失败时要能自诊断：错误信息里给出清单中真实的 activity 名。"""
+    broken = _p4a_style_manifest("com.example.Whatever")
+    with pytest.raises(RuntimeError) as exc:
+        hook._swap_entry_activity(broken)
+    msg = str(exc.value)
+    assert "com.example.Whatever" in msg
+    assert "无法定位入口 Activity" in msg
 
 
 def test_duplicate_application_tag_is_hard_failure(hook, fake_dist, monkeypatch):

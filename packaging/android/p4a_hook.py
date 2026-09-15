@@ -200,6 +200,51 @@ def _patch_extract_native_libs(text: str) -> tuple[str, bool]:
     return text, True
 
 
+def _swap_entry_activity(text: str) -> tuple[str, bool]:
+    """把清单里的入口 Activity 换成 `PickerActivity`（幂等）。
+
+    **两个候选写法都要认**（这是本轮 CI run 34947644803 失败的原因）：
+    p4a 的 Qt 模板里入口**不是字面量类名**，而是 Jinja 变量：
+
+        <activity android:name="{{args.android_entrypoint}}" …>
+
+    构建命令里带的 `--android-entrypoint org.kivy.android.PythonActivity` 会被
+    buildozer 的 spec 覆盖（我们的 spec 写的是 `org.qtproject.qt.android.bindings.QtActivity`），
+    因此渲染结果既可能是那个类名，也可能（在模板变量未渲染的形态下）保留 `{{ … }}` 原文。
+    最初只按字面类名匹配 → 实测出现 0 次 → 我那道"找不到就硬失败"的保护把**正确的构建**
+    挡死了。现在两种都试，都找不到才失败，并且把清单里真实的 activity 名打进错误信息。
+    """
+    if PICKER_ACTIVITY in text:
+        _log("清单入口 Activity 已是 PickerActivity，跳过")
+        return text, True
+
+    candidates = (
+        # ① 渲染后的字面类名（buildozer.spec 的 entrypoint，p4a Qt 模板的期望值）
+        f'android:name="{QT_TEMPLATE_ACTIVITY}"',
+        # ② 模板变量原文（含/不含花括号内空格两种写法）
+        'android:name="{{args.android_entrypoint}}"',
+        'android:name="{{ args.android_entrypoint }}"',
+        'android:name="{{args.android_entrypoint }}"',
+        'android:name="{{ args.android_entrypoint}}"',
+    )
+    for marker in candidates:
+        if text.count(marker) == 1:
+            text = text.replace(marker, f'android:name="{PICKER_ACTIVITY}"', 1)
+            if PICKER_ACTIVITY not in text:
+                raise RuntimeError("[mangaproof-hook] 入口 Activity 替换后校验失败")
+            _log(f"入口 Activity 已替换（匹配写法：{marker}）")
+            return text, True
+
+    found = re.findall(r'<activity[^>]*android:name="([^"]*)"', text, flags=re.S)
+    raise RuntimeError(
+        "[mangaproof-hook] 无法定位入口 Activity：既没有 "
+        f'android:name="{QT_TEMPLATE_ACTIVITY}"，也没有模板变量 android:name="{{{{args.android_entrypoint}}}}"。\n'
+        f"        清单里现有的 activity 名：{found or '（一个都没有）'}\n"
+        "        请核对 p4a 的 Qt bootstrap 模板是否改了入口写法，以及 "
+        "build_android.py 里是否设置了 android.entrypoint"
+    )
+
+
 def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
     """注入 provider 声明、入口 Activity，并打开 extractNativeLibs。"""
     manifest = dist_dir / "src" / "main" / "AndroidManifest.xml"
@@ -226,23 +271,7 @@ def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
             raise RuntimeError("[mangaproof-hook] provider 注入后校验失败")
 
     # 2) 入口 Activity → PickerActivity（只为截获自己的 onActivityResult）
-    if PICKER_ACTIVITY in text:
-        _log("清单入口 Activity 已是 PickerActivity，跳过")
-    else:
-        occurrences = text.count(f'android:name="{QT_TEMPLATE_ACTIVITY}"')
-        if occurrences != 1:
-            raise RuntimeError(
-                f"[mangaproof-hook] 清单里 {QT_TEMPLATE_ACTIVITY} 出现 {occurrences} 次"
-                "（期望恰好 1 次），无法安全替换入口 Activity；"
-                "请核对 p4a 的 Qt 模板与 build_android.py 的 android.entrypoint 设置"
-            )
-        text = text.replace(
-            f'android:name="{QT_TEMPLATE_ACTIVITY}"',
-            f'android:name="{PICKER_ACTIVITY}"',
-            1,
-        )
-        if PICKER_ACTIVITY not in text:
-            raise RuntimeError("[mangaproof-hook] 入口 Activity 替换后校验失败")
+    text, activity_ok = _swap_entry_activity(text)
 
     # 3) extractNativeLibs=true（否则 release 包不解压 so，PySide 的 abi3 模块加载不到）
     text, extract_ok = _patch_extract_native_libs(text)
@@ -250,7 +279,7 @@ def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
     if text != original:
         manifest.write_text(text, encoding="utf-8")
     _state["manifest_patched"] = True
-    _state["activity_swapped"] = True
+    _state["activity_swapped"] = activity_ok
     _state["extract_native_libs"] = extract_ok
     _log(f"清单已就绪：provider + 入口 Activity = {PICKER_ACTIVITY} + extractNativeLibs=true")
 
