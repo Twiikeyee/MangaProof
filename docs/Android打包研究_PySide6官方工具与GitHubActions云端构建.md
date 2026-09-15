@@ -772,6 +772,16 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 | 预验证 | 本地把 develop 为该版本准备的 4 个补丁对 CPython v3.11.5 源码做了 `patch --dry-run`：`pyconfig_detection.patch` / `reproducible-buildinfo.diff` / `cpython-311-ctypes-find-library.patch` / `py3.8.1_fix_cortex_a8.patch` **全部干净应用**（仅 offset/fuzz），避免再白等一次 60 分钟构建 |
 | 验收标准 | 新 APK 内出现 `libpython3.11.so`；应用能启动到主窗口 |
 
+**⑥ run 34919720480 —— 本地 recipe 覆盖导致上游补丁丢失**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | 进入 `Prebuilding recipes` 后立刻失败：`Applying patch fix_ensurepip.patch` → `patch: **** Can't open patch file .../deployment/recipes/hostpython3/fix_ensurepip.patch : No such file or directory` |
+| **根因** | 我们的本地覆盖 recipe 只有 `__init__.py`，而 p4a 的 `Recipe.get_recipe_dir()` **优先返回 `--local-recipes` 下的同名目录**（recipe.py:369-378），`apply_patch()` 用 `join(get_recipe_dir(), filename)` 找补丁（recipe.py:289）→ 上游的 `patches/*.patch` 天然找不到 |
+| 修复 | 两个覆盖 recipe 都增加 `get_recipe_dir()` 覆写，**指回 p4a 源码树里对应的 recipe 目录**：`Path(pythonforandroid.recipes.<name>.__file__).parent`。这样只覆盖版本号，recipe 自带文件（补丁）仍走上游，无需复制文件、也不会随上游漂移 |
+| 依据 | `get_recipe_dir()` 全仓只有 4 处调用点（apply_patch / copy_file / 同类 / IncludedFilesBehaviour），都只用于定位 recipe 自带文件 → 覆写安全 |
+| 附带确认 | `hostpython3.download()` 里有**强制版本校验**（python3 与 hostpython3 必须同版本）→ 两个一起钉 3.11.5 是必须的；上游 3.11 需要的 4 个补丁文件均可达（HTTP 200） |
+
 **下一轮的风险预告（未发生，先记录）**
 
 - `numpy` 走的是 p4a 内置 recipe（git tag **v2.3.0**）与 `Pillow`（**11.3.0**），二者与 `uv.lock` 的 2.5.2 / 12.3.0 不一致 → 若真机运行期出现 API 差异，再补钉版本 recipe（P1 计划内）。
