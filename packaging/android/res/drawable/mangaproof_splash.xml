@@ -1,27 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  MangaProof 首屏（启动底色 + Logo）—— 随 android.add_resources 投放。
+  MangaProof 首屏（启动底色 + Logo），随 android.add_resources 投放。
 
   为什么需要它
-  ------------
+  ============
   首次启动要解包 Python 发行包，期间 Android 已经显示窗口、而 Qt 还没画出第一帧，
-  于是用户看到白屏/黑屏几百毫秒到数秒。p4a 的 presplash 机制在 **Qt bootstrap 下
-  不生效**；有效且可靠的做法是用 Android 框架自己的 `android:windowBackground`
+  于是用户看到白屏/黑屏几百毫秒到数秒。p4a 的 presplash 机制在 Qt bootstrap 下
+  不生效；有效且可靠的做法是用 Android 框架自己的 android:windowBackground
   （窗口创建时由 system_server 绘制，与 Qt 无关）。
 
   实现要点
-  --------
-  · 底色 `@color/mangaproof_splash_bg`（#202227，与应用图标底板同色系）；
-  · Logo 用 `@drawable-nodpi/mangaproof_logo`（= ico/Android-foreground.png，
-    即应用图标的前景层 PNG，带透明边距，居中显示）；
-  · 主题在 `values/themes.xml` 定义，**由 p4a hook 注入到 Activity 实际使用的
-    `@style/KivySupportCutout`** —— p4a 的 Qt 模板把 Activity 主题硬编码成它，
-    而 Activity 主题会覆盖 Application 主题，所以只设 android.apptheme 不生效
-    （见 packaging/android/p4a_hook.py 的 _patch_splash_background）。
+  ========
+  · 底色 @color/mangaproof_splash_bg（#202227，与应用图标底板同色系）；
+  · Logo 用 @drawable/mangaproof_logo（即 ico/Android-foreground.png，应用图标的
+    前景层 PNG，带透明边距，居中显示）；
+  · 主题在 values/themes.xml 定义，并由 p4a hook 注入到 Activity 实际使用的
+    @style/KivySupportCutout 上（原因见 packaging/android/p4a_hook.py 的
+    _patch_splash_background 说明）。
 
-  关于尺寸：放在 `drawable-nodpi/` 表示**不做密度缩放**，位图按原像素居中显示。
-  现用图 432×432、可见图形约 245px 宽 → 1080p 手机上约占屏宽 23%，
-  视觉上是一个克制的居中标记。若将来要更大的 Logo，替换该 PNG 即可（无需改 XML）。
+  关于尺寸：放在 drawable-nodpi/ 表示不做密度缩放，位图按原像素居中显示。
+  现用图 432×432、可见图形约 245px 宽，1080p 手机上约占屏宽 23%，
+  视觉上是一个克制的居中标记。要更大或更小，替换该 PNG 即可，XML 无需改动。
+
+  注意：XML 注释里不能出现连续两个连字符，否则文件不是合法 XML，
+  aapt2 会直接编译失败。本文件及同目录其它文件都遵守这一点。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/mangaproof_splash_bg" />

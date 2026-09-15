@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -217,3 +218,94 @@ def test_splash_resources_exist_and_are_wired():
     assert "drawable/mangaproof_splash.xml" in build_script         # drawable 投放
     assert "values/themes.xml" in build_script                      # 主题投放
     assert 'put("app", "android.apptheme", "@style/MangaProofSplash")' in build_script
+
+
+# --------------------------------------------------- Android 资源文件的合法性（防再犯）
+
+def _illegal_double_hyphens(raw: bytes) -> list[int]:
+    """返回 XML 注释**内部**非法的连续连字符位置（排除 <!-- 与 --> 自身）。
+
+    XML 规范禁止注释内容出现连续两个连字符。这条规则在**字节层**生效，所以中文里的
+    "——"（U+2014 的 UTF-8 编码含 0x2D 0x2D 字节对）同样非法 —— 本项目就因为
+    XML 注释里写了中文破折号，导致 aapt2 编译失败、Gradle 秒挂（CI 实测）。
+    """
+    out: list[int] = []
+    i, n = 0, len(raw)
+    while i < n:
+        if raw[i:i + 4] == b"<!--":
+            j = raw.find(b"-->", i + 4)
+            if j < 0:
+                out.append(i)
+                break
+            body = raw[i + 4:j]
+            k = body.find(b"--")
+            if k >= 0:
+                out.append(i + 4 + k)
+            i = j + 3
+        else:
+            i += 1
+    return out
+
+
+def test_android_res_xml_has_no_illegal_double_hyphen():
+    """所有投放的 Android 资源 XML 都必须能在字节层通过 XML 注释规则。
+
+    这是"构建期才炸、报错信息还指向别处"的典型：aapt2 只报 `not well-formed`，
+    Gradle 秒挂，而根因是注释里一个中文破折号。所以放在单测里，改资源立刻能发现。
+    """
+    res_dir = PACKAGING_DIR / "res"
+    files = sorted(res_dir.rglob("*.xml"))
+    assert files, "packaging/android/res 下应有资源 XML"
+    offenders = {str(f.relative_to(res_dir)): _illegal_double_hyphens(f.read_bytes())
+                 for f in files}
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert not offenders, f"这些资源 XML 的注释里有非法连续连字符：{offenders}"
+
+
+def test_android_res_xml_is_well_formed():
+    """结构上必须是合法 XML（ElementTree 口径）。"""
+    res_dir = PACKAGING_DIR / "res"
+    for f in sorted(res_dir.rglob("*.xml")):
+        ET.fromstring(f.read_bytes())          # 解析失败即测试失败
+
+
+def test_splash_resources_survive_aapt2_compile():
+    """有 aapt2 时真编一遍（这才是构建期真正会炸的地方）；没有就跳过。"""
+    aapt2 = None
+    for candidate in (
+        Path.home() / "Android/Sdk/build-tools",
+        Path("/usr/lib/android-sdk/build-tools"),
+    ):
+        if candidate.is_dir():
+            for bt in sorted(candidate.iterdir(), reverse=True):
+                if (bt / "aapt2").is_file():
+                    aapt2 = bt / "aapt2"
+                    break
+        if aapt2:
+            break
+    if aapt2 is None:
+        pytest.skip("本机没有 aapt2，跳过（CI 由构建步骤覆盖）")
+
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td)
+        (work / "res" / "values").mkdir(parents=True)
+        (work / "res" / "drawable").mkdir(parents=True)
+        (work / "res" / "drawable-nodpi").mkdir(parents=True)
+        for src, dst in (
+            (PACKAGING_DIR / "res" / "values" / "colors.xml", work / "res" / "values" / "colors.xml"),
+            (PACKAGING_DIR / "res" / "values" / "themes.xml", work / "res" / "values" / "themes.xml"),
+            (PACKAGING_DIR / "res" / "drawable" / "mangaproof_splash.xml",
+             work / "res" / "drawable" / "mangaproof_splash.xml"),
+        ):
+            dst.write_bytes(src.read_bytes())
+        # Logo 用仓库里真实的那张图
+        shutil.copyfile(REPO_ROOT / "ico" / "Android-foreground.png",
+                        work / "res" / "drawable-nodpi" / "mangaproof_logo.png")
+        proc = subprocess.run(
+            [str(aapt2), "compile", "--dir", str(work / "res"), "-o", str(work / "out.zip")],
+            capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, f"aapt2 compile 失败：\n{proc.stdout}\n{proc.stderr}"

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- MangaProof 首屏背景色（与应用图标底板同色系）。需求方指定：#202227 -->
+<!-- MangaProof 首屏背景色（与应用图标底板同色系）。需求方指定：#202227。XML 注释内不得出现连续连字符。 -->
 <resources>
     <color name="mangaproof_splash_bg">#202227</color>
 </resources>
