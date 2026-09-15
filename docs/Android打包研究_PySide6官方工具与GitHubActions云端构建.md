@@ -556,9 +556,9 @@ Play 要求（届时再核对当季政策）：AAB 格式、targetSdk 达标、*
 
 **现状（已落地）**：
 
-- **push 到 `master` → 自动构建**：两个 ABI（`aarch64` / `x86_64`）并行，`release` 模式，配置了 keystore secrets 就签名；产出的两个 APK 分别作为独立 artifact（`MangaProof-<version>-android-<abi>`）上传，保留 30 天；
+- **push 到 `master` → 自动构建**：两个 ABI（`aarch64` / `x86_64`）并行，`release` 模式，配置了 keystore secrets 就签名；产出的两个 APK 分别作为独立 artifact（`MangaProof-<version>-android-<abi>`）上传，**保留期与桌面一致**（不设 `retention-days`，走仓库默认，即 upload-artifact 的 90 天）；
 - `workflow_dispatch` 手动触发：可选 `release`/`debug` 与是否签名（未配 secrets 时只告警、跳过签名，产出 `-unsigned` APK，不让流水线变红）；
-- 尚未做（需要时再加）：push `v*` tag → 追加到 Release（沿用 `gh release create` / `softprops/action-gh-release@v3`，注意与 `build.yml` 的 release 作业共用 tag，别抢占同名 Release）；
+- **不做** Release 发布：Android 只上传 artifact（`build.yml` 的 `v*` tag → Release 作业只管桌面三平台产物）；若将来要把 APK 也挂到 Release，注意与桌面 release 作业共用同一个 tag，必须先探测 Release 是否存在再决定 `gh release upload` 还是 `gh release create`，避免两个作业抢占同名 Release；
 - 产物命名：`MangaProof-<version>-android-<abi>.apk`（与桌面 `MangaProof-<version>-<platform>` 风格对齐）。
 
 ### 5.7 完整 workflow 骨架（可直接演化为 `.github/workflows/android.yml`）

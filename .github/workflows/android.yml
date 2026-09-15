@@ -323,4 +323,5 @@ jobs:
           name: MangaProof-${{ env.APP_VERSION }}-android-${{ matrix.arch }}
           path: ${{ env.SIGNED_APK }}
           if-no-files-found: error
-          retention-days: 30
+          # 不设 retention-days：与桌面 build.yml 一致，走仓库默认保留期
+          # （upload-artifact 默认 90 天，仓库设置调整时两边同步生效）
