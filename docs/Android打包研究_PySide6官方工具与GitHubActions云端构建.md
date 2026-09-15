@@ -719,18 +719,45 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 
 > ⚠️ 包装脚本**本机跑不到底**（宿主依赖 buildozer/p4a/jinja2 等只存在于 CI 的 3.11 venv）；本机缺依赖时会给出明确提示而非 traceback（已验证）。首次 workflow_dispatch 是端到端验证点。
 
-### 5.10 首次 CI 运行记录（2026-09-15）
+### 5.10 CI 运行记录（2026-09-15，逐次收敛）
+
+**① run 34913456068 —— `Setup Android SDK` 8 秒失败**
 
 | 项 | 内容 |
 |----|------|
-| 运行 | `android-aarch64-debug`（run 34913456068），第 6 步 `Setup Android SDK` 失败，用时约 8 秒 |
 | 现象 | `android-actions/setup-android@v4` 步骤秒失败，后续步骤全部 skipped；同分支的桌面 `build` 流程正常 |
 | **根因** | 该 action 的默认输入是 `packages: 'tools platform-tools'`，而 **Google SDK 仓库里已经不存在独立的 `tools` 包**（实测 repository2-3.xml / repository2-1.xml 共 278 个包，`tools` 匹配数为 **0**；`cmdline-tools` 才是它的替代品）→ `sdkmanager --install tools` 立即报错 |
-| 修复 | ① 显式传参 `packages: "platform-tools"` 覆盖默认值；② 后续 `sdkmanager --install` 改为 `set -euo pipefail` + 稳健解析 `sdkmanager` 路径 + 打印 `--list_installed` + **校验 NDK 目录确实存在** |
-| **顺带修掉的顺序 bug** | 原「Free disk space」步骤在安装 NDK **之后**执行 `rm -rf $ANDROID_HOME/ndk/*`，会把刚装好的 r27c 删掉 → 已把该步骤**提前到 SDK 安装之前**，并拆掉重复步骤 |
-| 已核实可用 | `platform-tools` / `platforms;android-35` / `build-tools;35.0.0` / `ndk;27.2.12479018` / `cmdline-tools;latest` 均在仓库中 ✅；`actions/cache@v6`、`upload-artifact@v7`、`checkout@v7`、`setup-java@v6` 的 tag 均可解析 ✅ |
+| 修复 | ① 显式传参 `packages: "platform-tools"` 覆盖默认值；② `sdkmanager --install` 改 `set -euo pipefail` + 稳健解析路径 + 打印 `--list_installed` + 校验 NDK 目录存在 |
+| 顺带修掉 | 原「Free disk space」在装完 NDK **之后**执行 `rm -rf $ANDROID_HOME/ndk/*`，会把刚装好的 r27c 删掉 → 提前到 SDK 安装之前 |
 
-> 教训记录：第三方 setup action 的**默认输入值**也会随上游数据变化而失效（`tools` 包被移除）；凡是"默认值里带具体包名/版本"的 action，最好显式覆盖输入。
+**② run 34913864166 —— `Build APK` 17 秒失败（工具吞掉异常）**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | 前 13 步全绿（SDK/NDK/依赖卡口/宿主 venv/Qt wheel 都 OK），`Build APK` 12~17 秒即失败；工具只把 traceback 打进日志（退出码仍为 0），最后是我的产物断言报错 |
+| 日志关键行 | `# sdkmanager path "/usr/local/lib/android/sdk/tools/bin/sdkmanager" does not exist, sdkmanager is notinstalled` → buildozer 退出 1 |
+| **根因** | **buildozer 1.5.0 只认旧版布局**：其 `sdkmanager_path` 属性写死 `$ANDROID_HOME/tools/bin/sdkmanager`；而现代 cmdline-tools 装在 `$ANDROID_HOME/cmdline-tools/latest/bin`，且 `tools` 包已被 Google 移除 → 该路径永远不会存在 |
+| 修复 | workflow 新增步骤 `Fix cmdline-tools layout for buildozer`：`ln -sfn "$ANDROID_HOME/cmdline-tools/latest" "$ANDROID_HOME/tools"`（目录级软链接；`sdkmanager` 启动脚本会 `cd` 到自身目录上级并用 `pwd -P` 解析真实路径，`lib/` 依然可达），并当场 `sdkmanager --version` 自检 |
+| 顺带改进 | ① 包装脚本传 `extra_ignore_dirs="scripts,packaging,docs,tests"`（避免把构建脚本当应用源码扫描，消除 `Found 'import PySide6' in file 0` 噪音）；② 新增失败注解通道与 `Preflight check` 步骤（见 §5.11） |
+
+**③ 已确认正常的部分（来自 run ② 的日志）**
+
+- 依赖闭包注入生效：`requirements = python3,shiboken6,PySide6,attrs,charset-normalizer,numpy,Pillow,psd-tools,reportlab,typing-extensions` ✅
+- 本地 recipe 注入生效：`['attrs', 'charset-normalizer', 'psd-tools', 'typing-extensions']` ✅
+- Qt 模块自动探测正确：`['Gui', 'Core', 'Widgets']`，并解析出 Qt6Gui/Qt6Widgets 的 .so 依赖 ✅
+- buildozer 已 clone p4a（develop）、自动装好 ANT 1.9.4、找到 JDK17 的 javac/keytool、找到 SDK 与 NDK r27c ✅
+- 宿主环境 UTF-8 正常（`locale = C.UTF-8 / encoding = utf-8`）——即此前的编码怀疑不成立，已由日志排除 ✅
+
+### 5.11 失败可观测性（为什么必须做）
+
+GitHub 的 **job 日志下载接口要求仓库 admin 权限**（匿名请求 403 `Must have admin rights`），因此外部无法直接读取失败原因。现在 workflow 里加了：
+
+1. `Build APK` 输出 `tee` 到 `$RUNNER_TEMP/build.log`；
+2. `Report build failure details` 步骤（`if: failure()`）：把**最后一次 Traceback 之后的 10 行**写成 `::error::` 注解（注解有数量上限，故只取 10 行），并把日志尾部 80 行写进 job summary；
+3. **check-run annotations 接口是公开可读的** → 下次失败可以直接从 API 取到根因，无需 admin、无需人工粘贴日志；
+4. `Preflight check` 步骤：打印 python/编码/依赖版本并真的 `import android_deploy`、`deploy_lib`，把"导入级"问题提前暴露成一步清晰的失败。
+
+> 教训：第三方 setup action 的**默认输入值**、以及**老工具对 SDK 目录布局的硬编码**，都会随上游变化失效；凡是"写死路径/包名/版本"的环节，都要显式覆盖或补兼容层。已核实可用：`platform-tools` / `platforms;android-35` / `build-tools;35.0.0` / `ndk;27.2.12479018` / `cmdline-tools;latest` 均在 SDK 仓库中 ✅；`actions/cache@v6`、`upload-artifact@v7`、`checkout@v7`、`setup-java@v6` 的 tag 均可解析 ✅。
 
 ---
 

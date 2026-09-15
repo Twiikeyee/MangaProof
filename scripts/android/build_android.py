@@ -374,6 +374,9 @@ def main() -> int:
         init=False,
         loglevel=logging.INFO if args.verbose else logging.WARNING,
         dry_run=False,
+        # 只把应用代码当作"项目源码"来扫描 PySide 模块；构建脚本/文档/测试不参与，
+        # 既避免 "Found 'import PySide6' in file 0" 之类的噪音，也更快。
+        extra_ignore_dirs="scripts,packaging,docs,tests",
         keep_deployment_files=args.keep_deployment_files,
         force=True,                                        # 不在 venv 里也不交互提问
     )

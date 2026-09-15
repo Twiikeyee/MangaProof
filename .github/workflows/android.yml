@@ -110,6 +110,28 @@ jobs:
           [ -d "${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" ] || {
             echo "::error::NDK 目录不存在：${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"; exit 1; }
 
+      # buildozer 1.5.0 只认**旧布局** $ANDROID_HOME/tools/bin/sdkmanager（property
+      # sdkmanager_path），而现代 cmdline-tools 装在 $ANDROID_HOME/cmdline-tools/latest。
+      # Google 早已移除 `tools` 包，所以这个目录永远不会自己出现 → buildozer 直接
+      # 报 "sdkmanager ... not installed" 并退出（本次 17s 失败的真正原因）。
+      # 做目录级软链接即可：sdkmanager 脚本会 cd 到自身目录的上级并用 pwd -P 解析
+      # 真实路径，lib/ 依旧可达。
+      - name: Fix cmdline-tools layout for buildozer (legacy tools/ symlink)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMGR="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMGR" ]; then
+            SDKMGR="$(find "$SDK" -maxdepth 5 -type f -name sdkmanager | head -1)"
+          fi
+          [ -n "$SDKMGR" ] || { echo "::error::找不到 sdkmanager"; ls -la "$SDK" || true; exit 1; }
+          CMDLINE="$(cd "$(dirname "$SDKMGR")/.." && pwd -P)"
+          echo "cmdline-tools 实际位置：$CMDLINE"
+          ln -sfn "$CMDLINE" "$SDK/tools"
+          ls -la "$SDK/tools/bin/sdkmanager"
+          "$SDK/tools/bin/sdkmanager" --version
+
       # p4a 官方 Dockerfile 里的系统依赖清单 + 构建本机所需
       - name: Install build dependencies
         shell: bash
@@ -197,7 +219,7 @@ jobs:
       # job 日志下载接口要求仓库 admin（匿名 403），但 check-run annotations 接口公开可读，
       # 把关键行变成 ::error:: 就能在外部读到失败原因。
       - name: Report build failure details
-        if: failure() && steps.build.outcome == 'failure'
+        if: failure()
         shell: bash
         run: |
           LOG="$RUNNER_TEMP/build.log"
