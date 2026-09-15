@@ -31,14 +31,18 @@ import mangaproof.utils.platform as platform_mod
 from mangaproof.config.settings import (
     ANDROID_MEMORY_POLICY,
     DEFAULT_MEMORY_POLICY,
+    PRELOAD_WINDOW_OFFSETS_ANDROID,
+    PRELOAD_WINDOW_OFFSETS_DESKTOP,
     Settings,
     SettingsManager,
     android_memory_policy_locked,
     default_memory_policy,
     effective_memory_policy,
     first_run_banner,
+    preload_window_offsets,
     reconcile_android_memory_policy,
 )
+from mangaproof.ui.task_loader import _window_set
 from mangaproof.utils.platform import is_android_strict
 
 _ON_ANDROID = is_android_strict()
@@ -242,3 +246,78 @@ def test_first_run_banner_is_platform_aware(monkeypatch):
 
     _as_desktop(monkeypatch)
     assert "内存策略" in first_run_banner(), "桌面端仍可调，文案保留"
+
+
+# ---------------------------------------------------------------------------
+# 预加载 / 保留窗口：Android 3 页，桌面 6 页
+# ---------------------------------------------------------------------------
+
+def _task(rels, current):
+    from mangaproof.review.state import FileRecord, TaskState
+
+    t = TaskState()
+    for rel in rels:
+        t.files.append(FileRecord(relative_path=rel, file_name=rel, size=1))
+    t.current_file = current
+    return t
+
+
+def _pages(n, current, offsets):
+    return {r for r in _window_set(_task([f"p{i:02d}.psd" for i in range(n)], current),
+                                   offsets=offsets)}
+
+
+def test_window_offsets_by_platform(monkeypatch):
+    _as_android(monkeypatch)
+    assert preload_window_offsets() == PRELOAD_WINDOW_OFFSETS_ANDROID
+    assert preload_window_offsets() == (-1, 0, 1)
+    _as_desktop(monkeypatch)
+    assert preload_window_offsets() == PRELOAD_WINDOW_OFFSETS_DESKTOP
+    # 桌面取值必须与改动前的硬编码完全一致：后3 + 前1 + 前2 松弛
+    assert sorted(PRELOAD_WINDOW_OFFSETS_DESKTOP) == [-2, -1, 0, 1, 2, 3]
+
+
+def test_android_window_is_three_pages():
+    """Android：前 1 + 当前 + 后 1，不含额外松弛。"""
+    keep = _pages(10, "p04.psd", PRELOAD_WINDOW_OFFSETS_ANDROID)
+    assert keep == {"p03.psd", "p04.psd", "p05.psd"}
+
+
+def test_desktop_window_unchanged():
+    """桌面：仍是 6 页（含前 2 松弛），与改动前逐项一致。"""
+    keep = _pages(10, "p04.psd", PRELOAD_WINDOW_OFFSETS_DESKTOP)
+    assert keep == {"p02.psd", "p03.psd", "p04.psd",
+                    "p05.psd", "p06.psd", "p07.psd"}
+
+
+@pytest.mark.parametrize("offsets", [PRELOAD_WINDOW_OFFSETS_ANDROID,
+                                     PRELOAD_WINDOW_OFFSETS_DESKTOP])
+@pytest.mark.parametrize("index,current", [(0, "p00.psd"), (4, "p04.psd"), (9, "p09.psd")])
+def test_window_clips_at_book_edges(offsets, index, current):
+    """书首/书尾：只裁剪，不越界，当前页恒在集合内（期望值由偏移集合推导）。"""
+    rels = [f"p{i:02d}.psd" for i in range(10)]
+    expected = {rels[index + d] for d in offsets if 0 <= index + d < len(rels)}
+    keep = _pages(10, current, offsets)
+    assert keep == expected
+    assert current in keep, "当前页必须在保留窗口内"
+    for rel in keep:
+        assert rel in rels, "窗口不得越界到不存在的页"
+
+
+@pytest.mark.parametrize("offsets", [PRELOAD_WINDOW_OFFSETS_ANDROID,
+                                     PRELOAD_WINDOW_OFFSETS_DESKTOP])
+def test_window_short_book(offsets):
+    """页数少于窗口：全在窗口内，不越界。"""
+    assert _pages(3, "p01.psd", offsets) == {"p00.psd", "p01.psd", "p02.psd"}
+    assert _pages(1, "p00.psd", offsets) == {"p00.psd"}
+
+
+def test_window_current_invalid_falls_back_first_page():
+    """当前页无效 → 退化到第一页 + 邻域（Android 下即前两页，与桌面不同）。"""
+    rels = ["a.psd", "b.psd", "c.psd", "d.psd"]
+    android = _window_set(_task(rels, "missing.psd"),
+                          offsets=PRELOAD_WINDOW_OFFSETS_ANDROID)
+    assert android == {"a.psd", "b.psd"}
+    desktop = _window_set(_task(rels, "missing.psd"),
+                          offsets=PRELOAD_WINDOW_OFFSETS_DESKTOP)
+    assert desktop == set(rels), "桌面：第一页 + 后 3 覆盖全部"

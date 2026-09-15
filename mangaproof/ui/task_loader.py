@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
+from mangaproof.config.settings import preload_window_offsets
 from mangaproof.psd.document import PSDDocument
 from mangaproof.psd.loader import scan_psd_files
 from mangaproof.review import persistence
@@ -160,7 +161,8 @@ class TaskLoadWorker(QThread):
         """逐个解析 PSD 图层树（每个 PSD 只解析一次，需求 §59）。
 
         流式扫描：解析一页 → 存 ids/names → 窗口外页面立即释放，
-        只保留「当前页 + 后 3 + 前 1」的完整文档对象。这样打开大书时
+        只保留「当前页 + 邻域」的完整文档对象（邻域范围按平台，见
+        preload_window_offsets：桌面 6 页 / Android 3 页）。这样打开大书时
         内存峰值 O(窗口) 而非 O(全书)（文档结构 ≈ 文件大小）。
         """
         layer_ids: Dict[str, List[str]] = {}
@@ -203,20 +205,24 @@ class TaskLoadWorker(QThread):
         )
 
 
-def _window_set(task: TaskState) -> set:
+def _window_set(task: TaskState, offsets: Optional[tuple[int, ...]] = None) -> set:
     """任务打开时保留完整文档对象的窗口集合。
 
-    与 MainWindow 驱逐窗口一致：当前页 + 后 3 + 前 1（预加载邻域）
-    + 前 2（回看松弛）；当前页无效时退化为「第一页 + 后 3」。
+    与 MainWindow 的预热/驱逐窗口**同源**（都取 preload_window_offsets）：
+    桌面 = 当前页 + 后 3 + 前 1 + 前 2 回看松弛（共 6 页）；
+    Android = 前 1 + 当前 + 后 1（共 3 页）。当前页无效时退化为「第一页 + 后 3」。
+
+    offsets 仅供测试注入平台取值；生产路径一律走平台函数。
     """
     rels = [r.relative_path for r in task.files]
     try:
         i = rels.index(task.current_file)
     except ValueError:
         i = 0
+    span = preload_window_offsets() if offsets is None else offsets
     keep = {
-        rels[j]
-        for j in (i, i + 1, i + 2, i + 3, i - 1, i - 2)
-        if 0 <= j < len(rels)
+        rels[i + d]
+        for d in span
+        if 0 <= i + d < len(rels)
     }
     return keep or {rels[0]} if rels else set()

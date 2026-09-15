@@ -40,6 +40,7 @@ from mangaproof.config.settings import (
     effective_ui_scale,
     first_run_banner,
     normalize_key,
+    preload_window_offsets,
     shortcut_conflicts,
 )
 from mangaproof.psd.document import PSDDocument
@@ -1255,15 +1256,16 @@ class MainWindow(QMainWindow):
             i = order.index(rel)
         except ValueError:
             return
-        candidates: List[str] = []
-        for j in (i + 1, i + 2, i + 3, i - 1):
-            if 0 <= j < len(order):
-                candidates.append(order[j])
-        # 驱逐保留窗口：预加载邻域（当前+后3+前1）+ 前 2 回看松弛
+        # 邻域（平台分档，见 config/settings.preload_window_offsets）：
+        # 桌面 = 后 3 + 前 1；Android = 后 1 + 前 1。
+        offsets = preload_window_offsets()
+        candidates: List[str] = [
+            order[i + d]
+            for d in offsets
+            if d != 0 and 0 <= i + d < len(order)
+        ]
+        # 驱逐保留窗口 = 当前页 + 全部邻域（与预热范围同源）
         keep = {rel, *candidates}
-        for j in (i - 2,):
-            if 0 <= j < len(order):
-                keep.add(order[j])
 
         def target_layer_of(target_rel: str) -> str:
             index = self._choose_layer_index(target_rel, restore=False)
@@ -1382,7 +1384,11 @@ class MainWindow(QMainWindow):
             self._pinned_bg_key = key
 
     def _current_keep_set(self) -> set:
-        """驱逐保留窗口：当前页 + 后 3 + 前 1（预加载邻域）+ 前 2 松弛。"""
+        """驱逐保留窗口：当前页 + 邻域（范围按平台，见 preload_window_offsets）。
+
+        桌面 = 当前 + 后 3 + 前 1 + 前 2 松弛（共 6 页）；Android = 前 1 + 当前
+        + 后 1（共 3 页）。
+        """
         if self.task is None or not self._current_file:
             return set()
         order = [r.relative_path for r in self.task.files]
@@ -1391,8 +1397,9 @@ class MainWindow(QMainWindow):
         except ValueError:
             return {self._current_file}
         return {
-            order[j] for j in (i, i + 1, i + 2, i + 3, i - 1, i - 2)
-            if 0 <= j < len(order)
+            order[i + d]
+            for d in preload_window_offsets()
+            if 0 <= i + d < len(order)
         }
 
     def _evict_outside_window(self, keep: set) -> None:

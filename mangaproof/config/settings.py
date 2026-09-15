@@ -377,6 +377,36 @@ def android_device_class() -> str:
     return "phone" if sw_dp < ANDROID_PHONE_MAX_SW_DP else "large"
 
 
+# ---------------------------------------------------------------------------
+# 预加载 / 保留窗口（平台分档）
+# ---------------------------------------------------------------------------
+# 索引偏移，均相对当前页 i（0 = 当前页）。
+#
+# 桌面：后 3 + 前 1 是**预加载邻域**，另加前 2 作**回看松弛**，共 6 页。
+# Android：前 1 + 当前 + 后 1，共 3 页。理由见
+# docs/Android端适配设计_原生文件读写_横屏全屏_分层图标_内存策略.md §5.4：
+# Android 固定激进档（LRU 256MB），而单文件全图层像素实测就需 90–137MB
+# （15 个真实样本）——6 页的需求远超预算，预热了也留不住，只是把单线程
+# 预加载的解码预算花在会被立刻淘汰的数据上。
+#
+# 三处用途共用本表：预热队列、驱逐保留窗口、打开任务时保留的文档对象。
+# 三者必须同源，否则会出现「保留了却没预热」或「预热了又立刻被驱逐」的错配。
+PRELOAD_WINDOW_OFFSETS_DESKTOP: tuple[int, ...] = (-2, -1, 0, 1, 2, 3)
+PRELOAD_WINDOW_OFFSETS_ANDROID: tuple[int, ...] = (-1, 0, 1)
+
+
+def preload_window_offsets() -> tuple[int, ...]:
+    """预加载 / 保留窗口的索引偏移（按平台）。
+
+    唯一判定入口：预热队列、驱逐保留窗口、打开任务时保留哪些文档对象，
+    全部走这里（判定本身见 utils/platform.is_android_strict 的编译期说明）。
+    桌面端取值与改动前完全一致（后 3 + 前 1 + 前 2 松弛）。
+    """
+    if android_ui_scaling():
+        return PRELOAD_WINDOW_OFFSETS_ANDROID
+    return PRELOAD_WINDOW_OFFSETS_DESKTOP
+
+
 def android_ui_scaling() -> bool:
     """界面缩放是否适用于当前平台（**仅 Android**）。
 

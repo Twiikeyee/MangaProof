@@ -860,6 +860,48 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 | 双档位语义混淆 | 桌面仍是三档 | 设置页用 tooltip 说明"Android 固定为激进"；桌面文案不变 |
 | 峰值内存仍偏高 | Qt + numpy + Pillow 自身占用；256 MB LRU 是桌面视角的"激进" | 用 `adb shell dumpsys meminfo <pkg>` 观察 PSS 峰值；数据说话后再决定是否调数值 |
 
+### 5.4 预加载 / 保留窗口：Android 收到 3 页（桌面保持 6 页）
+
+**动因**：激进档 LRU 只有 256 MB，而"当前页 + 后 3 + 前 1 + 前 2 松弛"共 6 页文档
+若全部预热图层像素，实测单文件就需 90–137 MB（15 个真实样本，2451×3460 画布），
+6 页需求远超预算——**预热了也留不住，只是把单线程预加载的解码预算花在会被立刻
+淘汰的数据上**。故 Android 端把范围收到「前 1 + 当前 + 后 1」。
+
+**实现**：范围收口成 `config/settings.py:preload_window_offsets()`（与
+`android_ui_scaling()` / `default_memory_policy()` 同族的平台判定入口），
+三处用途**同源**，避免出现「保留了却没预热」或「预热了又立刻被驱逐」的错配：
+
+| 用途 | 位置 |
+|------|------|
+| 预热队列（merged + 全图层） | `ui/main_window.py:_schedule_preloads` |
+| 驱逐保留窗口 | `ui/main_window.py:_current_keep_set`（以及 `_schedule_preloads` 内的 `keep`） |
+| 打开任务时保留的文档对象 | `ui/task_loader.py:_window_set`（`offsets` 参数供测试注入） |
+
+| 平台 | 偏移 | 页数 |
+|------|------|------|
+| 桌面 | `(-2, -1, 0, 1, 2, 3)`（后 3 + 前 1 + 前 2 松弛） | 6 |
+| Android | `(-1, 0, 1)`（**不含**额外回看松弛） | 3 |
+
+**桌面零变化**：桌面取值与改动前的硬编码逐项一致，`tests/test_memory_policy.py`
+既有的两条 `_window_set` 断言原样通过。
+
+**量化影响**（Android）：
+
+| 指标 | 改前 | 改后 |
+|------|------|------|
+| 每次翻页预热的文件数 | 5 | **3**（−40%） |
+| 打开任务保留的文档对象 | 6 | **3** |
+| 全图层像素需求 | 约 450 MB | 约 270 MB |
+
+**已知代价**：窗口缩小 → 驱逐更频繁 → 切到远页时同步重建文档的次数增加
+（`_ensure_doc` 在 `_request_open_file` 里是同步调用，实测单文件 67–132 ms）。
+顺序前进不受影响（新邻域在窗口内且已预热）；回看/跳页会更常触发。
+这是**存量问题**的触发点前移，根治需把 `_ensure_doc` 移出 UI 线程——**本轮不做**。
+
+**测试**：`tests/test_android_preload_window.py`（MainWindow 三处落点）+
+`tests/test_android_memory_policy.py` 的窗口小节（`_window_set` 分档、书首书尾裁剪、
+短任务、当前页无效退化）。全量 223 passed。
+
 ---
 
 ## 6. 实施计划（在本轮需求下更新）
