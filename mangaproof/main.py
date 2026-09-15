@@ -123,15 +123,23 @@ def main(argv=None) -> int:
 
     from mangaproof.config.settings import SettingsManager
     from mangaproof.console import apply_console_visibility
-    from mangaproof.fonts import load_app_fonts
+    from mangaproof.fonts import load_app_fonts, load_symbol_fallback_families
     from mangaproof.ui.dark_titlebar import install_dark_titlebar
     from mangaproof.ui.main_window import MainWindow
     from mangaproof.ui.theme import apply_dark_theme
 
     # 统一字体：先注册 MiSans（直接运行 → 程序目录/font/；
-    # 打包产物 → 冻结资源目录），再以其为首选字体应用主题
+    # 打包产物 → 冻结资源目录），再以其为首选字体应用主题。
+    # Android 上再把符号回退字体挂进**字体家族链**：该平台的 Qt 没有系统字体回退，
+    # MiSans 缺字形（✗ U+2717、⚠ U+26A0 等）会显示成空白；桌面不挂、观感不变。
     font_family = load_app_fonts(app)
-    apply_dark_theme(app, primary_family=font_family)
+    symbol_fallbacks = load_symbol_fallback_families()
+    apply_dark_theme(
+        app, primary_family=font_family, fallback_families=symbol_fallbacks
+    )
+    log.info(
+        "字体家族链：%s", [f for f in (font_family, *symbol_fallbacks) if f]
+    )
     install_dark_titlebar(app)
     apply_app_icon(app)
     settings_manager = SettingsManager()

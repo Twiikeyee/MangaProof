@@ -25,19 +25,36 @@ from pathlib import Path
 log = logging.getLogger("mangaproof.fonts")
 
 FONT_FILENAME = "MiSans-Medium.ttf"
+#: 字形回退字体（**仅 Android 挂进家族链**）：
+#: MiSans 缺若干符号字形（✗ U+2717、⚠ U+26A0 等），而 Android 版 Qt 的平台字体
+#: 回退几乎是空的（QAndroidPlatformFontDatabase::fallbacksForFamily() 只加 emoji/
+#: CJK/环境变量名单，不会把 /system/fonts 当逐字回退），于是缺字形就显示成空白。
+#: 桌面三平台靠系统回退（DirectWrite/CoreText/fontconfig）本来就能补，所以桌面
+#: 不挂这条链，既有观感保持不变。详见 docs/Android端界面适配_缩放与菜单栏.md。
+FALLBACK_FONT_FILENAME = "JetBrainsMonoNerdFont-Regular-v1.2.ttf"
 
 
-def font_candidates() -> list[Path]:
+def _candidates(filename: str) -> list[Path]:
     """字体文件候选路径（程序目录 → 冻结资源目录 → 源码目录）。"""
     from mangaproof.config import paths
 
-    candidates = [paths.get_app_dir() / "font" / FONT_FILENAME]
+    candidates = [paths.get_app_dir() / "font" / filename]
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        candidates.append(Path(meipass) / "font" / FONT_FILENAME)
+        candidates.append(Path(meipass) / "font" / filename)
     # 源码/开发态兜底：包目录（mangaproof/）的上一级即项目根
-    candidates.append(Path(__file__).resolve().parent.parent / "font" / FONT_FILENAME)
+    candidates.append(Path(__file__).resolve().parent.parent / "font" / filename)
     return candidates
+
+
+def font_candidates() -> list[Path]:
+    """MiSans 字体文件的候选路径。"""
+    return _candidates(FONT_FILENAME)
+
+
+def fallback_font_candidates() -> list[Path]:
+    """回退字体（符号图标）的候选路径。"""
+    return _candidates(FALLBACK_FONT_FILENAME)
 
 
 def find_font_path() -> Path | None:
@@ -81,3 +98,45 @@ def load_app_fonts(app, candidates: list[Path] | None = None) -> str | None:
 
     log.warning("未找到 MiSans 字体（%s），使用系统默认字体", [str(p) for p in paths])
     return None
+
+
+def load_symbol_fallback_families(
+    candidates: list[Path] | None = None, *, force: bool = False
+) -> list[str]:
+    """注册符号回退字体，返回要挂进字体家族链的家族名。
+
+    **仅 Android 生效**（`force=True` 供测试用）：桌面三平台的系统字体回退本来
+    就能补 MiSans 缺的字形，把回退字体挂进桌面家族链会改变既有观感，所以桌面
+    直接返回空列表。
+
+    Qt 侧机制（源码 qfontdatabase.cpp）：`QFont.setFamilies([A, B, C])` 会把 B、C
+    作为 `fallBackFamilies` 交给 `QFontEngineMulti`，逐字回退时按链顺序查找；
+    平台回退表（Android 上近乎为空）只是追加在链后。所以把字体挂进家族链即可在
+    Android 上补上 MiSans 缺失的字形。
+    """
+    from PySide6.QtGui import QFontDatabase
+
+    from mangaproof.utils.platform import is_android_strict
+
+    if not force and not is_android_strict():
+        return []
+
+    paths = candidates if candidates is not None else fallback_font_candidates()
+    for path in paths:
+        if not path.exists():
+            continue
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        if font_id < 0:
+            log.warning("回退字体注册失败：%s", path)
+            continue
+        families = [
+            f for f in QFontDatabase.applicationFontFamilies(font_id) if f
+        ]
+        if not families:
+            continue
+        log.info("已加载符号回退字体：%s（%s）", families[0], path)
+        return families
+
+    log.warning("未找到符号回退字体（%s），缺失字形在 Android 上可能显示为空白",
+                [str(p) for p in paths])
+    return []

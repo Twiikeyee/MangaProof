@@ -165,3 +165,73 @@ adb exec-out screencap -p > shot.png
 - **折叠内屏整行工具栏会折叠**：需要 ≤55% 才放得下（不可读），故接受 Qt 的 "»" 扩展按钮；
 - **≥110% 在平板/折叠内屏/该模拟器上会垂直裁剪**：窗口最小高 559 dp 是硬下限（逻辑尺寸不随缩放变化）；
 - 未做：手机档布局（抽屉/单栏）、竖屏与分屏布局改造、dock 误关闭防护与布局持久化、安全区（`safeAreaMargins`）——均另议。
+
+---
+
+## 8. 字体缺字形：Android 没有系统字体回退（已接入自带回退字体）
+
+### 现象与根因
+
+平板上少数"字符图标"显示为空白（桌面端正常）。**不是字体没加载**——`font/MiSans-Medium.ttf` 就位、日志有"已加载应用字体"，中文全都正常；而是两件事叠加：
+
+| # | 事实 | 依据 |
+|---|---|---|
+| 1 | MiSans 缺这几个字形：`✗` U+2717、`▣` U+25A3、`✎` U+270E、`🗑` U+1F5D1、`⚠` U+26A0（还有日志里用过的 `⑳`） | 直接解析 TTF cmap（format 4/12，29571 码位） |
+| 2 | **Android 版 Qt 几乎没有平台字体回退**：`QAndroidPlatformFontDatabase::fallbacksForFamily()` 只追加 emoji 字体、按系统语言追加一个 CJK 字体、以及 `QT_ANDROID_FONTS` 里列的家族名，**不会**把 `/system/fonts` 下的字体当逐字回退 | 【源码】qtbase/src/plugins/platforms/android/qandroidplatformfontdatabase.cpp |
+| 3 | 桌面三平台有系统回退（DirectWrite / CoreText / fontconfig），所以桌面一直看不出问题 | 同上对比 |
+
+### Qt 的逐字回退机制（我们利用的那条路）
+
+```cpp
+// qtbase/src/gui/text/qfontdatabase.cpp
+const QStringList fallBackFamilies = familyList(req);
+req.fallBackFamilies = fallBackFamilies;
+if (!req.fallBackFamilies.isEmpty())
+    req.families = QStringList(req.fallBackFamilies.takeFirst());   // 链首 = 主字体
+...
+QFontEngineMulti *pfMultiEngine = pfdb->fontEngineMulti(engine, script);
+if (!request.fallBackFamilies.isEmpty()) {
+    QStringList fallbacks = request.fallBackFamilies;   // ← 家族链的第 2 项起
+    fallbacks += fallbacksForFamily(...);               // ← 平台回退（Android 近空）
+    pfMultiEngine->setFallbackFamiliesList(fallbacks);
+}
+```
+
+⇒ **只要把带字形的字体挂进"字体家族链"，Android 上也能逐字回退**，不依赖平台回退表。
+家族链由主题的 QSS `* { font-family: ... }` + `QApplication.setFont()` 携带（Qt 6.11 的 QSS 支持多家族，已实测 `QLabel.font().families()` 会带上整条链）。
+
+### 实现（仅 Android 挂链，桌面零变化）
+
+| 文件 | 内容 |
+|---|---|
+| `font/JetBrainsMonoNerdFont-Regular-v1.2.ttf` | 回退字体（家族名 `JetBrainsMono Nerd Font`），随包分发 |
+| `font/LICENSE-JetBrainsMonoNerdFont.txt` | OFL-1.1 原文；同时在「帮助 → 第三方许可」里以内嵌文本展示（`third_party.py`） |
+| `mangaproof/fonts.py` | `fallback_font_candidates()` / `load_symbol_fallback_families()`：注册回退字体并返回家族名；**`is_android_strict()` 为假时直接返回空**（桌面不挂链） |
+| `mangaproof/ui/theme.py` | `apply_dark_theme(app, primary_family, fallback_families=())`：家族链 = 主字体 → 回退字体 → 桌面默认家族；`app.font()` 同步带上同一条链（QSS 覆盖不到的场合也能回退） |
+| `mangaproof/main.py` | 组合并打印启动日志 `字体家族链：[...]`（真机核对用） |
+| `tests/test_font_fallback.py` | 家族名、Android-only 门控、链顺序、桌面链不变、MiSans 确实缺字形、**链渲染 ✗/⚠ 与回退字体单独渲染逐像素相同且非空白** |
+
+### 当前覆盖情况（重要）
+
+| 字符 | 用途 | MiSans | `JetBrainsMono Nerd Font` | 结果 |
+|---|---|---|---|---|
+| `✗` U+2717 | 未通过（状态/按钮/芯片/提示） | 缺 | **有** | ✅ 回退后正常 |
+| `⚠` U+26A0 | 重要提醒/警告文案 | 缺 | **有** | ✅ 回退后正常 |
+| `▣` U+25A3 | `▣ 自动框选` | 缺 | 缺 | ⛔ 仍会空白（**待产品决策**） |
+| `✎` U+270E | `✎ 自定义批注` | 缺 | 缺 | ⛔ 仍会空白（**待产品决策**） |
+| `🗑` U+1F5D1 | `🗑 删除选中问题` | 缺 | 缺 | ⛔ 仍会空白（**待产品决策**） |
+
+后三个字符该回退字体里没有（它的强项是 Nerd Fonts 私有区图标）。可选处置（**尚未实施，等确认**）：
+
+1. 改用回退字体里的**真正的图标字形**（仅加进家族链即可显示，桌面也一致）：
+   - 自动框选：Codicon `U+EA85`（选区）或 Font Awesome `U+F096`（空心方框）/ `U+F05B`（准星）
+   - 自定义批注：Codicon `U+EA73` 或 FA `U+F040`（铅笔）
+   - 删除选中问题：Codicon `U+EA81` 或 FA `U+F1F8`（垃圾桶）
+2. 再带一份覆盖这三个字形的字体（例如 Noto Sans Symbols 2，约 +1.2 MB），保留原字符；
+3. 保持原样（Android 上这三个按钮的图标继续空白，文字仍可读）。
+
+### 以后要加符号/图标的规矩
+
+1. 先确认**家族链里的字体**有该字形（MiSans → 回退字体），或者直接把图标字体挂进链；
+2. 不要用 emoji（`🗑`、`🖊` 这类：Android 上既没有逐字回退，颜色 emoji 在 Qt Widgets 里也不可靠）；
+3. `tests/test_font_fallback.py` 会把"链里的字体到底覆盖了哪些字形"钉住，改动前先跑它。

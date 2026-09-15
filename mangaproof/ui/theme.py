@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Sequence
+
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -158,18 +160,36 @@ QToolTip {{ background-color: {COLOR_BG_PANEL}; color: {COLOR_TEXT}; border: 1px
 """
 
 
-def apply_dark_theme(app: QApplication, primary_family: str | None = None) -> None:
+def apply_dark_theme(
+    app: QApplication,
+    primary_family: str | None = None,
+    fallback_families: Sequence[str] = (),
+) -> None:
     """应用暗色主题。
 
-    primary_family：应用统一字体族名（如 MiSans），会置于样式表
-    字体族列表首位；None 则使用默认字体族列表。
+    primary_family：应用统一字体族名（如 MiSans），会置于样式表字体族列表首位；
+    None 则使用默认字体族列表。
+    fallback_families：插在 primary_family 之后的**逐字回退**家族（当前用于
+    Android：把带符号字形的回退字体挂进家族链，因为 Android 版 Qt 的平台字体
+    回退几乎是空的；桌面传空即可，观感与改动前一致）。顺序即回退优先级。
     """
-    families = DEFAULT_FONT_FAMILIES
+    families: list[str] = []
     if primary_family:
-        families = (primary_family,) + tuple(
-            f for f in DEFAULT_FONT_FAMILIES if f != primary_family
-        )
+        families.append(primary_family)
+    for name in fallback_families:
+        if name and name not in families:
+            families.append(name)
+    for name in DEFAULT_FONT_FAMILIES:
+        if name not in families:
+            families.append(name)
     family_list = ", ".join(f'"{f}"' for f in families)
+
+    # 应用默认字体也带上同一条家族链：QSS 覆盖不到的场合（自绘/未 polish 的控件、
+    # 原生菜单等）同样能逐字回退。
+    app_font = app.font()
+    if families and list(app_font.families()) != families:
+        app_font.setFamilies(families)
+        app.setFont(app_font)
 
     app.setStyle("Fusion")
     palette = QPalette()
