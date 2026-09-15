@@ -14,7 +14,6 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -65,6 +64,7 @@ from mangaproof.review.state import (
     UNREVIEWED,
     TaskState,
 )
+from mangaproof.storage import picker
 from mangaproof.ui.dialogs import IssueDialog, ReportDialog
 from mangaproof.ui.file_panel import FilePanel
 from mangaproof.ui.issue_panel import IssuePanel
@@ -691,14 +691,14 @@ class MainWindow(QMainWindow):
     # ================================================================= 打开任务（需求 §5～§7）
 
     def open_psd_dialog(self) -> None:
-        path_str, _ = QFileDialog.getOpenFileName(
-            self, "打开单个 PSD", "", "PSD/PSB 文件 (*.psd *.psb)"
-        )
+        # 选择器按平台分流（桌面 = 原来的 QFileDialog；Android = 系统原生 SAF，
+        # 绕开 Qt 6.11.2 原生文件对话框的卡死缺陷）——见 mangaproof/storage/picker.py
+        path_str = picker.pick_psd_file(self)
         if path_str:
             self.open_single(Path(path_str))
 
     def open_folder_dialog(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "打开漫画文件夹", "")
+        folder = picker.pick_folder(self)
         if folder:
             self.open_folder(Path(folder))
 
