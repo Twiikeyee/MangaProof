@@ -273,11 +273,9 @@ jobs:
           echo "APK=$APK" >> "$GITHUB_ENV"
           ls -la "$APK"
 
-      # 产物内容校验：挡「so 缺失」与「入口 Activity 没换成 PickerActivity」这两类
-      # 只在真机才暴露、且流水线原本全绿的问题。
-      #   ① 必需 so 清单：缺一个 → 装上也起不来，必须当场失败；
-      #   ② 入口 Activity 必须是 com.mangaproof.picker.PickerActivity（见下方注释）。
-      - name: Verify APK native libs and manifest flag
+      # 产物内容校验：挡「so 缺失」这类只在真机才暴露、且流水线原本全绿的问题。
+      # 必需 so 缺一个 → 装上也起不来，必须当场失败。
+      - name: Verify APK native libs
         shell: bash
         run: |
           set -euo pipefail
@@ -334,27 +332,6 @@ jobs:
           grep -qE "^lib/$ABI/lib(crypto|ssl)[^/]*\.so$" "$LIST" \
             || echo "::warning::未见 openssl 系列库（本应用不依赖，仅提示）"
 
-          # ② 最终清单里的入口 Activity 必须是 PickerActivity：
-          #    p4a 渲染出的入口类（org.kivy.android.PythonActivity 等）不在我们的 DEX 里，
-          #    没换掉的话包能装上但启动即 ClassNotFoundException；同时它决定 SAF 选择器
-          #    能否收到 onActivityResult。
-          #    注：这里**不再**校验 extractNativeLibs —— 该属性压不过 AGP 的
-          #    packagingOptions { jniLibs { useLegacyPackaging } }，注入后经 aapt2 确认属性
-          #    已生效、真机仍不解压，故已撤掉该注入，改用 debug 构建（见文件头说明）。
-          BT="$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)"
-          AAPT2="$BT/aapt2"
-          if [ -x "$AAPT2" ]; then
-            MAN="$RUNNER_TEMP/manifest_dump.txt"
-            "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" > "$MAN"
-            if grep -q "com.mangaproof.picker.PickerActivity" "$MAN"; then
-              echo "✅ 入口 Activity = com.mangaproof.picker.PickerActivity"
-            else
-              echo "::error::最终清单的入口 Activity 不是 PickerActivity（p4a hook 的替换没生效）→ 启动会 ClassNotFoundException"
-              exit 1
-            fi
-          else
-            echo "::warning::找不到 aapt2（$AAPT2），跳过入口 Activity 校验"
-          fi
 
       # 16 KB page size（Android 15+ / Play 要求）：先只告警，不阻断
       - name: Check 16 KB page alignment (advisory)

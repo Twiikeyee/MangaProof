@@ -333,7 +333,10 @@ def content_uri_to_path(uri: str) -> str | None:
 | 横屏全屏 + 刘海 | 见 §3.3 |
 | 图标 | 见 §4.6 |
 
-### 2.11 【已实现】选择器最终形态：自建 SAF 选择器（Qt 原生文件对话框在 Android 上会卡死）
+### 2.11 ⚠️【已废弃】自建 SAF 选择器（自建 Java 选择器 + 共享文件协议）
+
+> **已被 §2.13 取代**：该方案真机表现**不稳定**（依赖 Java 侧守护线程 + 共享文件协议 +
+> Activity 结果接管，环节多、失败面大），已整体移除。以下内容仅作为决策留痕，**勿再引入**。
 
 > **状态**：已实现并落地在仓库；本地用 android.jar + Qt 的 jar 通过 `javac` 编译验证、
 > 协议两端有单元测试；真机行为待 CI 出包后复测。
@@ -427,7 +430,11 @@ mangaproof/ui/main_window.py                                       ← 两处调
 | 桌面零改动 | 门面分流单测 + 全量回归（`QFileDialog` 分支逐项对照） | ✅ 201 项全绿 |
 | 真机：选择器可用、路径正确、不卡死 | `adb logcat -s MangaProofPicker`（含 `SAF authority=… documentId=…` 与最终 `realPath`） | ⏳ 待 CI 出包后复测 |
 
-### 2.12 【已实现】release 包必须显式 `extractNativeLibs="true"`（否则 so 不被解压）
+### 2.12 ⚠️【已废弃】清单注入 `extractNativeLibs="true"`
+
+> **已撤掉**：注入后经 aapt2 读最终 APK 确认属性生效（=true），但真机 so **依旧不解压** ——
+> 该属性压不过 AGP 的 `packagingOptions { jniLibs { useLegacyPackaging } }`。
+> Android 构建改为固定 **debug** 模式（真机验证 so 会解压），见 §2.13。以下为决策留痕。
 
 > **现象（真机实测）**：APK 内 `lib/<abi>/` 的 so **是全的**，但**安装后没有解压出来**；
 > 同一份代码的 **debug 构建正常**。失败表现是启动时 `dlopen failed` / `import PySide6.*` 失败。
@@ -487,6 +494,65 @@ APK 产出后按 ABI ①校验必需 so 清单（`QtCore/QtGui/QtWidgets.abi3.so
 此前流水线只断言"APK 文件存在"，这两类问题（so 缺失 / 不解压）本可一路全绿到真机才暴露。
 
 > 说明：`libpybundle.so` 与 openssl 系列库名随 p4a 版本变化且本应用不直接依赖，校验里只做**提示**、不阻断，避免校验本身误报。
+
+---
+
+### 2.13 【现行方案】Android 端用 Qt 控件版文件对话框（`DontUseNativeDialog`）
+
+> 取代 §2.11（自建 Java 选择器，真机不稳定）与 §2.12（`extractNativeLibs` 注入，无效）。
+
+#### （1）做法
+
+`mangaproof/storage/picker.py` 是唯一入口，两端**同一个 API**：
+
+| 平台 | 调用 | 差异 |
+|------|------|------|
+| 桌面 | `QFileDialog.getOpenFileName(parent, "打开单个 PSD", "", "PSD/PSB 文件 (*.psd *.psb)")` / `getExistingDirectory(parent, "打开漫画文件夹", "")` | **零改动**：不传任何 option，参数与改造前逐字一致 |
+| Android | 同上，但 `options=DontUseNativeDialog`（目录选择再加 `ShowDirsOnly`），起始目录取 `/storage/emulated/0/Download` → `Documents` → `emulated/0` 中第一个存在的 | 只多这一个选项 |
+
+#### （2）为什么 Android 必须显式关掉原生对话框
+
+- Qt 在 Android 上默认使用**平台原生**文件对话框
+  （`qandroidplatformtheme.cpp`：`usePlatformNativeDialog(FileDialog)` 返回 `true`），
+  而 6.11.2 的 `QAndroidPlatformFileDialogHelper` 有**同线程重入死锁**（§2.11 的四段源码证据）；
+- 传 `DontUseNativeDialog` 后，`QFileDialogPrivate::canBeNativeDialog()` 直接返回 `false`
+  → `nativeDialogInUse = false` → **不创建平台 helper、不注册 ActivityResultListener、
+  不碰那把非递归 `QMutex`**，就是一个纯 Qt 控件版对话框。
+
+因此这条路径上：**没有 JNI、没有 Java 侧线程、没有共享文件协议、没有 Activity 结果接管**，
+只有 Python + Qt Widgets —— 这正是"不稳定"的根因被整体移除的地方。
+
+#### （3）代价（已知并接受）
+
+| 项 | 说明 |
+|----|------|
+| 需要全文件访问权限 | 控件版对话框浏览**真实路径**，访问 `/storage/emulated/0/...` 需 `MANAGE_EXTERNAL_STORAGE` 已授予（清单已声明，见 `scripts/android/build_android.py`）；未授予时用户只能看到应用私有目录 |
+| 系统不可读区域 | Android 11+ 的 `Android/data`、`Android/obb` 与 `/data` 其余部分不可读，属系统限制 |
+| 观感 | 不是系统原生 SAF 界面，而是 Qt 控件版（与桌面同款），触屏下按钮偏小（界面缩放已按机型分档，见 §3 相关文档） |
+| 云盘 | 只能选真实路径，云盘位置天然不可用（与 §2.4"不做导入兜底"一致） |
+
+#### （4）同时移除的东西
+
+| 已删除 | 原因 |
+|--------|------|
+| `packaging/android/java/.../picker/PickerActivity.java` | 自建选择器本体 |
+| `mangaproof/storage/android_picker.py` | 共享文件协议实现 |
+| `tests/test_android_picker.py` | 上述协议的测试 |
+| `A11yEnvProvider` 里的选择器命令消费线程与 `MANGAPROOF_PICKER_DIR` | 协议已不存在 |
+| `p4a_hook.py` 的入口 Activity 替换与 `extractNativeLibs` 注入 | 前者为接管 onActivityResult、后者无效（§2.12） |
+
+**hook 现在只做一件事**：注入 `A11yEnvProvider`（无障碍开关 + 机型 dp）。
+入口 Activity 保持 p4a 渲染结果不动（原样 `org.qtproject.qt.android.bindings.QtApplication`
++ p4a 的 entrypoint）。
+
+#### （5）验证
+
+| 项 | 手段 | 状态 |
+|----|------|------|
+| 桌面零改动 | `tests/test_picker.py`：断言桌面调用**不传任何 option**、标题/初始目录/过滤器逐参数一致 | ✅ |
+| Android 分支 | 同一测试断言 Android 传 `DontUseNativeDialog`（目录另加 `ShowDirsOnly`）、起始目录可用性回退 | ✅ |
+| hook 只做 provider 注入 | `tests/test_android_packaging_hook.py`（含幂等、缺清单/多 `</application>` 硬失败） | ✅ |
+| 真机：能选到文件夹且不卡死 | 打开「文件 → 打开漫画文件夹」；`adb logcat` 不应再出现 `dlopen failed`；选择器为 Qt 控件版 | ⏳ 待真机 |
 
 ---
 

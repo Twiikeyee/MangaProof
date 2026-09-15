@@ -377,7 +377,7 @@ mangaproof/
 ├── compare/           # 自动对比控制器（速度可配置，支持自动/手动挡）
 ├── report/            # MangaProof 返修单 PDF（纯 Python）
 ├── config/            # settings.json / recent.json 与统一程序路径服务
-├── storage/           # 选择器门面：桌面 QFileDialog / Android 原生 SAF（见 docs/Android端适配设计…md §2.11）
+├── storage/           # 选择器门面：两端同一个 QFileDialog，Android 强制控件版（见 docs/Android端适配设计…md §2.13）
 ├── utils/             # 自然排序、日志
 ├── console.py         # 打包产物控制台可见性控制
 ├── fonts.py           # 统一字体加载

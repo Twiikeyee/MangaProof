@@ -691,8 +691,9 @@ class MainWindow(QMainWindow):
     # ================================================================= 打开任务（需求 §5～§7）
 
     def open_psd_dialog(self) -> None:
-        # 选择器按平台分流（桌面 = 原来的 QFileDialog；Android = 系统原生 SAF，
-        # 绕开 Qt 6.11.2 原生文件对话框的卡死缺陷）——见 mangaproof/storage/picker.py
+        # 选择器按平台分流（桌面 = 原来那两行 QFileDialog，逐参数不变；
+        # Android = 同一 API 但强制 DontUseNativeDialog，绕开 Qt 原生 SAF 对话框的卡死）
+        # —— 见 mangaproof/storage/picker.py
         path_str = picker.pick_psd_file(self)
         if path_str:
             self.open_single(Path(path_str))

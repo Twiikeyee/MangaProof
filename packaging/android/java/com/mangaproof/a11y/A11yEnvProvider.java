@@ -79,31 +79,7 @@ public class A11yEnvProvider extends ContentProvider {
                     "无法设置 " + KEY_DISABLE_ACCESSIBILITY + "，Qt 无障碍桥将保持默认行为: " + t);
         }
         reportSmallestWidthDp();
-        startPickerConsumer();
         return true;
-    }
-
-    /**
-     * 启动原生选择器的命令消费线程（幂等）。
-     *
-     * 为什么在这里：PySide6 不向 Python 暴露任何 JNI 绑定（实测 Android wheel 的
-     * `QtCore.abi3.so`/`libpyside6.abi3.so` 里 `QJniObject`/`getJniType` 命中数为 0），
-     * 因此 Python **无法调用 Java** —— "打开系统选择器"只能由 Java 侧主动监听一个
-     * 共享文件来触发。本 provider 位于应用启动链最前端（早于任何 Activity），是启动
-     * 该守护线程最合适的位置。协议与实现见 `com.mangaproof.picker.PickerActivity`。
-     */
-    private void startPickerConsumer() {
-        try {
-            // 先公开目录，再启动消费线程：Python 侧优先读这个环境变量，避免两边
-            // 因为 Qt 的 QStandardPaths 口径不同而指向不同目录。
-            String dir = com.mangaproof.picker.PickerActivity.resultDirPath(getContext());
-            Os.setenv("MANGAPROOF_PICKER_DIR", dir, true);
-            android.util.Log.i("MangaProofA11y", "MANGAPROOF_PICKER_DIR=" + dir);
-            com.mangaproof.picker.PickerActivity.ensureConsumerStarted(getContext());
-        } catch (Throwable t) {
-            // 失败只影响"系统选择器"这一条路（其余功能可正常使用），不影响启动
-            android.util.Log.w("MangaProofA11y", "启动选择器命令消费线程失败: " + t);
-        }
     }
 
     /** 把当前显示的最小宽度（dp）写进进程环境，供 Python 侧按机型决定默认缩放。 */
