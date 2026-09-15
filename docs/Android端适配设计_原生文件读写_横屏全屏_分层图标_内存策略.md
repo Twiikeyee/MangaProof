@@ -89,6 +89,7 @@ BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
 | 选目录 | `QFileDialog.getExistingDirectoryUrl()`（系统原生 Documents UI，`ACTION_OPEN_DOCUMENT_TREE`） | 【源码】qtbase `qandroidplatformfiledialoghelper.cpp:206-208` |
 | 选完 | **URI → 真实路径映射**（纯 Python 字符串解析，见 §2.9），失败则提示"请从『本机存储』入口选择文件夹" | 本轮研究结论 |
 | 文件 I/O | 全部用真实路径：`open()`、`psd_tools.PSDImage.open(path)`、`PIL.Image.open(path)`、`json` 读写 | MANAGE_EXTERNAL_STORAGE 允许 direct file path access |
+| 设备端解释器 | **CPython 3.11.5**（由本地 `python3`/`hostpython3` recipe 钉住；Qt 官方 Android wheel 是 cp311 构建，其原生模块硬依赖 `libpython3.11.so`） | 【实测】`readelf -d` + 安装闪退复现；**应用代码必须保持 3.11 兼容**（已 grep 确认无 3.12+ 写法，但后续新增代码需注意；`pyproject` 的 `requires-python >=3.12` 只约束桌面环境） |
 | 任务文件 | `.mangaproof.json` 写回打开文件/文件夹所在目录（与桌面一致） | 需求方确认；普通文件写入即可 |
 | 异步 | 目录扫描 / 哈希 / 预加载 / PDF 生成仍走现有 `QThread` worker（不再需要"导入 worker"） | 复用现有架构 |
 | 云端验证 | 模拟器矩阵（API 30/34 + `google_apis_ps16k` 16KB 镜像）跑安装 + 启动 + `adb shell ls /storage` 冒烟 | `ReactiveCircus/android-emulator-runner@v2` |

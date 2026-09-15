@@ -761,6 +761,17 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 | 依据 | ① p4a `Recipe.recipe_dirs()` 把 `--local-recipes` **排在首位**（`recipe.py:701-708`），同名本地 recipe 覆盖内置实现；② reportlab 5.0.1 的 sdist 是标准 `setuptools.build_meta` 构建、**不含需编译的 C 扩展**（加速件是独立可选包 `rl_accel`，本项目 lock 里没有）→ `depends` 只需 `python3 / pillow / charset-normalizer`，连内置 recipe 带的 freetype 都可以省 |
 | 顺手排雷 | 其它相关内置 recipe 的源实测可达：`png 1.6.37`（GitHub zip）、`jpeg 2.0.1`（GitHub tar.gz）、`freetype 2.14.1`（savannah）、`libwebp`（googleapis）、`harfbuzz`（freedesktop）✅ |
 
+**⑤ 安装实测 —— 闪退：设备端解释器版本与 Qt wheel 不匹配（R2 命中）**
+
+| 项 | 内容 |
+|----|------|
+| 现象 | APK 安装成功但启动即闪退；解包可见 `libpython3.14.so` |
+| **根因** | Qt 官方 Android wheel 是 **cp311** 构建，其原生模块**硬编码依赖 `libpython3.11.so`**（`readelf -d` 实测：`QtCore.abi3.so` / `libshiboken6.abi3.so` / `libpyside6.abi3.so` / `Shiboken.abi3.so` 四个全部 NEEDED `libpython3.11.so`）；而 p4a develop 的 python3 recipe 是 **3.14.2** → APK 里只有 `libpython3.14.so` → 链接器解析不到 3.11，启动即崩 |
+| 排查结论 | ① Qt 下载站**所有** Android wheel（6.10.x~6.11.2）都是 `cp311-cp311`，没有 cp312/313/314，所以设备端只能用 CPython 3.11.x；② 应用代码 grep 确认无 Python 3.12+ 专属写法，跑 3.11 无障碍 |
+| 修复 | 新增两个本地 recipe（本地 recipe 优先于内置，`Recipe.recipe_dirs()`）：`packaging/android/recipes/python3` 与 `.../hostpython3`，均 `version = "3.11.5"`（p4a 最后一个正式版 2024.1.21 用的就是 3.11.5；`hostpython3` 有独立硬编码版本，必须一起改） |
+| 预验证 | 本地把 develop 为该版本准备的 4 个补丁对 CPython v3.11.5 源码做了 `patch --dry-run`：`pyconfig_detection.patch` / `reproducible-buildinfo.diff` / `cpython-311-ctypes-find-library.patch` / `py3.8.1_fix_cortex_a8.patch` **全部干净应用**（仅 offset/fuzz），避免再白等一次 60 分钟构建 |
+| 验收标准 | 新 APK 内出现 `libpython3.11.so`；应用能启动到主窗口 |
+
 **下一轮的风险预告（未发生，先记录）**
 
 - `numpy` 走的是 p4a 内置 recipe（git tag **v2.3.0**）与 `Pillow`（**11.3.0**），二者与 `uv.lock` 的 2.5.2 / 12.3.0 不一致 → 若真机运行期出现 API 差异，再补钉版本 recipe（P1 计划内）。
@@ -795,7 +806,7 @@ GitHub 的 **job 日志下载接口要求仓库 admin 权限**（匿名请求 40
 | # | 风险 | 影响 | 验证方法 | 缓解 |
 |---|------|------|----------|------|
 | R1 | **16 KB page size**：shiboken6 wheel 内 `.so` 为 `p_align=0x1000`（实测） | 可能影响 Android 15+ 设备加载 / Play 审核 | CI 加 `readelf -lW` 扫描 APK 内 `lib/**/*.so`；`zipalign -c -P 16 -v 4`；真机（16 KB 内核）实测启动 | 优先升级到 Qt 官方声明需要 NDK r28c 的更新版本（其 dev 文档已明说 r28c 是为 16 KB）；或向 Qt 反馈 shiboken 对齐问题；必要时用 `-Wl,-z,max-page-size=16384` 重链自建部分 |
-| R2 | **设备端 CPython 3.14 加载 cp311 wheel**（wheel tag 与目标解释器不一致） | 启动即崩 | P0 构建后安装到真机/`x86_64` 模拟器，打印 `sys.version` 并 `from PySide6.QtWidgets import QApplication` | 若失败：改用与 wheel tag 匹配的 p4a 分支/commit（使 python3 recipe 为 3.11.x），并在包装脚本里钉 `p4a.commit` |
+| R2 | **设备端 CPython 3.14 加载 cp311 wheel** —— ✅ **已确认发生并修复**（安装后闪退；`readelf -d` 实测 Qt 模块硬依赖 `libpython3.11.so`，而 APK 装的是 `libpython3.14.so`） | 启动即崩 | 复现：安装 APK → 闪退；验证修复：APK 内应出现 `libpython3.11.so`（`unzip -l x.apk \| grep libpython`） | **已修**：新增本地 recipe `packaging/android/recipes/python3` 与 `hostpython3`，把设备端/构建期解释器钉到 **3.11.5**（p4a 2024.1.21 的版本；develop 的补丁已本地 dry-run 验证可干净应用）。注意 Qt 下载站所有 Android wheel 均为 cp311，不存在 cp312+ 可选 |
 | R3 | **p4a `develop` 漂移** | 今天能过、明天失败 | 记录首轮成功的 p4a commit sha | 包装脚本写死 `p4a.commit`；同时把 Qt wheel 版本一起钉住 |
 | R4 | **依赖版本漂移**（numpy/Pillow/reportlab recipe 版本低于项目要求） | 运行期 API 差异 | 设备端打印 `numpy.__version__`、`PIL.__version__`、`reportlab.Version`；跑一遍真实 PSD 流程 | 自建 recipe 钉 2.5.2 / 12.3.0 / 5.0.1 |
 | R5 | **工具吞异常 → 假成功** | CI 绿但无产物 | 产物断言 + `apksigner verify` | 已在 §5.4/§5.5 固化 |
