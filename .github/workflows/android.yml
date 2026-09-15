@@ -3,8 +3,15 @@ name: android
 # 只出 APK（不上 Play，不做 AAB）。
 #
 # 触发方式：
-#   · push 到 master     → 自动构建（release，配了 keystore secrets 就签名）
-#   · workflow_dispatch  → 手动构建（可选 release/debug、是否签名）
+#   · push 到 master     → 自动构建（**debug**，随后用仓库 keystore 重新签名）
+#   · workflow_dispatch  → 手动构建（可选 debug/release、是否签名；默认 debug）
+#
+# 为什么固定用 debug（真机实测，2026-09）：release 包安装后 lib/<abi>/*.so **不被解压**，
+# 而 p4a 的 libs.tmpl.xml 要求按绝对路径加载 QtCore/QtGui/QtWidgets.abi3.so
+# （不带 lib 前缀，走不通 System.loadLibrary 在 APK 内查 lib<name>.so 的约定）
+# → 启动即 dlopen failed；debug 包正常。曾在清单里注入 extractNativeLibs="true"，
+# 经 aapt2 确认属性已生效但真机仍不解压（压不过 AGP 的 useLegacyPackaging），故撤掉该注入。
+# debug 包由下方 `Sign APK` 步骤用我们的 release keystore 重新签名，产物可直接分发/侧载。
 #
 # Qt bootstrap 一次只能处理一个 ABI，所以用 matrix **同时跑两个 ABI**：
 # arm64-v8a（aarch64，真机）与 x86_64（模拟器）；两个 APK 分别作为独立 artifact。
@@ -16,10 +23,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "构建类型：release（默认，签名后可直接分发）/ debug（便于排查）"
+        description: "构建类型：debug（默认，so 会被解压，已验证可用）/ release（当前不可用：so 不解压）"
         type: choice
-        options: [release, debug]
-        default: release
+        options: [debug, release]
+        default: debug
       sign:
         description: "使用仓库 secrets 中的 keystore 签名"
         type: boolean
@@ -47,7 +54,7 @@ env:
 
 jobs:
   build-android:
-    name: android-${{ matrix.arch }}-${{ inputs.mode || 'release' }}
+    name: android-${{ matrix.arch }}-${{ inputs.mode || 'debug' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     # 两个 ABI 并行；一个失败不拖累另一个（两个 artifact 都要）
@@ -221,7 +228,7 @@ jobs:
             --pyside-wheel   "$RUNNER_TEMP/qt-wheels/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ matrix.arch }}.whl" \
             --shiboken-wheel "$RUNNER_TEMP/qt-wheels/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ matrix.arch }}.whl" \
             --ndk-path "$ANDROID_NDK_PATH" --sdk-path "$ANDROID_HOME" \
-            --name MangaProof --mode "${{ inputs.mode || 'release' }}" --arch "${{ matrix.arch }}" \
+            --name MangaProof --mode "${{ inputs.mode || 'debug' }}" --arch "${{ matrix.arch }}" \
             --apk-out "$RUNNER_TEMP/apk_path.txt" -v 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # 构建失败时把日志尾部转成 annotation + job summary：
@@ -266,13 +273,10 @@ jobs:
           echo "APK=$APK" >> "$GITHUB_ENV"
           ls -la "$APK"
 
-      # 产物内容校验（本轮新增）：挡「so 缺失」与「release 不解压 so」这两类只在真机
-      # 才暴露、且流水线原本全绿的问题。
+      # 产物内容校验：挡「so 缺失」与「入口 Activity 没换成 PickerActivity」这两类
+      # 只在真机才暴露、且流水线原本全绿的问题。
       #   ① 必需 so 清单：缺一个 → 装上也起不来，必须当场失败；
-      #   ② extractNativeLibs=true：缺了它 release 包安装时**不会解压** so 到
-      #      /data/app/<pkg>/lib/<abi>/，而 p4a 的 libs.tmpl.xml 要求按绝对路径加载
-      #      QtCore/QtGui/QtWidgets.abi3.so（它们不带 lib 前缀，走不通 System.loadLibrary）
-      #      → 启动即 dlopen failed（真机实测：debug 包正常、release 包如此）。
+      #   ② 入口 Activity 必须是 com.mangaproof.picker.PickerActivity（见下方注释）。
       - name: Verify APK native libs and manifest flag
         shell: bash
         run: |
@@ -330,34 +334,18 @@ jobs:
           grep -qE "^lib/$ABI/lib(crypto|ssl)[^/]*\.so$" "$LIST" \
             || echo "::warning::未见 openssl 系列库（本应用不依赖，仅提示）"
 
-          # ② 清单属性校验：用 build-tools 的 aapt2 读最终清单
+          # ② 最终清单里的入口 Activity 必须是 PickerActivity：
+          #    p4a 渲染出的入口类（org.kivy.android.PythonActivity 等）不在我们的 DEX 里，
+          #    没换掉的话包能装上但启动即 ClassNotFoundException；同时它决定 SAF 选择器
+          #    能否收到 onActivityResult。
+          #    注：这里**不再**校验 extractNativeLibs —— 该属性压不过 AGP 的
+          #    packagingOptions { jniLibs { useLegacyPackaging } }，注入后经 aapt2 确认属性
+          #    已生效、真机仍不解压，故已撤掉该注入，改用 debug 构建（见文件头说明）。
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)"
           AAPT2="$BT/aapt2"
           if [ -x "$AAPT2" ]; then
             MAN="$RUNNER_TEMP/manifest_dump.txt"
             "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" > "$MAN"
-            if grep -q "extractNativeLibs" "$MAN"; then
-              echo "--- extractNativeLibs（最终清单）---"
-              grep -A 3 "extractNativeLibs" "$MAN" | head -8
-              # aapt2 的布尔打印形态**不统一**（都实测过）：
-              #   · 十六进制：extractNativeLibs(0x010104ea)=(type 0x12)0xffffffff
-              #   · 文本：    extractNativeLibs(0x010104ea)=true
-              # 最初只匹配 0xffffffff，结果在 CI 上把**已经正确的 true** 判成了非 true
-              # 并让整条流水线失败（APK 本身是好的）。两种形态都要认；只认 "=true"，
-              # 避免把 "=false"/"=trueXXX" 之类的别的取值误判为通过。
-              if grep -A 3 "extractNativeLibs" "$MAN" | grep -qE "0xffffffff|=[\"']?true[\"']?"; then
-                echo "✅ extractNativeLibs=true（安装时会解压 so）"
-              else
-                echo "::error::extractNativeLibs 不是 true → release 包不会解压 so，PySide6 的 abi3 模块加载不到"
-                exit 1
-              fi
-            else
-              echo "::error::最终清单里没有 extractNativeLibs 属性（p4a hook 的注入没生效？）"
-              exit 1
-            fi
-            # 入口 Activity 必须是我们的 PickerActivity：p4a 渲染出的入口类
-            # （org.kivy.android.PythonActivity 等）并不在我们的 DEX 里，若没换掉，
-            # 包能装上但启动即崩；同时它也决定 SAF 选择器能否收到 onActivityResult。
             if grep -q "com.mangaproof.picker.PickerActivity" "$MAN"; then
               echo "✅ 入口 Activity = com.mangaproof.picker.PickerActivity"
             else
@@ -365,7 +353,7 @@ jobs:
               exit 1
             fi
           else
-            echo "::warning::找不到 aapt2（$AAPT2），跳过清单属性校验"
+            echo "::warning::找不到 aapt2（$AAPT2），跳过入口 Activity 校验"
           fi
 
       # 16 KB page size（Android 15+ / Play 要求）：先只告警，不阻断

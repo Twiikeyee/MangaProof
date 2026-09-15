@@ -27,7 +27,7 @@ def hook(monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "_state",
                         {"java_copied": False, "manifest_patched": False,
-                         "activity_swapped": False, "extract_native_libs": False})
+                         "activity_swapped": False})
     return module
 
 
@@ -99,79 +99,6 @@ def test_injects_provider_and_swaps_entry_activity(hook, fake_dist, monkeypatch)
     assert 'android:name="org.qtproject.qt.android.bindings.QtApplication"' in text
     assert 'android:exported="true"' in text
     assert text.count("<activity") == 1 and text.count("</activity>") == 1
-
-
-# ------------------------------------------------------- extractNativeLibs（本轮修复）
-
-def test_injects_extract_native_libs_into_application_tag(hook, fake_dist, monkeypatch):
-    """release 包必须解压 so，否则 PySide6 的 abi3 模块加载不到。"""
-    text = _run(hook, fake_dist, monkeypatch).read_text(encoding="utf-8")
-    assert 'android:extractNativeLibs="true"' in text
-    # 必须落在 <application> 开始标签内（放错标签等于没设）
-    app_tag = text[text.index("<application"):text.index("<activity")]
-    assert 'android:extractNativeLibs="true"' in app_tag
-    # 不能出现第二个同名属性（aapt2 会报重复属性）
-    assert text.count("extractNativeLibs") == 1
-
-
-def test_extract_native_libs_is_idempotent(hook, fake_dist, monkeypatch):
-    first = _run(hook, fake_dist, monkeypatch).read_text(encoding="utf-8")
-    second = _run(hook, fake_dist, monkeypatch).read_text(encoding="utf-8")
-    assert first == second
-    assert second.count("extractNativeLibs") == 1
-
-
-def test_extract_native_libs_conflicting_value_is_hard_failure(hook, fake_dist, monkeypatch):
-    """上游模板若已经写了该属性且不是 true，必须停下来（重复注入会让 aapt2 报错）。"""
-    manifest = fake_dist / "src" / "main" / "AndroidManifest.xml"
-    text = manifest.read_text(encoding="utf-8")
-    manifest.write_text(
-        text.replace("<application ",
-                     '<application android:extractNativeLibs="false" ', 1),
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(fake_dist)
-    with pytest.raises(RuntimeError, match="extractNativeLibs"):
-        hook._apply(require_manifest=True)
-
-
-def test_extract_native_libs_missing_application_tag_is_hard_failure(hook, tmp_path, monkeypatch):
-    dist = tmp_path / "dist"
-    (dist / "src" / "main").mkdir(parents=True)
-    (dist / "src" / "main" / "AndroidManifest.xml").write_text(
-        "<?xml version='1.0'?><manifest></manifest>", encoding="utf-8")
-    monkeypatch.chdir(dist)
-    with pytest.raises(RuntimeError, match="application"):
-        hook._apply(require_manifest=True)
-
-
-def test_extract_native_libs_not_fooled_by_template_comment(hook):
-    """p4a 的 Qt 模板注释里就有 `android:extractNativeLibs="true"` 字样。
-
-    最初用朴素 `in text` 判定，结果被注释骗过、**根本没注入**（本地实测踩到）。
-    这里固化"注释不算数"：必须在真正的 `<application>` 标签里看到该属性。
-    """
-    rendered = (
-        '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
-        '    <application android:name="org.qtproject.qt.android.bindings.QtApplication"\n'
-        '                 android:label="@string/app_name"\n'
-        '                 >\n'
-        '                <!--\n'
-        '                 android:extractNativeLibs="true" = needed for smaller apk size\n'
-        '                -->\n'
-        '        <activity android:name="org.qtproject.qt.android.bindings.QtActivity"\n'
-        '                  android:exported="true" />\n'
-        '    </application>\n'
-        '</manifest>\n'
-    )
-    out, ok = hook._patch_extract_native_libs(rendered)
-    assert ok is True
-    app_tag = out[out.index("<application"):out.index(">", out.index("<application")) + 1]
-    assert 'android:extractNativeLibs="true"' in app_tag, "属性必须落在 <application> 标签内"
-    # 幂等：第二次不再追加
-    again, _ = hook._patch_extract_native_libs(out)
-    assert again == out
 
 
 def test_hook_is_idempotent(hook, fake_dist, monkeypatch):
