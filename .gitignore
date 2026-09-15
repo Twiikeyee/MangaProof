@@ -30,6 +30,13 @@ tests/data/out/
 build/
 dist/
 
+# Android 构建产物（pyside6-android-deploy / buildozer 在仓库根落文件）
+pysidedeploy.spec
+buildozer.spec
+deployment/
+*.apk
+*.aab
+
 # IDE
 .idea/
 .vscode/

@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""MangaProof → Android(APK) 构建包装脚本。
+
+为什么需要它
+------------
+`pyside6-android-deploy` 有两个硬性行为（源码级事实，官方文档未写）：
+
+1. `deploy_lib/android/buildozer.py` 把 `requirements` **写死**为
+   `python3,shiboken6,PySide6` —— 没有任何配置项能追加应用侧依赖；
+2. `deploy_util.py` 的 `cleanup()` 在**每次运行开头**就删除
+   `<project>/buildozer.spec` 与 `<project>/deployment/`，因此
+   「预置 spec」或「先 --init 再改」都会被清掉。
+
+所以只能在**同一次运行内**、`BuildozerConfig` 写完 spec 之后、buildozer
+启动之前，劫持该类做二次注入（本脚本做法），或直接 `sed` 打补丁安装目录。
+
+另外：工具的 `main()` 会 `except Exception: print(traceback)` **吞掉异常**
+（退出码仍为 0），所以本脚本在最后**必须自己断言 APK 存在**。
+
+用法（在仓库根目录执行；CI 见 .github/workflows/android.yml）
+-------------------------------------------------------------
+    python scripts/android/build_android.py \
+        --pyside-wheel  /path/pyside6-6.11.2-...-android_aarch64.whl \
+        --shiboken-wheel /path/shiboken6-6.11.2-...-android_aarch64.whl \
+        --ndk-path "$ANDROID_HOME/ndk/27.2.12479018" --sdk-path "$ANDROID_HOME" \
+        --mode debug --arch aarch64 --apk-out "$GITHUB_ENV"
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_RECIPES_DIR = REPO_ROOT / "packaging" / "android" / "recipes"
+SPEC_PATH = REPO_ROOT / "pysidedeploy.spec"
+
+# 打进 APK 的资源：font/ 的 ttf 与 ico/ 的 png 必须在列
+SOURCE_INCLUDE_EXTS = "py,png,jpg,ttf,json,qml,js"
+SOURCE_EXCLUDE_DIRS = ",".join([
+    ".git", ".github", ".venv", ".uv-cache", ".pytest_cache", ".benchmarks",
+    "deployment", "docs", "scripts", "tests", "packaging", "logs",
+    "local_samples", "README.assets", "美术素材原文件",
+])
+
+# 依赖名（uv.lock 中的名字）→ p4a requirements token
+REQUIREMENT_TOKENS = {
+    "numpy": "numpy",
+    "pillow": "Pillow",
+    "reportlab": "reportlab",
+    "psd-tools": "psd-tools",
+    "attrs": "attrs",
+    "typing-extensions": "typing-extensions",
+    "charset-normalizer": "charset-normalizer",
+}
+QT_PACKAGES = {"pyside6", "pyside6-essentials", "pyside6-addons", "shiboken6"}
+
+
+def log(msg: str) -> None:
+    print(f"[mangaproof-android] {msg}", flush=True)
+
+
+def _prepare_pyside_scripts() -> None:
+    """把 PySide6 的 scripts 目录放进 sys.path。
+
+    `PySide6/scripts/android_deploy.py` 用的是**顶层**导入（`from deploy_lib import ...`），
+    官方 CLI 是靠"脚本就在该目录里"才成立的；我们要在自己的进程内 monkeypatch，
+    所以必须显式把该目录加进 sys.path。
+    """
+    import PySide6  # noqa: PLC0415
+
+    scripts_dir = Path(PySide6.__file__).resolve().parent / "scripts"
+    if not scripts_dir.is_dir():
+        raise SystemExit(f"[build] 找不到 PySide6 scripts 目录：{scripts_dir}")
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+
+
+def _check_host_requirements() -> None:
+    """工具在 CLI 入口会校验 requirements-android.txt；进程内调用要自己查一遍。"""
+    missing = []
+    for name in ("jinja2", "pkginfo", "tqdm", "packaging"):
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append(name)
+    if missing:
+        raise SystemExit(
+            "[build] 宿主环境缺少 Android 部署工具的依赖："
+            f"{', '.join(missing)}\n"
+            "        请安装：pip install pyside6 jinja2 pkginfo tqdm packaging==24.1"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 版本号
+# ---------------------------------------------------------------------------
+
+def project_version() -> str:
+    init = (REPO_ROOT / "mangaproof" / "__init__.py").read_text(encoding="utf-8")
+    for line in init.splitlines():
+        if line.startswith("__version__"):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    raise SystemExit("[build] 无法从 mangaproof/__init__.py 解析 __version__")
+
+
+def numeric_version(version: str) -> int:
+    """major*10000 + minor*100 + patch（Android versionCode 必须为递增整数）。"""
+    parts = (version.split(".") + ["0", "0", "0"])[:3]
+    try:
+        major, minor, patch = (int(p) for p in parts)
+    except ValueError:
+        major, minor, patch = 1, 0, 0
+    return major * 10000 + minor * 100 + patch
+
+
+# ---------------------------------------------------------------------------
+# 运行时依赖闭包（uv.lock）
+# ---------------------------------------------------------------------------
+
+def lock_requirements() -> list[str]:
+    """用 scripts/android/analyze_lock_deps.py 的 JSON 输出得到要打包的依赖。"""
+    tools_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(tools_dir))
+    import analyze_lock_deps  # noqa: PLC0415 （同目录脚本）
+
+    result = analyze_lock_deps.analyze(REPO_ROOT / "uv.lock")
+    tokens: list[str] = []
+    unknown: list[str] = []
+    for row in result["packages"]:
+        name = row["name"]
+        if name in QT_PACKAGES:
+            continue                      # Qt 由工具自己写进 requirements
+        token = REQUIREMENT_TOKENS.get(name)
+        if token is None:
+            unknown.append(name)
+        else:
+            tokens.append(token)
+    if unknown:
+        raise SystemExit(f"[build] 以下依赖没有 Android 归宿（请补 recipe 并更新脚本）：{unknown}")
+    log(f"运行时依赖（来自 uv.lock）：{', '.join(tokens)}")
+    return tokens
+
+
+# ---------------------------------------------------------------------------
+# pysidedeploy.spec / buildozer.spec
+# ---------------------------------------------------------------------------
+
+def write_pysidedeploy_spec(*, mode: str, arch: str) -> None:
+    """预置 pysidedeploy.spec（工具存在该文件时不会重建），用于指定 mode/arch。"""
+    spec = f"""[app]
+
+# Title of your application
+title = MangaProof
+
+# Project root directory. Default: The parent directory of input_file
+project_dir = {REPO_ROOT}
+
+# Source file entry point path. Default: main.py
+input_file = main.py
+
+# Directory where the executable output is generated
+exec_directory =
+
+# Path to the project file relative to project_dir
+project_file =
+
+# Application icon（p4a 会把它放到 res/mipmap/icon.png；自适应图标由本脚本注入 buildozer.spec）
+icon = ico/Android-fallback.png
+
+[python]
+
+python_path =
+
+packages = Nuitka==4.1.1
+android_packages = buildozer==1.5.0,cython==0.29.33
+
+[qt]
+
+modules =
+
+[android]
+
+wheel_pyside =
+wheel_shiboken =
+plugins =
+
+[nuitka]
+
+mode = onefile
+extra_args = --quiet --noinclude-qt-translations
+
+[buildozer]
+
+mode = {mode}
+
+recipe_dir =
+jars_dir =
+ndk_path =
+sdk_path =
+local_libs =
+arch = {arch}
+"""
+    SPEC_PATH.write_text(spec, encoding="utf-8")
+    log(f"已写入 {SPEC_PATH.relative_to(REPO_ROOT)}（mode={mode}, arch={arch}）")
+
+
+def patch_buildozer_config(*, requirements: list[str], icons: dict[str, str],
+                           version: str, api: int, min_api: int, ndk_api: int,
+                           recipes_dir: Path | None) -> None:
+    """劫持 BuildozerConfig：在官方写入之后做二次注入。"""
+    _prepare_pyside_scripts()
+    from deploy_lib.android import buildozer as bz_mod  # noqa: PLC0415
+
+    original = bz_mod.BuildozerConfig
+
+    class MangaProofBuildozerConfig(original):  # type: ignore[misc, valid-type]
+        def __init__(self, spec_file, pysidedeploy_config):  # noqa: D401
+            super().__init__(spec_file, pysidedeploy_config)
+            cfg = pysidedeploy_config
+
+            def put(section: str, key: str, value: str) -> None:
+                """直接写 parser：default.spec 里被注释掉的键也能新增/覆盖。"""
+                if not self.parser.has_section(section):
+                    self.parser.add_section(section)
+                self.parser.set(section, key, str(value))
+
+            # 1) requirements（工具的硬编码行 + 应用运行时依赖）
+            current = [t for t in (self.get_value("app", "requirements") or "").split(",") if t]
+            merged = list(dict.fromkeys(current + requirements))
+            put("app", "requirements", ",".join(merged))
+            log(f"buildozer.spec requirements = {','.join(merged)}")
+
+            # 2) 本地 p4a recipe：拷进工具刚建好的 deployment/recipes/
+            if recipes_dir and recipes_dir.is_dir() and cfg.recipe_dir:
+                shutil.copytree(recipes_dir, cfg.recipe_dir, dirs_exist_ok=True)
+                log(f"已注入本地 recipe：{sorted(p.name for p in recipes_dir.iterdir())}")
+
+            # 3) 打包范围（字体 ttf 必须包含；仓库垃圾必须排除）
+            put("app", "source.include_exts", SOURCE_INCLUDE_EXTS)
+            put("app", "source.exclude_dirs", SOURCE_EXCLUDE_DIRS)
+
+            # 4) Android 平台参数
+            put("app", "android.api", str(api))
+            put("app", "android.minapi", str(min_api))
+            put("app", "android.ndk_api", str(ndk_api))
+            put("app", "android.accept_sdk_license", "True")
+            put("app", "android.release_artifact", "apk")     # 本轮只出 APK（release 默认是 aab）
+            put("app", "android.debug_artifact", "apk")
+            put("app", "fullscreen", "1")                      # buildozer 默认 0
+            put("app", "orientation", "landscape")             # buildozer 默认 portrait
+            put("app", "android.manifest.orientation", "sensorLandscape")  # 允许左右横屏翻转
+            put("app", "package.name", "mangaproof")           # 包名小写惯例
+            put("app", "version", version)
+            put("app", "android.numeric_version", str(numeric_version(version)))
+            put("app", "icon.filename", icons["fallback"])
+            put("app", "icon.adaptive_foreground.filename", icons["foreground"])
+            put("app", "icon.adaptive_background.filename", icons["background"])
+
+            # 5) 权限叠加（全文件访问：Android 11+ 直接路径读写的关键）
+            perms = [p for p in (self.get_value("app", "android.permissions") or "").split(",") if p]
+            perms.append("android.permission.MANAGE_EXTERNAL_STORAGE")
+            put("app", "android.permissions", ",".join(dict.fromkeys(perms)))
+
+            # 6) p4a 参数：刘海/挖孔区域可绘制（buildozer 无对应键）
+            extra_args = (self.get_value("app", "p4a.extra_args") or "").strip()
+            put("app", "p4a.extra_args", f"{extra_args} --display-cutout shortEdges".strip())
+
+            self.update_config()
+
+    bz_mod.BuildozerConfig = MangaProofBuildozerConfig
+
+
+# ---------------------------------------------------------------------------
+# 主流程
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="构建 MangaProof Android APK")
+    parser.add_argument("--pyside-wheel", type=Path, required=True)
+    parser.add_argument("--shiboken-wheel", type=Path, required=True)
+    parser.add_argument("--ndk-path", type=Path)
+    parser.add_argument("--sdk-path", type=Path)
+    parser.add_argument("--name", default="MangaProof")
+    parser.add_argument("--mode", choices=["debug", "release"], default="debug")
+    parser.add_argument("--arch", choices=["aarch64", "x86_64"], default="aarch64")
+    parser.add_argument("--api", type=int, default=35, help="targetSdk")
+    parser.add_argument("--min-api", type=int, default=30, help="minSdk（全文件访问权限下限）")
+    parser.add_argument("--ndk-api", type=int, default=30)
+    parser.add_argument("--extra-requirements", default="",
+                        help="额外 p4a requirements（逗号分隔，一般不需要）")
+    parser.add_argument("--no-lock-deps", action="store_true",
+                        help="不从 uv.lock 注入运行时依赖（仅调试用）")
+    parser.add_argument("--recipes-dir", type=Path, default=DEFAULT_RECIPES_DIR)
+    parser.add_argument("--keep-deployment-files", action="store_true")
+    parser.add_argument("--apk-out", type=Path, help="把产物路径写入该文件（供 CI 读取）")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+
+    os.chdir(REPO_ROOT)                                    # 工具要求 cwd 下有 main.py
+    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+    _check_host_requirements()
+
+    for label, path in (("pyside wheel", args.pyside_wheel), ("shiboken wheel", args.shiboken_wheel)):
+        if not path.is_file():
+            raise SystemExit(f"[build] {label} 不存在：{path}")
+
+    version = project_version()
+    requirements = [] if args.no_lock_deps else lock_requirements()
+    if args.extra_requirements:
+        requirements += [t.strip() for t in args.extra_requirements.split(",") if t.strip()]
+
+    icons = {
+        "fallback": "ico/Android-fallback.png",
+        "foreground": "ico/Android-foreground.png",
+        "background": "ico/Android-background.png",
+    }
+    for key, rel in icons.items():
+        if not (REPO_ROOT / rel).is_file():
+            raise SystemExit(f"[build] 图标缺失（{key}）：{rel}")
+
+    write_pysidedeploy_spec(mode=args.mode, arch=args.arch)
+    patch_buildozer_config(
+        requirements=requirements, icons=icons, version=version,
+        api=args.api, min_api=args.min_api, ndk_api=args.ndk_api,
+        recipes_dir=args.recipes_dir if args.recipes_dir.is_dir() else None,
+    )
+
+    import android_deploy  # noqa: PLC0415  （顶层导入，与官方 CLI 一致；见 _prepare_pyside_scripts）
+
+    log(f"调用 pyside6-android-deploy：mode={args.mode} arch={args.arch} "
+        f"api={args.api} minapi={args.min_api}")
+    android_deploy.main(
+        name=args.name,
+        pyside_wheel=args.pyside_wheel.resolve(),
+        shiboken_wheel=args.shiboken_wheel.resolve(),
+        ndk_path=args.ndk_path.resolve() if args.ndk_path else None,
+        sdk_path=args.sdk_path.resolve() if args.sdk_path else None,
+        config_file=SPEC_PATH,
+        init=False,
+        loglevel=logging.INFO if args.verbose else logging.WARNING,
+        dry_run=False,
+        keep_deployment_files=args.keep_deployment_files,
+        force=True,                                        # 不在 venv 里也不交互提问
+    )
+
+    # 工具会吞掉异常 → 必须自己判成功
+    apks = sorted(REPO_ROOT.glob("*.apk"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not apks:
+        log("❌ 未找到 APK：工具内部异常被吞掉了，请查看上方日志（含 traceback）")
+        return 1
+    apk = apks[0]
+    log(f"✅ 产物：{apk.name}（{apk.stat().st_size / 1048576:.1f} MiB）")
+    if args.apk_out:
+        args.apk_out.write_text(str(apk), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
