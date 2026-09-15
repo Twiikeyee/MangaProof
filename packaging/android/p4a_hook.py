@@ -38,13 +38,15 @@ hook 被调用的时机：p4a `toolchain.py` 在 `with current_directory(dist.di
 → Gradle 组装。因此本模块：before_apk_build 只拷 Java（清单还没生成），
 after_apk_build / before_apk_assemble 注入 provider 并**断言**成功。
 
-本 hook 现在**只做一件事**：注入 A11yEnvProvider。
+本 hook 现在做两件事：① 注入 A11yEnvProvider；② 给 Activity 主题挂首屏背景
+（底色 + Logo，解决首次启动解包 Python 期间的白屏/黑屏）。
 此前还做过两件清单改造（入口 Activity 替换、extractNativeLibs 注入），均已移除，
 原因见下文 `【已移除的两个清单改造】` 注释块。
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -61,6 +63,9 @@ PROVIDER_CLASS = "com.mangaproof.a11y.A11yEnvProvider"
 # 所以跟随应用 ID 一起改。
 PROVIDER_AUTHORITY = "com.priloba.mangaproof.a11y.env"
 
+#: p4a 的 Qt 模板给 Activity 硬编码的主题名（首屏背景要挂到它上面）
+STYLE_NAME = "KivySupportCutout"
+
 _PROVIDER_XML = (
     "\n        <!-- MangaProof: 在 Activity 之前把 QT_ANDROID_DISABLE_ACCESSIBILITY=1"
     " 与 MANGAPROOF_SW_DP（最小宽度 dp，供界面缩放按机型分档）写入进程环境"
@@ -74,6 +79,7 @@ _PROVIDER_XML = (
 _state = {
     "java_copied": False,
     "manifest_patched": False,
+    "splash_patched": False,
 }
 
 
@@ -125,8 +131,75 @@ def _install_java(dist_dir: Path) -> None:
 # 本 hook 现在只做一件事：注入 A11yEnvProvider（无障碍开关 + 机型 dp）。
 
 
+def _patch_splash_background(dist_dir: Path) -> bool:
+    """把首屏背景（底色 + Logo）挂到 **Activity 真正使用的主题** 上。
+
+    背景（为什么不能只设 `android.apptheme`）
+    -----------------------------------------
+    p4a 的 Qt 清单模板里两处主题是分开的：
+
+        <application android:theme="{{args.android_apptheme}}…">
+            <activity android:theme="@style/KivySupportCutout">      ← 硬编码
+
+    Activity 主题会**覆盖** Application 主题，所以只把 apptheme 指到我们的首屏主题
+    **不生效**（首次启动解包 Python 期间仍会白屏/黑屏）。真正有效的是给 Activity 用的
+    `@style/KivySupportCutout` 补一条 `android:windowBackground` ——
+    `windowBackground` 由 system_server 在窗口创建时绘制，与 Qt/Java 无关，
+    因此 Qt bootstrap 下同样有效（p4a 自带的 presplash 在 Qt bootstrap 下不生效）。
+
+    实现：在 dist 的资源目录里就地改写 styles.xml 中 `KivySupportCutout` 的
+    `<style>` 块，插入 `android:windowBackground`。资源文件位置/名字随 p4a 版本
+    可能变化，所以这里**遍历所有候选 styles.xml**，命中即改；一个都没命中时返回
+    False 并打印醒目警告（不阻断构建——首屏只是观感问题，不该因此让整条流水线失败），
+    由 CI 侧的 aapt2 校验兜底确认。
+    """
+    candidates: list[Path] = []
+    for pattern in ("values/styles.xml", "values/*styles*.xml", "values/*.xml"):
+        candidates.extend(sorted(dist_dir.glob(f"src/main/res/{pattern}")))
+    # 去重且保持顺序
+    seen: set[Path] = set()
+    files = [p for p in candidates if not (p in seen or seen.add(p))]
+
+    marker = 'android:windowBackground'
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if STYLE_NAME not in text:
+            continue
+        if marker in text:
+            _log(f"{path.name} 已含 {marker}，跳过")
+            return True
+        # 只改 KivySupportCutout 那个 style 块
+        match = re.search(
+            r'(<style\s+name="' + re.escape(STYLE_NAME) + r'"[^>]*>)(.*?)(</style>)',
+            text,
+            flags=re.S,
+        )
+        if match is None:
+            continue
+        injected = (
+            match.group(1)
+            + match.group(2).rstrip()
+            + f"\n        <item name=\"{marker}\">@drawable/mangaproof_splash</item>\n    "
+            + match.group(3)
+        )
+        text = text[:match.start()] + injected + text[match.end():]
+        path.write_text(text, encoding="utf-8")
+        _log(f"已在 {path.relative_to(dist_dir)} 的 {STYLE_NAME} 注入 {marker}")
+        return True
+
+    _log(
+        "⚠️ 未找到可改写的 styles.xml（含 " + STYLE_NAME + "）—— 首屏背景不会生效。\n"
+        f"        候选文件：{[str(p.relative_to(dist_dir)) for p in files] or '（一个都没有）'}\n"
+        "        请核对 p4a 版本是否改了 Activity 主题名/资源布局"
+    )
+    return False
+
+
 def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
-    """在 <application> 内注入 provider 声明。"""
+    """在 <application> 内注入 provider 声明，并挂上首屏背景。"""
     manifest = dist_dir / "src" / "main" / "AndroidManifest.xml"
     if not manifest.is_file():
         if required:
@@ -155,6 +228,9 @@ def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
     _state["manifest_patched"] = True
     _log("清单已注入 A11yEnvProvider")
 
+    # 2) 首屏背景（底色 + Logo）→ 挂到 Activity 实际使用的主题上
+    _state["splash_patched"] = _patch_splash_background(dist_dir)
+
 
 def _apply(*, require_manifest: bool) -> None:
     dist_dir = Path.cwd()          # p4a 在 dist 目录内调用 hook
@@ -178,3 +254,6 @@ def before_apk_assemble(toolchain=None) -> None:   # noqa: ARG001
         raise RuntimeError("[mangaproof-hook] 无障碍开关注入未完成，拒绝继续组装 APK")
     if not _state["java_copied"]:
         raise RuntimeError("[mangaproof-hook] Java 源未安装，拒绝继续组装 APK")
+    if not _state["splash_patched"]:
+        # 首屏只是观感问题：这里不阻断构建，交给 CI 的 aapt2 校验去发现（见 android.yml）
+        print("[mangaproof-hook] ⚠️ 首屏背景未注入成功（不阻断构建，请检查上方警告）", flush=True)

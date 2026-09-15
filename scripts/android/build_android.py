@@ -79,6 +79,13 @@ RESOURCE_ENTRIES = ",".join([
     "ico/Android-foreground.png:mipmap-xxxhdpi/icon_foreground.png",
     "ico/Android-background.png:mipmap-xxxhdpi/icon_background.png",
     "ico/android/res/mipmap-anydpi-v26/icon.xml:mipmap-anydpi-v26/icon.xml",
+    # 首屏（启动底色 + Logo）：首次启动要解包 Python 发行包，期间 Qt 还没画出第一帧，
+    # 靠 Android 框架的 windowBackground 顶上（p4a 的 presplash 在 Qt bootstrap 下不生效）。
+    # Logo 复用应用图标前景层（带透明边距）；drawable-nodpi = 不做密度缩放、按原像素居中。
+    "ico/Android-foreground.png:drawable-nodpi/mangaproof_logo.png",
+    "packaging/android/res/drawable/mangaproof_splash.xml:drawable/mangaproof_splash.xml",
+    "packaging/android/res/values/colors.xml:values/colors.xml",
+    "packaging/android/res/values/themes.xml:values/themes.xml",
 ])
 
 
@@ -307,6 +314,12 @@ def patch_buildozer_config(*, requirements: list[str], icons: dict[str, str],
             put("app", "version", version)
             put("app", "android.numeric_version", str(numeric_version(version)))
             put("app", "icon.filename", icons["fallback"])
+            # 首屏主题：fullscreen=1 时 p4a 会把该名字拼成 `<apptheme>.Fullscreen`
+            # （见 packaging/android/res/values/themes.xml 的说明），所以两个变体都已定义。
+            # ⚠️ 真正决定首屏的是 **Activity** 主题（p4a 模板硬编码 @style/KivySupportCutout，
+            #    会覆盖 Application 主题）→ windowBackground 由 p4a_hook 注入到那个主题上。
+            put("app", "android.apptheme", "@style/MangaProofSplash")
+
             # ⚠️ 刻意**不设** icon.adaptive_foreground/background.filename：
             #    p4a 的 bootstraps/common/build/build.py 生成自适应图标时会直接
             #      open('res/mipmap-anydpi-v26/icon.xml', "w")

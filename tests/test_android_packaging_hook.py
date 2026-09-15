@@ -9,11 +9,23 @@
 from __future__ import annotations
 
 import importlib.util
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: p4a Qt 模板给 Activity 用的主题（结构照抄线上资源，注释见 p4a_hook.STYLE_NAME）
+STYLES_XML = """<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="KivySupportCutout" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+    <style name="KivyOther" parent="@android:style/Theme.NoTitleBar"></style>
+</resources>
+"""
 PACKAGING_DIR = REPO_ROOT / "packaging" / "android"
 HOOK_PATH = PACKAGING_DIR / "p4a_hook.py"
 
@@ -26,7 +38,8 @@ def hook(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "_state",
-                        {"java_copied": False, "manifest_patched": False})
+                        {"java_copied": False, "manifest_patched": False,
+                         "splash_patched": False})
     return module
 
 
@@ -51,6 +64,9 @@ def fake_dist(tmp_path):
         '</manifest>\n',
         encoding="utf-8",
     )
+    (dist / "src" / "main" / "res" / "values").mkdir(parents=True)
+    (dist / "src" / "main" / "res" / "values" / "styles.xml").write_text(
+        STYLES_XML, encoding="utf-8")
     return dist
 
 
@@ -139,3 +155,65 @@ def test_before_apk_assemble_passes_after_patch(hook, fake_dist, monkeypatch):
     monkeypatch.chdir(fake_dist)
     hook.before_apk_assemble()          # 不应抛错
     assert "com.mangaproof.a11y.A11yEnvProvider" in manifest.read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------- 首屏背景（启动底色 + Logo）
+
+def test_splash_background_injected_into_activity_theme(hook, fake_dist, monkeypatch):
+    """必须注入到 **Activity 实际使用的主题** 上。
+
+    p4a 模板里 Application 主题是 android:apptheme、Activity 主题硬编码
+    @style/KivySupportCutout；Activity 主题会覆盖 Application 主题，所以只设
+    apptheme 不生效 —— 这条测试钉住"改的是 KivySupportCutout"。
+    """
+    _run(hook, fake_dist, monkeypatch)
+    styles = fake_dist / "src" / "main" / "res" / "values" / "styles.xml"
+    text = styles.read_text(encoding="utf-8")
+    block = re.search(r'<style\s+name="KivySupportCutout".*?</style>', text, re.S).group(0)
+    assert "android:windowBackground" in block
+    assert "@drawable/mangaproof_splash" in block
+    # 其它主题不许被动
+    other = re.search(r'<style\s+name="KivyOther".*?</style>', text, re.S).group(0)
+    assert "windowBackground" not in other
+    # 原有内容保留（挖孔模式不能被覆盖掉）
+    assert "windowLayoutInDisplayCutoutMode" in block
+    ET.fromstring(text)          # XML 仍可解析
+
+
+def test_splash_injection_is_idempotent(hook, fake_dist, monkeypatch):
+    styles = fake_dist / "src" / "main" / "res" / "values" / "styles.xml"
+    _run(hook, fake_dist, monkeypatch)
+    first = styles.read_text(encoding="utf-8")
+    _run(hook, fake_dist, monkeypatch)
+    assert styles.read_text(encoding="utf-8") == first
+    assert first.count("android:windowBackground") == 1
+
+
+def test_splash_missing_styles_warns_but_does_not_fail(hook, tmp_path, monkeypatch):
+    """找不到可改写的 styles.xml：只警告、不抛错（首屏是观感问题，不该阻断出包）。"""
+    dist = tmp_path / "dist"
+    (dist / "src" / "main").mkdir(parents=True)
+    (dist / "src" / "main" / "AndroidManifest.xml").write_text(
+        "<?xml version='1.0'?><manifest><application></application></manifest>", encoding="utf-8")
+    monkeypatch.chdir(dist)
+    assert hook._patch_splash_background(dist) is False
+
+
+def test_splash_resources_exist_and_are_wired():
+    """资源本体与构建参数都要在（防止只改了一半）。"""
+    res = PACKAGING_DIR / "res"
+    splash = (res / "drawable" / "mangaproof_splash.xml").read_text(encoding="utf-8")
+    colors = (res / "values" / "colors.xml").read_text(encoding="utf-8")
+    themes = (res / "values" / "themes.xml").read_text(encoding="utf-8")
+    assert "@color/mangaproof_splash_bg" in splash
+    assert "@drawable/mangaproof_logo" in splash
+    assert "#202227" in colors                      # 需求方指定的底色
+    # fullscreen 时 p4a 会拼 .Fullscreen，两个变体都要有
+    assert 'name="MangaProofSplash"' in themes
+    assert 'name="MangaProofSplash.Fullscreen"' in themes
+
+    build_script = (REPO_ROOT / "scripts" / "android" / "build_android.py").read_text(encoding="utf-8")
+    assert "drawable-nodpi/mangaproof_logo.png" in build_script     # logo 投放
+    assert "drawable/mangaproof_splash.xml" in build_script         # drawable 投放
+    assert "values/themes.xml" in build_script                      # 主题投放
+    assert 'put("app", "android.apptheme", "@style/MangaProofSplash")' in build_script

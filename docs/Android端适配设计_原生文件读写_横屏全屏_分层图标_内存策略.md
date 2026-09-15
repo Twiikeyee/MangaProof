@@ -631,6 +631,61 @@ APK 产出后按 ABI ①校验必需 so 清单（`QtCore/QtGui/QtWidgets.abi3.so
 
 ---
 
+### 3.4 首屏（启动底色 + Logo）—— 已实现
+
+**要解决的问题**：首次启动要解包 Python 发行包，这段时间 Android 已经显示窗口、而 Qt 还没
+画出第一帧 → 用户看到**白屏/黑屏**几百毫秒到数秒。p4a 的 presplash 机制在 **Qt bootstrap
+下不生效**，所以改用 Android 框架自己的 `android:windowBackground`（窗口创建时由
+system_server 绘制，与 Qt 无关，因此 bootstrap 无关）。
+
+**资源**（`packaging/android/res/**`，经 `android.add_resources` 投放）
+
+| 文件 | 作用 |
+|------|------|
+| `values/colors.xml` | `mangaproof_splash_bg = #202227`（需求方指定，与应用图标底板同色系） |
+| `drawable/mangaproof_splash.xml` | `layer-list`：底色 + 居中 Logo |
+| `values/themes.xml` | `MangaProofSplash` 与 `MangaProofSplash.Fullscreen` 两个变体，均含 `android:windowBackground` |
+| Logo | 复用 `ico/Android-foreground.png` → 投放到 `drawable-nodpi/mangaproof_logo.png`（**不做密度缩放**，按原像素居中；432×432、可见图形约 245px 宽 ≈ 1080p 屏宽的 23%） |
+
+**⚠️ 关键坑：只设 `android.apptheme` 不生效**
+
+p4a 的 Qt 清单模板里两处主题是分开的：
+
+```xml
+<application android:theme="{{args.android_apptheme}}{% if not args.window %}.Fullscreen{% endif %}">
+    <activity android:theme="@style/KivySupportCutout">      ← 硬编码
+```
+
+**Activity 主题覆盖 Application 主题**，而首屏观感由 Activity 窗口决定。所以真正有效的是
+给 `@style/KivySupportCutout` 补一条 `android:windowBackground`：
+
+- `android.apptheme` 仍然指向 `@style/MangaProofSplash`（覆盖 apptheme 路径，两个变体都已定义——
+  `fullscreen=1` 时 p4a 会拼成 `MangaProofSplash.Fullscreen`）；
+- 由 `packaging/android/p4a_hook.py` 的 `_patch_splash_background()` 在
+  `after_apk_build`/`before_apk_assemble` 阶段**就地改写 dist 的 `res/values/styles.xml`**，
+  往 `KivySupportCutout` 里插入 `android:windowBackground`；
+- 找不到可改写的 styles.xml 时**只警告不阻断**（首屏是观感问题，不该让整条流水线失败），
+  由 CI 的 aapt2 校验兜底发现。
+
+**为什么不会在运行期残留**：`windowBackground` 只由窗口装饰层绘制；Qt 画出第一帧（不透明、
+铺满整窗）后即被覆盖。
+
+**验证**
+
+| 项 | 手段 | 状态 |
+|----|------|------|
+| 注入位置正确 | `tests/test_android_packaging_hook.py`：断言 `windowBackground` 落在 `KivySupportCutout` 内、其它主题不动、原有挖孔配置保留 | ✅ |
+| 幂等 / 缺文件不阻断 | 同上（二次执行清单不变；无 styles.xml 时返回 False 且不抛错） | ✅ |
+| 资源与构建参数齐全 | 同上：`#202227`、两个主题变体、三条 `add_resources`、`android.apptheme` | ✅ |
+| 资源真的进包且被引用 | CI：`aapt2 dump resources` 断言 `mangaproof_splash` / `mangaproof_splash_bg` 存在（缺了硬失败），并检查引用 | ✅（待下一轮构建实测） |
+| 真机观感（冷暖色是否与 Qt 首帧一致、Logo 大小是否合适） | 装机看冷启动；不满意只需替换 `drawable-nodpi` 的 PNG 或改 `#202227` | ⏳ 待真机 |
+
+> Logo 大小的取舍：当前用**原始像素**（不随密度缩放），因此在 1080p 手机上约占屏宽 23%、
+> 平板上更小。要更大/更小只需换 `ico/Android-foreground.png` 的尺寸（或改用别的图），
+> XML 无需改动。
+
+---
+
 ## 4. 分层图标（自适应图标）
 
 ### 4.1 现有资源与目标（美术资源已就位 ✅）

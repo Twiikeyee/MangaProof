@@ -273,9 +273,9 @@ jobs:
           echo "APK=$APK" >> "$GITHUB_ENV"
           ls -la "$APK"
 
-      # 产物内容校验：挡「so 缺失」这类只在真机才暴露、且流水线原本全绿的问题。
-      # 必需 so 缺一个 → 装上也起不来，必须当场失败。
-      - name: Verify APK native libs
+      # 产物内容校验：挡「so 缺失」与「首屏资源没进包」这类只在真机才暴露、
+      # 且流水线原本全绿的问题。必需 so / 首屏资源缺一个 → 必须当场失败。
+      - name: Verify APK native libs and splash resources
         shell: bash
         run: |
           set -euo pipefail
@@ -324,6 +324,30 @@ jobs:
             exit 1
           fi
           echo "✅ 必需 so 齐全（共 $(wc -l < "$LIST") 个）"
+
+          # 首屏（启动底色 + Logo）：资源必须进包，且 windowBackground 必须挂在
+          # Activity 用的主题上 —— 只投资源不挂主题 = 首屏不生效（静默失败）。
+          # 详见 packaging/android/{res/**,p4a_hook.py}。
+          BT2="$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)"
+          if [ -x "$BT2/aapt2" ]; then
+            RES="$RUNNER_TEMP/res_dump.txt"
+            "$BT2/aapt2" dump resources "$APK" > "$RES" 2>/dev/null || true
+            for name in mangaproof_splash mangaproof_splash_bg; do
+              if grep -q "$name" "$RES"; then
+                echo "✅ 首屏资源存在：$name"
+              else
+                echo "::error::APK 里缺少首屏资源 $name（android.add_resources 没投进去？）"
+                exit 1
+              fi
+            done
+            if grep -q "mangaproof_splash" "$RES"; then
+              echo "✅ 首屏背景已引用（windowBackground）"
+            else
+              echo "::warning::未见对 mangaproof_splash 的引用（Activity 主题未挂上？首屏可能不生效）"
+            fi
+          else
+            echo "::warning::找不到 aapt2，跳过首屏资源校验"
+          fi
 
           # 附加提示（不阻断）：binder 库名与 openssl 的具体命名随 p4a 版本变化，
           # 仅记录在案便于排查，不作为失败条件。

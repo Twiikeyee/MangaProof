@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MangaProof 首屏主题（启动底色 + Logo）。
+
+  为什么定义**两个**变体
+  --------------------
+  p4a 的 Qt 模板在 `fullscreen=1`（buildozer 的 app.fullscreen，本项目已设）时会把
+  Application 主题名拼成 `<android.apptheme>.Fullscreen`：
+
+      android:theme="{{args.android_apptheme}}{% if not args.window %}.Fullscreen{% endif %}"
+
+  即 `MangaProofSplash` → 实际引用 `MangaProofSplash.Fullscreen`。所以两个名字都要
+  定义（`.Fullscreen` 继承 `.Fullscreen` 基主题，保证全屏语义），否则会解析失败。
+
+  注意：真正决定首屏观感的是 **Activity 的主题**（p4a 模板硬编码
+  `@style/KivySupportCutout`），Activity 主题会覆盖 Application 主题；因此
+  packaging/android/p4a_hook.py 会把 `android:windowBackground` **注入到
+  KivySupportCutout** 上，而不是只靠这里的 apptheme。这里保留完整定义，
+  既覆盖 apptheme 路径，也让主题语义有单一出处。
+-->
+<resources>
+
+    <style name="MangaProofSplash" parent="@android:style/Theme.NoTitleBar">
+        <item name="android:windowBackground">@drawable/mangaproof_splash</item>
+    </style>
+
+    <style name="MangaProofSplash.Fullscreen" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/mangaproof_splash</item>
+    </style>
+
+</resources>
