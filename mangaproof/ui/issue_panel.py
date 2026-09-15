@@ -88,7 +88,7 @@ class IssuePanel(QWidget):
         self.pass_btn = QPushButton("✓ 通过")
         self.pass_btn.setStyleSheet(f"QPushButton {{ color: {COLOR_PASS}; }}")
         self.pass_btn.setToolTip("标记当前图层通过")
-        self.fail_btn = QPushButton("✗ 未通过")
+        self.fail_btn = QPushButton("✕ 未通过")
         self.fail_btn.setStyleSheet(f"QPushButton {{ color: {COLOR_FAIL}; }}")
         self.fail_btn.setToolTip("标记当前图层未通过")
         self.reset_btn = QPushButton("○ 重置")
@@ -125,17 +125,17 @@ class IssuePanel(QWidget):
         self._update_continuous_visual()
 
         # 自动框选：按当前图层视觉边界自动生成红框（仅在拖框模式下可用）
-        self.auto_box_btn = QPushButton("▣ 自动框选")
+        self.auto_box_btn = QPushButton("□ 自动框选")
         self.auto_box_btn.clicked.connect(self.auto_box_requested.emit)
         self.auto_box_btn.setEnabled(False)
         layout.addWidget(self.auto_box_btn)
         self._update_auto_box_visual()
 
-        self.custom_btn = QPushButton("✎ 自定义批注")
+        self.custom_btn = QPushButton("自定义批注")
         self.custom_btn.clicked.connect(self.custom_comment_requested.emit)
         layout.addWidget(self.custom_btn)
 
-        self.delete_btn = QPushButton("🗑 删除选中问题")
+        self.delete_btn = QPushButton("删除选中问题")
         self.delete_btn.clicked.connect(self._on_delete)
         layout.addWidget(self.delete_btn)
 
@@ -163,7 +163,7 @@ class IssuePanel(QWidget):
         self._status = status
         self.layer_name_label.setText(f"图层：{layer_name}")
         self.layer_name_label.setToolTip(f"图层：{layer_name}")
-        status_text = {"unreviewed": "○ 未监制", "passed": "✓ 已通过", "failed": "✗ 未通过"}
+        status_text = {"unreviewed": "○ 未监制", "passed": "✓ 已通过", "failed": "✕ 未通过"}
         self.status_label.setText(f"状态：{status_text.get(status, status_text['unreviewed'])}")
 
         self.issue_list.clear()
@@ -231,11 +231,11 @@ class IssuePanel(QWidget):
         """
         self.pass_btn.setText(f"✓ 通过 ({bindings.get('pass', 'Enter')})")
         self.pass_btn.setToolTip(f"标记当前图层通过　快捷键：{bindings.get('pass', 'Enter')}")
-        self.fail_btn.setText(f"✗ 未通过 ({bindings.get('fail', '/')})")
+        self.fail_btn.setText(f"✕ 未通过 ({bindings.get('fail', '/')})")
         self.fail_btn.setToolTip(f"标记当前图层未通过　快捷键：{bindings.get('fail', '/')}")
         self.add_btn.setText(f"＋ 添加问题 ({bindings.get('redraw', 'R')})")
-        self.auto_box_btn.setText(f"▣ 自动框选 ({bindings.get('auto_box', 'A')})")
-        self.custom_btn.setText(f"✎ 自定义批注 ({bindings.get('custom', 'Ctrl+Enter')})")
+        self.auto_box_btn.setText(f"□ 自动框选 ({bindings.get('auto_box', 'A')})")
+        self.custom_btn.setText(f"自定义批注 ({bindings.get('custom', 'Ctrl+Enter')})")
         if issue_type_tips:
             self.add_btn.setToolTip(issue_type_tips)
 

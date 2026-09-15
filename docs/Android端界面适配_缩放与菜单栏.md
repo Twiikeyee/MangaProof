@@ -165,3 +165,44 @@ adb exec-out screencap -p > shot.png
 - **折叠内屏整行工具栏会折叠**：需要 ≤55% 才放得下（不可读），故接受 Qt 的 "»" 扩展按钮；
 - **≥110% 在平板/折叠内屏/该模拟器上会垂直裁剪**：窗口最小高 559 dp 是硬下限（逻辑尺寸不随缩放变化）；
 - 未做：手机档布局（抽屉/单栏）、竖屏与分屏布局改造、dock 误关闭防护与布局持久化、安全区（`safeAreaMargins`）——均另议。
+
+---
+
+## 8. 字体缺字：Android 上的空白方块（已修）
+
+### 现象与根因
+
+平板上 **✗ ▣ ✎ 🗑 ⚠** 这几个"字符图标"显示为空白，桌面端正常。根因不是字体没加载（`font/MiSans-Medium.ttf` 与 `main.pyc` 同目录、日志有"已加载应用字体：MiSans"），而是**缺字形 + Android 没有逐字回退**：
+
+| 平台 | 缺字形时怎么办 |
+|---|---|
+| Windows / macOS / Linux 桌面 | 由系统字体回退补齐（DirectWrite / CoreText / fontconfig），所以看不到问题 |
+| **Android** | `QAndroidPlatformFontDatabase::fallbacksForFamily()` 只追加 emoji 字体、按系统语言追加一个 CJK 字体、以及 `QT_ANDROID_FONTS` 里列出的家族名；**不会**把 `/system/fonts` 下的字体当作逐字回退【源码】`qtbase/src/plugins/platforms/android/qandroidplatformfontdatabase.cpp` → 缺字形就是空白 |
+
+### 实测：MiSans-Medium.ttf 的真实覆盖（直接解析 cmap）
+
+解析 `font/MiSans-Medium.ttf` 的 cmap（format 4 + 12，共 29571 个码位）后确认缺失：
+
+| 原字符 | 码位 | 用途 | 处置 |
+|---|---|---|---|
+| `✗` | U+2717 | 未通过（状态图标/按钮/芯片/提示文案） | → **`✕` U+2715**（与 `✓` 同族、笔画粗细一致） |
+| `▣` | U+25A3 | `▣ 自动框选` | → **`□` U+25A1** |
+| `✎` | U+270E | `✎ 自定义批注` | → 去掉图标（MiSans 无任何铅笔类字形：✏✐✑✒✍ 全缺） |
+| `🗑` | U+1F5D1 | `🗑 删除选中问题` | → 去掉图标（emoji 不依赖系统字体不可靠） |
+| `⚠` | U+26A0 | 重要提醒 / 警告文案 | → **`▲` U+25B2** |
+| `⑳` | U+2473 | 一条日志文案 | → 改写文案（`①～⑩` 才是实际覆盖上限，返修单 PDF 早已按此回退 `(11)` 写法） |
+
+> 顺带确认：**所有中文汉字**以及 `✓ ○ ● ＋ ✕ □ · × § © → ≈ ≥ ①②…⑩ ※ ▲` 等符号 MiSans 都有字形，
+> 全项目非 docstring 文案里再无其它缺字（自动化检查见下）。
+
+### 守门测试
+
+`tests/test_font_glyph_coverage.py`：用 reportlab 的 `TTFontFile`（与返修单 PDF 同一套字体解析）读出 MiSans 覆盖的码位，
+再 AST 扫描 `mangaproof/` 下**所有非 docstring 字符串字面量**（界面文案 + 日志），断言零缺字，
+并把 `✗ ▣ ✎ 🗑 ⚠` 这五个历史字符列为显式回归项。以后谁再往界面文案里塞 emoji/生僻符号，测试会直接失败并给出替代建议。
+
+### 给后续加图标的原则
+
+1. 优先用 MiSans 覆盖的符号（上面那组），或纯文字；**不要用 emoji**；
+2. 需要真正的图标时，用 `QIcon`/`QPainter` 自己画（与字体无关，任何平台都稳），而不是找"看起来像图标"的字符；
+3. 若确实要引入新符号，先跑一次 `tests/test_font_glyph_coverage.py`（或查 cmap）确认字形存在。

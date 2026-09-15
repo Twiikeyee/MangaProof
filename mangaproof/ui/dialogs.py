@@ -255,7 +255,7 @@ class ReportDialog(QDialog):
         form.addRow(self.hide_clean_check)
         layout.addLayout(form)
 
-        note = "⚠ 任务尚未全部完成，返修单将标注「任务状态：未完成」。" if incomplete else ""
+        note = "▲ 任务尚未全部完成，返修单将标注「任务状态：未完成」。" if incomplete else ""
         self.note_label = QLabel(note)
         self.note_label.setWordWrap(True)
         self.note_label.setStyleSheet("color: #f5a623;")

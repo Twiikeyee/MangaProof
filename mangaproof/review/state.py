@@ -29,7 +29,9 @@ STATUS_LABELS = {
 STATUS_ICONS = {
     UNREVIEWED: "○",
     PASSED: "✓",
-    FAILED: "✗",
+    # 用 ✕(U+2715) 而不是 ✗(U+2717)：MiSans 没有后者字形，Android 上
+    # Qt 没有字体回退，会显示成空白方块（见 docs/Android端界面适配_缩放与菜单栏.md）
+    FAILED: "✕",
     PARTIAL: "●",
 }
 

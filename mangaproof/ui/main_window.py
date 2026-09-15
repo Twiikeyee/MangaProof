@@ -102,7 +102,7 @@ log = logging.getLogger("mangaproof.ui.main_window")
 AUTOSAVE_DEBOUNCE_MS = 1500
 
 _REBIND_WARNING = (
-    "⚠ 重要提醒\n\n"
+    "▲ 重要提醒\n\n"
     "MangaProof 将尝试把当前选择的文件/文件夹重新绑定到已有监制记录。\n"
     "如果选择了错误的 PSD 或错误的文件夹，已有的通过/未通过状态、"
     "红框与批注可能对应到错误内容。\n"
@@ -633,7 +633,7 @@ class MainWindow(QMainWindow):
         )
         log.warning("快捷键冲突：%s", detail)
         self.statusBar().showMessage(
-            f"⚠ 快捷键冲突，按下不会有反应：{detail}（可在 设置 →「设置快捷键…」中改绑）",
+            f"▲ 快捷键冲突，按下不会有反应：{detail}（可在 设置 →「设置快捷键…」中改绑）",
             10000,
         )
 
@@ -839,7 +839,7 @@ class MainWindow(QMainWindow):
         """重新选择文件/文件夹时的醒目提醒（需求 §7.8）。"""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("⚠ 重要提醒")
+        box.setWindowTitle("▲ 重要提醒")
         box.setText(_REBIND_WARNING)
         box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
@@ -1525,7 +1525,7 @@ class MainWindow(QMainWindow):
         self.task.set_status(self._current_file, info.id, FAILED)
         self._completion_announced = False   # 内容还会变（拖框批注）→ 允许再次触发
         self.issue_panel.set_hint(
-            "已标记 ✗ 未通过 — 可拖框添加问题或输入自定义批注；"
+            "已标记 ✕ 未通过 — 可拖框添加问题或输入自定义批注；"
             f"{self._display_key(self.settings.binding('pass_layer') or 'Return')} 跳到下一个未监制图层。"
         )
         self._refresh_all_panels()

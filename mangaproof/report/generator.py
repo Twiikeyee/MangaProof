@@ -185,7 +185,7 @@ def _register_misans() -> bool:
     ZH_FONT = MISANS_NAME
     BADGE_FONT = MISANS_NAME
     _circled_max = _covered_circled_max(face)
-    log.info("返修单 PDF 使用 MiSans 字体：%s（①～⑳ 覆盖到 %d）", path, _circled_max)
+    log.info("返修单 PDF 使用 MiSans 字体：%s（圆圈数字覆盖到第 %d 个）", path, _circled_max)
     return True
 
 
