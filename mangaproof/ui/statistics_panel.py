@@ -36,7 +36,7 @@ from mangaproof.ui.theme import (
 CHIP_STYLES = {
     UNREVIEWED: (COLOR_UNREVIEWED, "○"),
     PASSED: (COLOR_PASS, "✓"),
-    FAILED: (COLOR_FAIL, "✕"),
+    FAILED: (COLOR_FAIL, "✗"),
 }
 
 

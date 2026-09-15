@@ -227,7 +227,7 @@ def test_file_panel_status_icons() -> None:
 
     历史缺陷：面板图标表按 "done" 取键，而 file_status() 全通过时返回
     "passed"，导致全部通过的 PSD 落到未监制兜底样式（灰 ○），
-    而"有未通过"因键名恰好都是 "failed" 而正常显示红 ✕。
+    而"有未通过"因键名恰好都是 "failed" 而正常显示红 ✗。
     """
     from mangaproof.ui.file_panel import STATUS_STYLES
 
@@ -302,7 +302,7 @@ def test_file_panel_status_icons() -> None:
         assert text.startswith("✓ "), (text, color)
         assert color == QColor(COLOR_PASS).name(), (text, color)
         text, color = shown[all_fail]
-        assert text.startswith("✕ "), (text, color)
+        assert text.startswith("✗ "), (text, color)
         assert color == QColor(COLOR_FAIL).name(), (text, color)
         text, color = shown[partial]
         assert text.startswith("● "), (text, color)

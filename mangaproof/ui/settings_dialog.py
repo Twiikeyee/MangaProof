@@ -182,7 +182,7 @@ class KeybindingsDialog(QDialog):
             self.conflict_label.setText("")
             return
         self.conflict_label.setText(
-            "▲ 快捷键冲突（同一按键绑了多个动作时，按下不会有任何反应，"
+            "⚠ 快捷键冲突（同一按键绑了多个动作时，按下不会有任何反应，"
             "请改绑其中一个）：\n" + self._format_conflicts(conflicts)
         )
         self.conflict_label.setVisible(True)
