@@ -93,7 +93,7 @@ BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
 | 任务文件 | `.mangaproof.json` 写回打开文件/文件夹所在目录（与桌面一致） | 需求方确认；普通文件写入即可 |
 | 异步 | 目录扫描 / 哈希 / 预加载 / PDF 生成仍走现有 `QThread` worker（不再需要"导入 worker"） | 复用现有架构 |
 | 云端验证 | 模拟器矩阵（API 30/34 + `google_apis_ps16k` 16KB 镜像）跑安装 + 启动 + `adb shell ls /storage` 冒烟 | `ReactiveCircus/android-emulator-runner@v2` |
-| 辅助功能（无障碍） | **主动声明不参与**：通过 p4a hook 注入 `A11yEnvProvider`（ContentProvider）在 Activity 之前设置 `QT_ANDROID_DISABLE_ACCESSIBILITY=1`，用 Qt 官方开关让无障碍桥不安装覆盖 View | 【源码】`QtAccessibilityDelegate.java:94`；**取舍**：应用对读屏完全不可见（需求方选定，见打包文档 §5.10 ⑦） |
+| 辅助功能（无障碍） | **永久不适配**（效率工具，需求方明确不做）：通过 p4a hook 注入 `A11yEnvProvider`（ContentProvider）在 Activity 之前设置 `QT_ANDROID_DISABLE_ACCESSIBILITY=1`，用 Qt 官方开关让无障碍桥不安装覆盖 View | 【源码】`QtAccessibilityDelegate.java:94`；这不是临时取舍而是**产品决策**（见 §7 决策记录第 10 条），因此不安排任何后续无障碍工作 |
 
 **权限语义逐条（官方原文，`developer.android.com/training/data-storage/manage-all-files`）**
 
@@ -561,6 +561,7 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 | 7 | Android 内存预算 | **就用激进档**（LRU 256 MB + bg 池 68 MB），不再额外收紧 |
 | 8 | 首屏启动底色/Logo | **做**：纯色底 `#2b2d30` + 用 `ico/ico.png` 作居中 logo；通过自定义主题 `android:windowBackground` 实现（注意 `.Fullscreen` 后缀） |
 | 9（新增·待确认） | 无法映射的目录（云盘/网络位置、媒体库入口、其他应用专属目录） | 方案按**直接拒绝 + 提示"请从『本机存储』入口选择文件夹"**处理（§2.9）——如无异议即按此实现 |
+| 10 | 辅助功能（无障碍 / 读屏） | **永久不适配**（需求方明确：本项目是效率工具，未来也不准备适配无障碍）。Android 端的做法是用 Qt 官方开关 `QT_ANDROID_DISABLE_ACCESSIBILITY=1` **主动声明不参与**，以规避部分系统（HyperOS）读屏查询与 Qt 主线程建窗并发导致的死锁——实现见打包文档 §5.10 ⑦ |
 
 ---
 

@@ -795,7 +795,7 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 | 为什么用 ContentProvider | Android 生命周期保证 provider 早于**任何** Activity（`ActivityThread.handleBindApplication()` 里先 `installContentProviders()`）→ 足够早；且 provider 只用 framework API（不依赖 Qt jar 参与编译），也**不必替换** `<application android:name>`（p4a qt 模板硬编码 `…QtApplication`，再注入一个 `android:name` 会变成重复属性、aapt2 直接报错） |
 | 本地验证 | 用假 dist 目录实跑 hook：provider 注入成功、Java 落入源码集、重复调用幂等、缺清单时必须硬失败 ✅ |
 | 真机验证方式 | `adb logcat \| grep MangaProofA11y` 应出现 `QT_ANDROID_DISABLE_ACCESSIBILITY=1 已设置`；开启读屏后应用可正常启动 |
-| 取舍（需知悉） | 这意味着本应用**对系统辅助功能完全不可见**（读屏读不到任何内容）——这是需求方明确选择的行为；若将来要做真正的无障碍支持，需要换用能暴露可访问性信息的 UI 栈（QML/原生控件 + 可访问性元数据），是独立的大工程 |
+| 产品决策（需求方确认） | 本应用是**效率工具，永久不适配无障碍**：对系统辅助功能完全不可见是**预期结果**，不是待偿还的技术债。因此不安排任何后续无障碍工作；仅当将来产品定位变化时才需重新评估（那将意味着换用能暴露可访问性信息的 UI 栈，属于重写级别的改动） |
 
 **下一轮的风险预告（未发生，先记录）**
 
