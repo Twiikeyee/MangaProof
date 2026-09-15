@@ -339,8 +339,13 @@ jobs:
             if grep -q "extractNativeLibs" "$MAN"; then
               echo "--- extractNativeLibs（最终清单）---"
               grep -A 3 "extractNativeLibs" "$MAN" | head -8
-              # aapt2 xmltree 里布尔 true 打印为 (type 0x12)0xffffffff
-              if grep -A 3 "extractNativeLibs" "$MAN" | grep -q "0xffffffff"; then
+              # aapt2 的布尔打印形态**不统一**（都实测过）：
+              #   · 十六进制：extractNativeLibs(0x010104ea)=(type 0x12)0xffffffff
+              #   · 文本：    extractNativeLibs(0x010104ea)=true
+              # 最初只匹配 0xffffffff，结果在 CI 上把**已经正确的 true** 判成了非 true
+              # 并让整条流水线失败（APK 本身是好的）。两种形态都要认；只认 "=true"，
+              # 避免把 "=false"/"=trueXXX" 之类的别的取值误判为通过。
+              if grep -A 3 "extractNativeLibs" "$MAN" | grep -qE "0xffffffff|=[\"']?true[\"']?"; then
                 echo "✅ extractNativeLibs=true（安装时会解压 so）"
               else
                 echo "::error::extractNativeLibs 不是 true → release 包不会解压 so，PySide6 的 abi3 模块加载不到"
