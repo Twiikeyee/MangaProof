@@ -66,19 +66,44 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # 必须在装 NDK 之前清理：runner 预装的 NDK 占用很大，但 $ANDROID_HOME/ndk
+      # 正是我们随后要安装 r27c 的位置，放到安装之后会把刚装好的 NDK 删掉。
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost 2>/dev/null || true
+          sudo rm -rf "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null || true
+          df -h /
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          # ⚠️ 必须显式覆盖：该 action 的默认 packages 是 "tools platform-tools"，
+          # 而 Google SDK 仓库里早已没有独立的 `tools` 包（278 个包里 0 个匹配），
+          # 沿用默认值会让 sdkmanager 立刻报错、该步骤数秒内失败（本仓库首次运行
+          # 就是这样失败的）。cmdline-tools 由 action 自己安装，这里只要 platform-tools。
+          packages: "platform-tools"
+          accept-android-sdk-licenses: true
 
       - name: Install Android SDK / NDK
         shell: bash
         run: |
-          sdkmanager --install \
+          set -euo pipefail
+          SDKMGR="$(command -v sdkmanager || echo "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager")"
+          [ -x "$SDKMGR" ] || { echo "::error::找不到 sdkmanager"; ls -la "$ANDROID_HOME" || true; exit 1; }
+          "$SDKMGR" --version
+          yes | "$SDKMGR" --licenses > /dev/null || true
+          "$SDKMGR" --install \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;${ANDROID_API}.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
-          yes | sdkmanager --licenses > /dev/null || true
           echo "ANDROID_NDK_PATH=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "--- 已安装组件 ---"
+          "$SDKMGR" --list_installed | sed -n '1,40p' || true
+          [ -d "${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" ] || {
+            echo "::error::NDK 目录不存在：${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"; exit 1; }
 
       # p4a 官方 Dockerfile 里的系统依赖清单 + 构建本机所需
       - name: Install build dependencies
@@ -89,13 +114,6 @@ jobs:
             ant autoconf automake autopoint ccache cmake g++ gcc git lbzip2 \
             libffi-dev libltdl-dev libtool libssl-dev make patch pkg-config \
             python3-dev unzip wget zip
-
-      - name: Free disk space
-        shell: bash
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk/* \
-                      /opt/ghc /usr/local/share/boost 2>/dev/null || true
-          df -h /
 
       # ---------- 依赖 → recipe 覆盖卡口 ----------
       - name: Verify dependency coverage (uv.lock → recipes)

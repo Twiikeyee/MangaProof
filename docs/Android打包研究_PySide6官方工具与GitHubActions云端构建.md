@@ -719,6 +719,19 @@ uv run python -m py_compile scripts/android/*.py packaging/android/recipes/*/__i
 
 > ⚠️ 包装脚本**本机跑不到底**（宿主依赖 buildozer/p4a/jinja2 等只存在于 CI 的 3.11 venv）；本机缺依赖时会给出明确提示而非 traceback（已验证）。首次 workflow_dispatch 是端到端验证点。
 
+### 5.10 首次 CI 运行记录（2026-09-15）
+
+| 项 | 内容 |
+|----|------|
+| 运行 | `android-aarch64-debug`（run 34913456068），第 6 步 `Setup Android SDK` 失败，用时约 8 秒 |
+| 现象 | `android-actions/setup-android@v4` 步骤秒失败，后续步骤全部 skipped；同分支的桌面 `build` 流程正常 |
+| **根因** | 该 action 的默认输入是 `packages: 'tools platform-tools'`，而 **Google SDK 仓库里已经不存在独立的 `tools` 包**（实测 repository2-3.xml / repository2-1.xml 共 278 个包，`tools` 匹配数为 **0**；`cmdline-tools` 才是它的替代品）→ `sdkmanager --install tools` 立即报错 |
+| 修复 | ① 显式传参 `packages: "platform-tools"` 覆盖默认值；② 后续 `sdkmanager --install` 改为 `set -euo pipefail` + 稳健解析 `sdkmanager` 路径 + 打印 `--list_installed` + **校验 NDK 目录确实存在** |
+| **顺带修掉的顺序 bug** | 原「Free disk space」步骤在安装 NDK **之后**执行 `rm -rf $ANDROID_HOME/ndk/*`，会把刚装好的 r27c 删掉 → 已把该步骤**提前到 SDK 安装之前**，并拆掉重复步骤 |
+| 已核实可用 | `platform-tools` / `platforms;android-35` / `build-tools;35.0.0` / `ndk;27.2.12479018` / `cmdline-tools;latest` 均在仓库中 ✅；`actions/cache@v6`、`upload-artifact@v7`、`checkout@v7`、`setup-java@v6` 的 tag 均可解析 ✅ |
+
+> 教训记录：第三方 setup action 的**默认输入值**也会随上游数据变化而失效（`tools` 包被移除）；凡是"默认值里带具体包名/版本"的 action，最好显式覆盖输入。
+
 ---
 
 ## 6. 风险清单与验证方法
