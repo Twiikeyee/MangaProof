@@ -333,6 +333,100 @@ def content_uri_to_path(uri: str) -> str | None:
 | 横屏全屏 + 刘海 | 见 §3.3 |
 | 图标 | 见 §4.6 |
 
+### 2.11 【已实现】选择器最终形态：自建 SAF 选择器（Qt 原生文件对话框在 Android 上会卡死）
+
+> **状态**：已实现并落地在仓库；本地用 android.jar + Qt 的 jar 通过 `javac` 编译验证、
+> 协议两端有单元测试；真机行为待 CI 出包后复测。
+
+#### （1）为什么不能用 `QFileDialog`（本方案的全部动因）
+
+Qt 6.11.2 的 `QAndroidPlatformFileDialogHelper` 存在**同线程重入死锁**，触发条件是
+"选择器返回"这一瞬间，且**选中、取消都会触发**（现象：选文件、选文件夹、取消，界面
+全部永久卡死）：
+
+| # | 位置（qtbase v6.11.2） | 关键内容 |
+|---|------------------------|----------|
+| 1 | `src/corelib/kernel/qjnihelpers.cpp:94,113-121` | `ActivityResultListeners` 用的是**非递归** `QMutex`；`handleActivityResult()` **持锁**逐个调用监听者（`listeners.at(i)->handleActivityResult(...)`）；调用者是 Android 主线程（`QtActivityBase.onActivityResult` → `QtNative.onActivityResult` → `androidjnimain.cpp:739`） |
+| 2 | `src/widgets/dialogs/qdialog.cpp:93-94` | `connect(m_platformHelper, SIGNAL(accept()), dialog, SLOT(accept()))` —— 同线程**直连**，同步执行 |
+| 3 | `src/plugins/platforms/android/qandroidplatformfiledialoghelper.cpp:33,229,235-239` | `handleActivityResult()` 里 `Q_EMIT accept()/reject()`（`resultCode != RESULT_OK` 走 reject）；`hide()` 里调用 `unregisterActivityResultListener(this)`，而它同样要 `QMutexLocker locker(&...->mutex)` |
+| 4 | `qdialog.cpp:121-153,175-187,768-772` + `qwidget.cpp`（`QWidgetPrivate::close` → `hide_helper` → 虚函数 `QDialog::setVisible(false)`） | `accept()/reject()` → `QDialog::done()` → `QDialogPrivate::close()` → 隐藏窗口 → `setNativeDialogVisible(false)` → **`helper->hide()`** |
+
+合起来就是：**① 持锁 → ② 同步回调 → ③ 回到 `hide()` → ④ 再取同一把非递归锁** → 主线程自锁死。
+`hide()` 里那句 `unregister` 正是上游 2020 年为修 QTBUG-78912（"Android 原生文件对话框崩溃"）
+加的（commit `6839d297`），此后该文件再无相关改动；6.11 全系（含我们锁定的 6.11.2）都在。
+
+**旁证**（非本仓库独有）：[Qt 论坛「Android QFileDialog returns nothing and code in background keeps running」](https://forum.qt.io/topic/109548/android-qfiledialog-returns-nothing-and-code-in-background-keeps-running)（"对话框还开着、代码却继续跑；选完/关掉就崩"）、[Qt 论坛「QFileDialog::getOpenFileContent on Android」](https://forum.qt.io/topic/164852/qfiledialog-getopenfilecontent-on-android/7)（Qt 6.10–6.11.1 + Android 15/16，回调永不触发）、[QTBUG-83372 / 论坛「getOpenFileName 恒返回空串」](https://forum.qt.io/topic/113335/qfiledialog-getopenfilename-always-returns-empty-string-on-android/10)。
+
+#### （2）为什么走"共享文件协议"而不是 JNI
+
+PySide6 的 Android wheel **不向 Python 暴露任何 JNI 绑定**（实测
+`pyside6-6.11.2-…-android_aarch64.whl`：`QtCore.abi3.so` / `libpyside6.abi3.so` 里
+`QJniObject`、`QJniEnvironment`、`QtAndroidPrivate`、`QCoreApplication.getJniType`
+命中数**全为 0**；wheel 中出现的 `QJniObject` 符号来自 Qt 自己的 C++ 库
+`libQt6Core_arm64-v8a.so`），也没有 CPython 的 `java`/`_jni` 模块。
+→ **Python 既不能 new Java 对象，也不能注册 Java 回调，甚至不能调用 Java 静态方法。**
+
+因此"打开选择器"这件事只能由 Java 侧主动监听一个共享文件来触发；同理，结果也只能写回文件。
+
+#### （3）实现（与上文 §2.3 目标架构的对应关系）
+
+```
+packaging/android/java/com/mangaproof/picker/PickerActivity.java   ← 继承 QtActivity，自建 SAF 选择器
+packaging/android/java/com/mangaproof/a11y/A11yEnvProvider.java    ← 启动时拉起命令消费线程 + 发布目录
+packaging/android/p4a_hook.py                                      ← 装 Java 源 + 清单入口改为 PickerActivity
+mangaproof/storage/picker.py                                       ← 门面：桌面 QFileDialog（零改动）/ Android 分流
+mangaproof/storage/android_picker.py                               ← 协议实现（原子写 + QTimer 轮询 + 超时兜底）
+mangaproof/ui/main_window.py                                       ← 两处调用点改走门面
+```
+
+**协议**（目录 `files/picker/`，两边都"先写 `.tmp` 再 `rename`"保证原子）：
+
+| 方向 | 文件 | 内容 |
+|------|------|------|
+| Python → Java | `cmd.txt` | `FOLDER <token>` / `FILE <token>` |
+| Java → Python | `result.txt` | `OK\t<真实路径>\t<uri>` / `CANCEL` / `ERROR\t<原因>` |
+
+**关键设计点**
+
+1. **入口 Activity 换成 `PickerActivity`**：p4a 的 Qt 模板把入口写成
+   `org.qtproject.qt.android.bindings.QtActivity`，hook 改为我们的子类。只有启动
+   选择器的 Activity 才收得到结果，而父类 `onActivityResult` 会把**所有** request code
+   转给 Qt（未知 code 被丢弃），所以子类先截获自己的 code（`0x4D50`），其余一律 `super`
+   交回 Qt —— Qt 自身的权限/对话框流程行为不变。
+2. **主线程绝不阻塞**：Python 侧只挂 `QTimer` 轮询结果文件，**没有嵌套事件循环**；
+   超时（默认 5 分钟）即返回并清掉命令，所以即使 Java 侧完全没响应、Activity 被系统
+   重建、选择器被强杀，界面也只会恢复原状 + 提示，**不可能卡死**。Java 侧在
+   `onDestroy()` 里还会兜底写一条 `ERROR`，避免"进程还活着但结果永远不来"的干等。
+3. **SAF URI → 真实路径**：`ExternalStorageProvider` 的 documentId（`primary:Download/x`、
+   `XXXX-XXXX:dir`）解码即可得真实路径；`DownloadStorageProvider` 的 `raw:/…` 直接可用。
+   云盘/媒体库**没有**真实路径 → 明确报错让用户改选"本机存储"（延续 §2.4"不做导入兜底"）。
+4. **取当前 Activity 用反射**：本版本 Qt 的 `QtNative` **所有方法都是包级可见**
+   （`javap` 实测 `activity()`/`getContext()`/`runAction()` 均无 public），跨包直调会被
+   javac 拒绝（本地编译实测），因此读其私有静态字段 `m_activity`（`WeakReference<Activity>`），
+   取不到就回一条可读错误而不是崩溃。
+5. **消费线程用轮询而非 `FileObserver`**：只读应用私有目录里的一个小文件、250 ms 一次，
+   空闲开销可忽略；换来"行为可预测、不引入额外的系统回调语义"。
+
+#### （4）与 §2.2 旧设计的差异（重要）
+
+| 项 | §2.2 原计划 | 实际落地 |
+|----|-------------|----------|
+| 选目录 | `QFileDialog.getExistingDirectoryUrl()`（Qt 原生 SAF 通道） | ❌ 不可用（会死锁）；改为**自建 Java 选择器** + 文件协议 |
+| Python↔Java | "Qt 已把需要 JNI 的部分封装好" | ❌ 实测 PySide6 无任何 JNI 绑定；改为**共享文件协议** |
+| URI→路径 | Python 侧实现（`android_uri.py`） | Java 侧 `resolveRealPath()` 完成（能用 `DocumentsContract` 拿 documentId） |
+| 任务文件/PDF 读写 | 真实路径直读 | 不变（本轮未改动） |
+| 权限引导（§2.7） | 弹窗引导进系统设置 | **仍未实现**（本轮聚焦"卡死"；未授权时读共享目录会失败，需后续补） |
+
+#### （5）本地可验证 / 需真机验证
+
+| 项 | 手段 | 状态 |
+|----|------|------|
+| Java 编译 | `javac -cp android.jar:Qt6Android.jar:Qt6AndroidBindings.jar`（本地 JDK21 + SDK34 + wheel 里的 Qt jar） | ✅ 通过（并借此发现 `QtNative.activity()` 不可跨包调用） |
+| 协议两端契约 | `tests/test_android_picker.py`（模拟 Java 侧写结果：成功/取消/失败/脏数据/超时/清理/并发拒绝） | ✅ 24 项 |
+| hook 注入 | `tests/test_android_packaging_hook.py`（Java 源镜像、provider 注入、入口替换、幂等、缺清单/模板改名时硬失败） | ✅ 10 项 |
+| 桌面零改动 | 门面分流单测 + 全量回归（`QFileDialog` 分支逐项对照） | ✅ 201 项全绿 |
+| 真机：选择器可用、路径正确、不卡死 | `adb logcat -s MangaProofPicker`（含 `SAF authority=… documentId=…` 与最终 `realPath`） | ⏳ 待 CI 出包后复测 |
+
 ---
 
 ## 3. 强制横屏 + 全面屏全屏

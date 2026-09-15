@@ -26,7 +26,6 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -38,6 +37,7 @@ import mangaproof.ui.main_window as mw
 from mangaproof.config.settings import SettingsManager
 from mangaproof.review import persistence
 from mangaproof.review.state import FAILED, PARTIAL, PASSED, UNREVIEWED, TaskState
+from mangaproof.storage import picker
 from mangaproof.ui.dialogs import IssueDialog
 from mangaproof.ui.main_window import MainWindow
 from mangaproof.ui.task_loader import TaskLoadWorker
@@ -1916,11 +1916,11 @@ def test_all_default_shortcuts_fire() -> None:
         with patch.object(mw.IssueDialog, "exec", lambda self: 0), \
              patch.object(mw.ReportDialog, "exec", lambda self: 0), \
              patch.object(
-                 QFileDialog, "getOpenFileName",
-                 lambda *a, **k: (opened.append("psd"), ("", ""))[1],
+                 picker, "pick_psd_file",
+                 lambda *a, **k: (opened.append("psd"), "")[1],
              ), \
              patch.object(
-                 QFileDialog, "getExistingDirectory",
+                 picker, "pick_folder",
                  lambda *a, **k: (opened.append("folder"), "")[1],
              ):
             # 「关闭当前任务」会卸载任务（之后再按别的键就无任务可操作了），
@@ -2134,10 +2134,10 @@ def test_shortcut_actions_take_effect() -> None:
             mw.ReportDialog, "exec",
             lambda self: (calls.append(("report", self.hide_clean_files())), 0)[1],
         ), patch.object(
-            QFileDialog, "getOpenFileName",
-            lambda *a, **k: (calls.append(("open_psd", None)), ("", ""))[1],
+            picker, "pick_psd_file",
+            lambda *a, **k: (calls.append(("open_psd", None)), "")[1],
         ), patch.object(
-            QFileDialog, "getExistingDirectory",
+            picker, "pick_folder",
             lambda *a, **k: (calls.append(("open_folder", None)), "")[1],
         ):
             # R：进入拖框（红框）模式

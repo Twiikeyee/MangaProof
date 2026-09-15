@@ -377,12 +377,13 @@ mangaproof/
 ├── compare/           # 自动对比控制器（速度可配置，支持自动/手动挡）
 ├── report/            # MangaProof 返修单 PDF（纯 Python）
 ├── config/            # settings.json / recent.json 与统一程序路径服务
+├── storage/           # 选择器门面：桌面 QFileDialog / Android 原生 SAF（见 docs/Android端适配设计…md §2.11）
 ├── utils/             # 自然排序、日志
 ├── console.py         # 打包产物控制台可见性控制
 ├── fonts.py           # 统一字体加载
 ├── psd_accel.py       # psd-tools 解码加速运行时补丁
 └── _psd_fast.c        # 纯 C 解码加速（scripts/build_accel.py 编译）
-packaging/             # 三平台 PyInstaller spec 与 Linux 桌面模板
+packaging/             # 三平台 PyInstaller spec、Linux 桌面模板与 Android Java 源/p4a hook
 scripts/               # 构建/加速扩展/图标生成脚本
 tests/                 # 测试夹具生成与冒烟测试
 ```
