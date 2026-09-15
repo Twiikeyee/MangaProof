@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -69,6 +69,7 @@ from mangaproof.ui.dialogs import IssueDialog, ReportDialog
 from mangaproof.ui.file_panel import FilePanel
 from mangaproof.ui.issue_panel import IssuePanel
 from mangaproof.ui.layer_panel import LayerPanel
+from mangaproof.ui.nav_pad import NavPad
 from mangaproof.ui.license_dialog import LicenseDialog
 from mangaproof.ui.numbering_worker import (
     KIND_CANCELLED as NUMBERING_CANCELLED,
@@ -95,6 +96,7 @@ from mangaproof.ui.task_loader import (
 )
 from mangaproof.ui.theme import COLOR_ACCENT, COLOR_BG_WIDGET, COLOR_BORDER, COLOR_TEXT
 from mangaproof.ui.viewer_widget import SOURCE_BG, SOURCE_MERGED, ViewerWidget
+from mangaproof.utils.platform import is_android_strict
 from mangaproof.ui.widgets import NoWheelComboBox
 
 log = logging.getLogger("mangaproof.ui.main_window")
@@ -208,6 +210,8 @@ class MainWindow(QMainWindow):
         self._updating_panels = False
         # 首次使用提醒条是否被本次会话手动关闭（不落盘：下次启动仍会提示）
         self._settings_banner_dismissed = False
+        # Android 专有浮动方向键：仅 Android 上创建，桌面恒为 None
+        self.nav_pad: Optional[NavPad] = None
 
         self._build_ui()
         self._build_menus()
@@ -216,6 +220,7 @@ class MainWindow(QMainWindow):
         self._refresh_enabled_state()
         self._apply_memory_policy()   # 按设置档位初始化 LRU 预算与 bg QImage 配额
         self._refresh_settings_banner()   # 首次使用（无配置文件）才显示提醒条
+        self._setup_nav_pad()         # Android 专有：画布右下角的方向键
 
     # ================================================================= UI
 
@@ -1146,6 +1151,9 @@ class MainWindow(QMainWindow):
 
         index = self._choose_layer_index(rel, restore)
         self._select_layer_internal(index)
+        # 文件与图层都落定后再刷新方向键：_switch_file 是异步的，"刚设置
+        # _current_file"那一刻任务/图层状态还没确定，早刷新会算出错误的上/下边界。
+        self._refresh_nav_pad()
 
     # -- 预加载与异步打开（大 PSD 切换不卡顿） -----------------------------
 
@@ -1433,12 +1441,14 @@ class MainWindow(QMainWindow):
         if doc is None or not (0 <= index < len(doc.layers)):
             self._current_index = -1
             self._refresh_viewer_outline()   # 清除上一个图层残留的虚线框
+            self._refresh_nav_pad()
             return
         self._current_index = index
         info = doc.layers[index]
         if self.task is not None:
             self.task.current_file = self._current_file
             self.task.current_layer = info.id
+        self._refresh_nav_pad()          # 图层位置变了 → 刷新方向键置灰
 
         self.viewer.set_issues(self._viewer_issues())
         self._refresh_viewer_outline()
@@ -2446,6 +2456,69 @@ class MainWindow(QMainWindow):
         self.ratio_combo.setEnabled(has_task)
         if not has_task:
             self.issue_panel.set_buttons_enabled(False)
+        self._refresh_nav_pad()
+
+    # ------------------------------------------------- Android 专有：浮动方向键
+
+    def _setup_nav_pad(self) -> None:
+        """Android 上给画布右下角加一组十字键（模拟键盘方向键）。
+
+        为什么需要：触屏没有方向键，而画布手势已用于平移/拖框，不适合再抢来翻页；
+        按钮点击**直接调用**下面四个动作方法（不伪造按键事件），行为与快捷键一致。
+        桌面端不创建 —— 布局与改造前逐像素相同。
+        """
+        if not is_android_strict():
+            return
+        callbacks = {
+            "prev_file": self.prev_psd,
+            "next_file": self.next_psd,
+            "prev_layer": self.prev_layer,
+            "next_layer": self.next_layer,
+        }
+        self.nav_pad: Optional[NavPad] = NavPad(self.viewer, callbacks)
+        self.viewer.installEventFilter(self)
+        self.nav_pad.show()
+        self._refresh_nav_pad()
+
+    def eventFilter(self, obj, event) -> bool:
+        """画布尺寸变化时把十字键重新贴到右下角。"""
+        pad = getattr(self, "nav_pad", None)
+        if pad is not None and obj is self.viewer and event.type() == QEvent.Type.Resize:
+            pad.reposition()
+        return super().eventFilter(obj, event)
+
+    def _refresh_nav_pad(self) -> None:
+        """按当前任务/文件/图层位置刷新十字键的置灰状态。
+
+        未打开任务 → 四个全部禁用（并隐藏，避免在空画布上多出一组不能用的按钮）；
+        到边界（第一个/最后一个）→ 对应方向禁用。
+        """
+        pad = getattr(self, "nav_pad", None)
+        if pad is None:
+            return
+        if self.task is None:
+            pad.set_enabled_state(
+                can_prev_file=False, can_next_file=False,
+                can_prev_layer=False, can_next_layer=False,
+            )
+            pad.setVisible(False)
+            return
+        files = self.task.files
+        try:
+            file_idx = next(i for i, f in enumerate(files) if f.relative_path == self._current_file)
+        except StopIteration:
+            file_idx = -1
+        doc = self.current_doc
+        layer_count = len(doc.layers) if doc is not None else 0
+        pad.set_enabled_state(
+            can_prev_file=file_idx > 0,
+            can_next_file=0 <= file_idx < len(files) - 1,
+            can_prev_layer=self._current_index > 0,
+            can_next_layer=0 <= self._current_index < layer_count - 1,
+        )
+        pad.setVisible(True)
+        pad.raise_()
+        pad.reposition()
 
     def _refresh_title(self) -> None:
         if self.task is None:
