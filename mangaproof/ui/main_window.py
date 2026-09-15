@@ -36,7 +36,9 @@ from mangaproof.config.settings import (
     Settings,
     SettingsManager,
     android_ui_scaling,
+    effective_memory_policy,
     effective_ui_scale,
+    first_run_banner,
     normalize_key,
     shortcut_conflicts,
 )
@@ -120,10 +122,9 @@ FIRST_RUN_INTRO = (
     "首次使用：这里是全部设置项，按自己的习惯调整即可。\n"
     "每一项都有说明文字；全部保持默认也可以，随时可在 设置 →「设置…」里再改。"
 )
-FIRST_RUN_BANNER = (
-    "第一次使用：建议先过一遍设置（显示比例、内存策略、返修单格式…），"
-    "不调整就直接用默认值。"
-)
+# 提醒条文案按平台给（config/settings.py 的 first_run_banner）：Android 上
+# 内存策略锁定为激进、不可调，文案里不提它，免得指向一个改不了的设置项。
+
 
 # 内存回收策略三档预算（文档结构卸载三档一致，见 _schedule_preloads）：
 # - bg_qimage_bytes：预生成 bg QImage 池字节上限（merged 不受限，窗口有界）
@@ -370,7 +371,7 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(10, 5, 6, 5)
         row.setSpacing(8)
 
-        self.settings_banner_label = QLabel(FIRST_RUN_BANNER)
+        self.settings_banner_label = QLabel(first_run_banner())
         self.settings_banner_label.setWordWrap(True)
         row.addWidget(self.settings_banner_label, 1)
 
@@ -1322,11 +1323,17 @@ class MainWindow(QMainWindow):
     # -- 内存策略（三档热应用 / 驱逐 / 钉住 / bg QImage 池配额） -----------
 
     def _apply_memory_policy(self) -> None:
-        """按设置档位热应用 LRU 预算与 bg QImage 池配额（无需重启）。"""
-        cfg = (
-            _MEMORY_POLICIES.get(self.settings.memory_policy)
-            or _MEMORY_POLICIES["balanced"]
-        )
+        """按设置档位热应用 LRU 预算与 bg QImage 池配额（无需重启）。
+
+        档位先过 effective_memory_policy()：它负责平台侧规整（Android 恒激进）
+        与非法值回落。设置对象本身已是规整后的值，这里再兜一层，防的是将来
+        有人绕过设置读取直接改字段。
+        """
+        policy = effective_memory_policy(self.settings.memory_policy)
+        cfg = _MEMORY_POLICIES.get(policy)
+        if cfg is None:   # effective_memory_policy 保证不会走到这里，防御性回落
+            log.warning("未知内存策略 %r，回落 balanced", policy)
+            cfg = _MEMORY_POLICIES["balanced"]
         self._layer_cache.set_max_bytes(cfg["lru_bytes"])
         self._bg_qimage_quota = cfg["bg_qimage_bytes"]
         self._trim_bg_qimages()

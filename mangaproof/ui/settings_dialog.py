@@ -49,15 +49,17 @@ from mangaproof.config.settings import (
     DEFAULT_JPEG_QUALITY,
     DEFAULT_KEYBINDINGS,
     DEFAULT_ISSUE_SCOPE,
-    DEFAULT_MEMORY_POLICY,
     DEFAULT_REPORT_IMAGE_FORMAT,
     DEFAULT_SHOW_LAYER_OUTLINE,
     DEFAULT_WHEEL_MODE,
     DISPLAY_RATIOS,
     JPEG_QUALITY_CHOICES,
     Settings,
+    android_memory_policy_locked,
     android_ui_scaling,
+    default_memory_policy,
     default_ui_scale,
+    effective_memory_policy,
     shortcut_conflicts,
     ui_scale_choices,
 )
@@ -392,17 +394,28 @@ class SettingsDialog(QDialog):
             self.console_check.setEnabled(False)
         task_form.addRow(self.console_check)
 
-        # 内存回收策略（三档：宽松/平衡/激进），运行时热应用
+        # 内存回收策略（三档：宽松/平衡/激进），运行时热应用。
+        # Android 端锁定为激进：控件**禁用但保留**（与上面 console_check 同做法），
+        # 让用户看得到"现在用的是哪一档"，同时不给改——直接隐藏会让人以为
+        # 设置项做丢了。
         self.memory_policy_combo = NoWheelComboBox()
         self.memory_policy_combo.addItem("宽松（LRU 768MB，bg 预生成池 768MB）", "relaxed")
         self.memory_policy_combo.addItem("平衡（LRU 512MB，bg 预生成池 512MB）", "balanced")
         self.memory_policy_combo.addItem("激进（LRU 256MB，bg 预生成仅留 2 张）", "aggressive")
         policy_idx = self.memory_policy_combo.findData(settings.memory_policy)
         self.memory_policy_combo.setCurrentIndex(max(0, policy_idx))
-        self.memory_policy_combo.setToolTip(
-            "内存占用与缓存慷慨度的平衡档位，切换后立即生效，无需重启。\n"
-            "三档均会驱逐窗口外文档结构（内存与书本页数无关）。"
-        )
+        if android_memory_policy_locked():
+            self.memory_policy_combo.setEnabled(False)
+            self.memory_policy_combo.setToolTip(
+                "Android 端固定为「激进」档，不可更改：移动设备内存紧张，\n"
+                "激进档（LRU 256MB、bg 预生成仅留 2 张）能显著降低被系统回收的概率。\n"
+                "三档均会驱逐窗口外文档结构（内存与书本页数无关）。"
+            )
+        else:
+            self.memory_policy_combo.setToolTip(
+                "内存占用与缓存慷慨度的平衡档位，切换后立即生效，无需重启。\n"
+                "三档均会驱逐窗口外文档结构（内存与书本页数无关）。"
+            )
         task_form.addRow("内存策略：", self.memory_policy_combo)
         body_layout.addWidget(task_group)
 
@@ -535,7 +548,9 @@ class SettingsDialog(QDialog):
         self.console_check.setChecked(True)
         self.pdf_check.setChecked(True)
         self.report_name_edit.clear()
-        idx = self.memory_policy_combo.findData(DEFAULT_MEMORY_POLICY)
+        # 恢复默认走**平台默认**：Android 上该控件已禁用，复位到"平衡"会显示一个
+        # 与事实不符的值（实际跑的是激进）。
+        idx = self.memory_policy_combo.findData(default_memory_policy())
         self.memory_policy_combo.setCurrentIndex(max(0, idx))
         idx = self.report_image_combo.findData(DEFAULT_REPORT_IMAGE_FORMAT)
         self.report_image_combo.setCurrentIndex(max(0, idx))
@@ -565,7 +580,11 @@ class SettingsDialog(QDialog):
         settings.report_jpeg_quality = int(self.report_quality_combo.currentData())
         settings.report_hide_clean_files = self.report_hide_clean_check.isChecked()
         settings.hide_console = self.console_check.isChecked()
-        settings.memory_policy = str(self.memory_policy_combo.currentData())
+        # 过一层平台规整：Android 的控件已禁用，但程序化改下拉仍可能绕过，
+        # 收敛在这里能保证写回设置的值永远是本平台该用的档位。
+        settings.memory_policy = effective_memory_policy(
+            self.memory_policy_combo.currentData()
+        )
         if self.ui_scale_combo is not None:   # 仅 Android 存在
             settings.ui_scale = float(self.ui_scale_combo.currentData())
 

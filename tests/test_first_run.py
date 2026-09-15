@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from PySide6.QtWidgets import QApplication
 
 import mangaproof.ui.main_window as mw
-from mangaproof.config.settings import Settings, SettingsManager
-from mangaproof.ui.main_window import FIRST_RUN_BANNER, FIRST_RUN_INTRO, MainWindow
+from mangaproof.config.settings import Settings, SettingsManager, first_run_banner
+from mangaproof.ui.main_window import FIRST_RUN_INTRO, MainWindow
 from mangaproof.ui.settings_dialog import SettingsDialog
 
 app = QApplication.instance() or QApplication([])
@@ -75,7 +75,7 @@ def test_first_use_opens_settings_dialog() -> None:
         try:
             # 横幅提示先在（不阻塞用户），设置页面由启动钩子拉起
             assert window.settings_banner.isHidden() is False
-            assert FIRST_RUN_BANNER in window.settings_banner_label.text()
+            assert first_run_banner() in window.settings_banner_label.text()
 
             spy = _DialogSpy(REJECTED)
             with patch.object(SettingsDialog, "exec", spy.exec_fn()):

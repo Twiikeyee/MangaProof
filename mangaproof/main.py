@@ -153,9 +153,15 @@ def main(argv=None) -> int:
     settings_manager = SettingsManager()
     # Android 兜底自愈：万一机型信息没能提前注入（provider 未生效），此时用 QScreen
     # 重新判定，把按机型该用的默认缩放写回设置（下次启动生效）。正常情况下无事发生。
-    from mangaproof.config.settings import reconcile_android_ui_scale
+    from mangaproof.config.settings import (
+        reconcile_android_memory_policy,
+        reconcile_android_ui_scale,
+    )
 
     reconcile_android_ui_scale(settings_manager)
+    # Android 内存策略锁定为激进：读取时已强制（运行值一定对），这里把值写回
+    # settings.json，免得文件里留下一个永不生效的旧档位。桌面端直接返回。
+    reconcile_android_memory_policy(settings_manager)
     # 控制台可见性：直接运行 py 始终保留；打包产物默认隐藏（设置可关）
     apply_console_visibility(settings_manager.settings)
 

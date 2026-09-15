@@ -220,8 +220,67 @@ DEFAULT_JPEG_QUALITY = 80
 # 各档预算（bg QImage 池字节上限、图层像素 LRU 字节上限）在
 # mangaproof/ui/main_window.py 的 _MEMORY_POLICIES 中定义；
 # 文档结构卸载（窗口外驱逐）三档一致。
+#
+# Android 端**只允许激进**（需求方决策）：移动设备内存紧张，档位不交给用户选。
+# 平台默认值与强制逻辑见下方 default_memory_policy() 一族；桌面端不受影响。
 MEMORY_POLICIES: tuple[str, ...] = ("relaxed", "balanced", "aggressive")
 DEFAULT_MEMORY_POLICY = "balanced"
+ANDROID_MEMORY_POLICY = "aggressive"
+
+# 首次使用提醒条：桌面与 Android 的可调项不同（Android 锁定内存策略、
+# 另有 Android 专有的界面缩放项），文案按平台给，避免指向不存在的设置项。
+FIRST_RUN_BANNER_DESKTOP = (
+    "第一次使用：建议先过一遍设置（显示比例、内存策略、返修单格式…），"
+    "不调整就直接用默认值。"
+)
+FIRST_RUN_BANNER_ANDROID = (
+    "第一次使用：建议先过一遍设置（界面缩放、显示比例、返修单格式…），"
+    "不调整就直接用默认值。"
+)
+
+
+def android_memory_policy_locked() -> bool:
+    """内存策略在 Android 上是否锁定为激进（**仅 Android**）。
+
+    内存策略平台判定的唯一入口：默认值、读设置时的强制、设置页是否可改、
+    启动后是否写回，全部走这里，避免多处各自判断平台（与 android_ui_scaling
+    同构，判定本身见 utils/platform.is_android_strict 的编译期说明）。
+    """
+    return is_android_strict()
+
+
+def default_memory_policy() -> str:
+    """当前平台的默认内存策略档。
+
+    - Android：恒 `"aggressive"`（锁定，见 android_memory_policy_locked）；
+    - 桌面（Windows / Linux / macOS）：`DEFAULT_MEMORY_POLICY`（平衡）。
+    """
+    if android_memory_policy_locked():
+        return ANDROID_MEMORY_POLICY
+    return DEFAULT_MEMORY_POLICY
+
+
+def effective_memory_policy(configured: Any) -> str:
+    """把"设置里的档位"规整成"本平台实际该用的档位"。
+
+    - Android：无论设置里写着什么，一律激进（旧版本写的档位、手工编辑过的值
+      都可能带到这次启动）；
+    - 桌面：非法/未知值回落 `DEFAULT_MEMORY_POLICY`。
+
+    读取设置与热应用（ui/main_window.py 的 _apply_memory_policy）共用本函数，
+    保证"文件里读到的值"和"实际生效的值"不会各判一套。
+    """
+    if android_memory_policy_locked():
+        return ANDROID_MEMORY_POLICY
+    return configured if configured in MEMORY_POLICIES else DEFAULT_MEMORY_POLICY
+
+
+def first_run_banner() -> str:
+    """首次使用提醒条文案（按平台）。Android 上内存策略不可调，文案不含它。"""
+    if android_memory_policy_locked():
+        return FIRST_RUN_BANNER_ANDROID
+    return FIRST_RUN_BANNER_DESKTOP
+
 
 # ---------------------------------------------------------------------------
 # 界面缩放（**Android 专有**）
@@ -453,6 +512,42 @@ def reconcile_android_ui_scale(manager: "SettingsManager") -> float | None:
     return desired
 
 
+def reconcile_android_memory_policy(manager: "SettingsManager") -> str | None:
+    """启动期把 Android 锁定的内存策略写回 settings.json。
+
+    读取时 SettingsManager 已经强制过（见 _from_dict → effective_memory_policy），
+    所以**运行值一定是对的**；这里补的是磁盘一致性：旧版本写的 `balanced`、
+    手工编辑过的档位，都不该在文件里留着一个永不生效的值。
+
+    ⚠️ 判据必须是**文件里的原始值**，不能看 manager.settings.memory_policy——
+    后者在读取阶段就被强制成 aggressive 了，拿它判断会永远"已一致"，写回形同虚设。
+
+    文件不存在（首次运行）时不写：此时内存值就是默认激进，磁盘上没有旧值需要纠正，
+    而凭空建出 settings.json 会让「首次使用」提醒条立刻收起（见 _refresh_settings_banner）。
+
+    与 reconcile_android_ui_scale 的区别：那个只在"用户从未设置过"时写，
+    因为它修的是平台默认值；本函数是**锁定**语义（需求方决策），无条件纠正。
+
+    已一致时不落盘（幂等）。返回写入的值；无需纠正时返回 None。
+    """
+    if not android_memory_policy_locked():
+        return None
+    raw = _read_raw_settings(manager.path)
+    if raw.get("memory_policy") == ANDROID_MEMORY_POLICY:
+        return None
+    if not raw:
+        return None                      # 还没有配置文件：没什么可纠正的
+    previous = raw.get("memory_policy")
+    manager.settings.memory_policy = ANDROID_MEMORY_POLICY
+    manager.save()
+    log.info(
+        "Android 内存策略锁定为 %s（配置里原值 %r）：已写回配置，运行值不受影响",
+        ANDROID_MEMORY_POLICY,
+        previous,
+    )
+    return ANDROID_MEMORY_POLICY
+
+
 @dataclass
 class Settings:
     """运行时设置对象。"""
@@ -577,6 +672,16 @@ class SettingsManager:
         # 只读一次，交给 RecentManager 迁移到 recent.json，见 config/recent.py
         self._legacy_recent_paths: list[str] = []
         self.settings = self._load()
+
+    @property
+    def path(self) -> Path:
+        """settings.json 的完整路径（构造时注入或平台默认）。
+
+        启动期协调函数（reconcile_android_*）必须读**本实例**的路径而不是
+        paths.settings_path()：测试会注入 tmp_path，硬取平台路径会写到真实
+        程序目录去。
+        """
+        return self._path
 
     @property
     def has_settings_file(self) -> bool:
@@ -724,8 +829,11 @@ class SettingsManager:
                 str(p) for p in recent if isinstance(p, str) and p.strip()
             ][:10]
 
-        policy = raw.get("memory_policy", DEFAULT_MEMORY_POLICY)
-        s.memory_policy = policy if policy in MEMORY_POLICIES else DEFAULT_MEMORY_POLICY
+        # 内存回收策略：Android 强制激进（effective_memory_policy 内部判平台），
+        # 桌面端读文件值、非法值回落默认。
+        s.memory_policy = effective_memory_policy(
+            raw.get("memory_policy", DEFAULT_MEMORY_POLICY)
+        )
 
         # 界面缩放（Android 专有）：缺键时取平台默认（Android 0.75 / 桌面 1.0），
         # 与实际生效值保持一致；桌面端该值不会被用于缩放（见 resolve_ui_scale）。

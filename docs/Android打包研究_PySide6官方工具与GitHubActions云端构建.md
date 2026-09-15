@@ -393,7 +393,7 @@ if __name__ == "__main__":
 | G7 | `QDockWidget` 停靠面板在窄屏不可用 | 布局崩坏 | 改为 Tab/抽屉/堆叠页面布局（`QStackedWidget` 或 `QTabWidget`） | P3 |
 | G8 | `QFileDialog.getOpenFileName/getExistingDirectory` 无法访问 Android 共享存储 | **核心流程（选漫画文件夹）不可用** | **已定方案**：改用 `getExistingDirectoryUrl()`（系统原生 SAF 选择器）→ 纯 Python 把 tree URI 映射为真实路径（`primary:`/`<UUID>:`/`raw:`，详见姊妹文档 §2.8）→ 之后全部走真实路径直读；配 `MANAGE_EXTERNAL_STORAGE` 权限 + 未授权弹窗（§2.7）。**不需要** JNI/`QJniObject`（PySide6 也没有） | P1 |
 | G9 | 数据落盘在"程序目录" | p4a 会把应用解包到 `/data/data/<pkg>/files/...`（可写）→ `get_app_dir()` 语义仍然成立 | 保持现状；确认首次启动解包耗时与磁盘占用；如需更规范可用 `QStandardPaths.AppDataLocation` | P2 |
-| G10 | 内存策略 256–768 MB LRU + 大 PSD | 中低端机 OOM/被系统杀 | Android 侧默认"激进（256 MB）"或更低；按设备内存动态设上限；压测 500 MB 级 PSD | P2/P3 |
+| G10 | 内存策略 256–768 MB LRU + 大 PSD | 中低端机 OOM/被系统杀 | Android 侧**固定**"激进（256 MB）"，已实现（读取强制 + 写回配置 + 设置页灰显，见适配设计文档 §5）；压测 500 MB 级 PSD，数值是否再下调由真机数据决定 | P2/P3 |
 | G11 | 字体/图标资源不在默认打包扩展名内 | 字体丢失 → 回退系统字体（MiSans 许可要求"随软件整体分发"，不宜缺失） | `source.include_exts` 加 `ttf`（`png` 已在默认列表） | P0/P1 |
 | G12 | 打包范围未收敛 | 包体会把 `.git`、`.venv`、`tests` 等一起收进去 | `source.exclude_dirs` 显式排除（§3.5 表） | P0/P1 |
 | G13 | 无 Android 版 UI 尺寸/DPI 设计 | 手机端体验差 | 明确目标形态：**平板 / Chromebook / 折叠屏优先**，手机端作为"轻量查看" | 产品决策 |
@@ -867,7 +867,7 @@ GitHub 的 **job 日志下载接口要求仓库 admin 权限**（匿名请求 40
 
 | 阶段 | 目标 | 关键动作 | 验收标准 |
 |------|------|----------|----------|
-| **P0 打包链路（仅 APK）** | 证明云端能出包，并把安卓形态定下来 | `android.yml` + 包装脚本；`android.release_artifact=apk`；**注入横屏全屏清单项**（`orientation=landscape`、`fullscreen=1`、`p4a.extra_args` 追加 `--display-cutout shortEdges`）；**内存强制激进**（小改动）；依赖先用官方 recipe，**不加**自研扩展 | CI 产出**签名 APK**；`apksigner verify` 通过；真机安装后**横屏全屏**启动到主窗口不崩；设置页显示"激进（固定）" |
+| **P0 打包链路（仅 APK）** | 证明云端能出包，并把安卓形态定下来 | `android.yml` + 包装脚本；`android.release_artifact=apk`；**注入横屏全屏清单项**（`orientation=landscape`、`fullscreen=1`、`p4a.extra_args` 追加 `--display-cutout shortEdges`）；**内存强制激进 ✅ 已实现**；依赖先用官方 recipe，**不加**自研扩展 | CI 产出**签名 APK**；`apksigner verify` 通过；真机安装后**横屏全屏**启动到主窗口不崩；设置页内存策略显示"激进"且灰显不可改 |
 | **P1 选目录 + 路径直读** | 应用在 Android 上"能跑通一次流程" | 补 4 个本地 recipe；钉 numpy/Pillow/reportlab 版本；新增 `mangaproof/storage/**`（SAF 原生选目录 + URI→真实路径映射 + 权限检测弹窗）；任务文件写回原目录；签名 + 16 KB 校验；tag 发布附加产物 | 真机从"本机存储"选目录 → 直读标注 → `.mangaproof.json` 写回原目录；云盘等不可映射目录给出明确拒绝提示；全程 UI 不卡 |
 | **P2 真机核验 + 图标 + 调优** | 可用性与体验达标 | 姊妹文档 §2.10 核验清单（URI 形态/卷 UUID/权限检测/性能/内存）；自适应图标接入（资源已就位）+ CI 图标校验；PDF 导出；启动底色主题 | 内置存储 / SD 卡 / Download 三类目录都能直读；500 MB 级 PSD 连续监制 10 页不 OOM；图标自适应生效 |
 | **P3 交互适配** | 触屏可用 | 菜单/工具栏化、Dock 改面板、手势缩放/长按、可选编译 `_psd_fast.so`（16 KB 对齐） | 全程不接键盘鼠标完成一次"打开目录 → 标注 → 生成 PDF" |

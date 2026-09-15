@@ -21,7 +21,7 @@
 | 只出 APK | **很容易**：buildozer 1.5.0 的 `android.release_artifact` 默认就是 `aab`（release 时），显式改成 `apk` 即可；签名走 `P4A_RELEASE_*` 环境变量或事后 `apksigner` | 【源码】buildozer `target.py:142`、`targets/android.py:925-940` |
 | 文件读写走安卓原生框架 | **已定方案**：清单声明 `MANAGE_EXTERNAL_STORAGE`（"所有文件访问"，minSdk 提到 30 后为单一权限模型）→ 用**真实路径直读**（`open()`/psd-tools/Pillow 全部原样可用），不做导入兜底；**SAF 只用于选目录**（Qt 原生选择器，零 JNI），选完把 tree URI 按 §2.8 规则映射成真实路径；云盘/媒体库/受限目录直接拒绝 | 【官方文档】manage-all-files："Read and write access to all files within shared storage… **This write access includes direct file path access**"；【源码】qtbase `qandroidplatformfiledialoghelper.cpp`（选目录）、【源码】AOSP `RawDocumentsHelper`（`raw:` = 真实路径） |
 | 异步 | 需要新增"存储 worker"层：目录枚举、能力探测、可选导入、导出 PDF 全部放 QThread；沿用现有 `QThread + Signal(progress)` 模式 | 【源码】本仓库 `mangaproof/ui/task_loader.py` 等四个既有 worker |
-| 内存只用激进 | **必须改代码**：当前默认是 `balanced`，且设置页三档可选；Android 需强制 `aggressive` 并隐藏其它档 + 加后台释放钩子 | 【源码】`config/settings.py:217-253`、`ui/main_window.py:1313`、`ui/settings_dialog.py:368-378` |
+| 内存只用激进 | **已实现**：Android 上读取即强制 `aggressive`（不看文件里写什么）、非法值回落激进、启动期把值写回 `settings.json`；设置页该档**禁用但保留**（看得见当前档、改不了）。桌面端三档与默认值不变 | 【本仓库】`config/settings.py:226-282`（`ANDROID_MEMORY_POLICY` / `android_memory_policy_locked()` / `default_memory_policy()` / `effective_memory_policy()`）、`:514-544`（`reconcile_android_memory_policy()`）、`:833`（`_from_dict` 强制）、`main.py:164`、`ui/main_window.py:1331`、`ui/settings_dialog.py:397-421,585`；测试 `tests/test_android_memory_policy.py`；详见 §5 |
 | 强制横屏 + 全面屏全屏 | **必须显式覆盖 buildozer 默认值**：buildozer 1.5.0 的 `default.spec` 写死 `orientation = portrait` 与 `fullscreen = 0`；刘海适配需要给 p4a 传 `--display-cutout shortEdges`（buildozer 无对应键）；运行时用 `showFullScreen()` + `QWindow.safeAreaMargins()`（Qt 6.9+，PySide6 6.11.2 已有） | 【源码】buildozer `default.spec:54,77`；p4a `bootstraps/common/build/build.py:877`、qt 模板 `strings.tmpl.xml`；Qt `qandroidplatformwindow.cpp:249-266`、`qwindow.cpp:1975-2025` |
 | 分层图标 | 链路已具备：`icon.adaptive_foreground.filename` + `icon.adaptive_background.filename` → 生成 `res/mipmap-anydpi-v26/icon.xml`；美术规格为 **两层各 108×108 dp、安全区 66×66 dp**；资源未就位时先只用 `icon.filename` 兜底 | 【源码】buildozer `targets/android.py:1144-1150`、p4a `common/build/build.py:430-443`；【官方文档】Android Adaptive icons |
 | 退出时闪退（真机复测新增） | **改代码即可**：Android 上退出走 `os._exit()`，跳过 CPython finalize 与 Qt/C++ 析构 —— 即 QTBUG-85449 家族的绕行做法（与 Qt 官方 `QT_ANDROID_NO_EXIT_CALL` 同向）；桌面保持 `sys.exit()` 语义。收敛在 `mangaproof/utils/shutdown.py` 一处 | 【官方文档】Qt for Android Environment Variables → `QT_ANDROID_NO_EXIT_CALL`（机制原文见 §8）；【上游 bug】QTBUG-85449「Android: crash on exit」；【本仓库】`utils/shutdown.py`、根 `main.py`（APK 入口，`input_file`）、`ui/main_window.py:2443`（关窗落盘先于退出）；详见打包文档 §5.10 ⑧ |
@@ -801,34 +801,64 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 
 ## 5. 内存回收策略：只允许"激进"
 
-### 5.1 现状（代码事实）
+### 5.1 实现（代码事实，2026-09-15 落地）
+
+平台判定的唯一入口是 `android_memory_policy_locked()`（内部走 `utils/platform.is_android_strict`，
+编译期判据、不含环境变量、异常一律按非 Android 处理）——与 `android_ui_scaling()` 同构，
+避免多处各自判平台。
 
 | 位置 | 内容 |
 |------|------|
-| `config/settings.py:217-220` | `MEMORY_POLICIES = ("relaxed","balanced","aggressive")`；`DEFAULT_MEMORY_POLICY = "balanced"` |
-| `config/settings.py:252-253` | `memory_policy` 字段；读取时校验非法值回落默认（`:483-484`），保存时写回（`:511`） |
-| `ui/main_window.py:1313-1320` | `_apply_memory_policy()`：从 `_MEMORY_POLICIES` 取 `lru_bytes` 与 bg 池配额，调用 `self._layer_cache.set_max_bytes(...)` |
-| `ui/settings_dialog.py:368-378` | 三档下拉（宽松/平衡/激进），`:510-511` 恢复默认，`:536` 读回 |
-| `psd/image_cache.py:65` | `set_max_bytes()` 运行时调整 LRU 预算（线程安全） |
-| 实际数值（`ui/main_window.py:123-131` 的 `_MEMORY_POLICIES`） | `aggressive`：bg 池 **68 MB** + LRU **256 MB**；`balanced`：512 MB + 512 MB；`relaxed`：768 MB + 768 MB |
+| `config/settings.py:226-228` | `MEMORY_POLICIES`（三档）；`DEFAULT_MEMORY_POLICY = "balanced"`（桌面默认，**未改**）；`ANDROID_MEMORY_POLICY = "aggressive"` |
+| `config/settings.py:242-250` | `android_memory_policy_locked()`：是否 Android（锁定判定的唯一入口） |
+| `config/settings.py:252-261` | `default_memory_policy()`：平台默认档——Android 激进 / 桌面平衡 |
+| `config/settings.py:263-276` | `effective_memory_policy()`：把设置里的档位规整成本平台该用的档——Android 一律激进，桌面非法值回落平衡 |
+| `config/settings.py:833-836` | `_from_dict()` 读取时即规整：非法的旧值回落**平台默认**（不是硬编码 balanced） |
+| `config/settings.py:514-544` | `reconcile_android_memory_policy()`：启动期把锁定的值写回 `settings.json` |
+| `main.py:162-164` | 启动序列里调用上面的 reconcile（桌面端直接返回，不落盘） |
+| `config/settings.py:676-683` | `SettingsManager.path`：reconcile 读**本实例**路径，不用 `paths.settings_path()`（否则测试注入的 `tmp_path` 会被绕过、写到真实程序目录） |
+| `ui/main_window.py:1324-1340` | `_apply_memory_policy()` 先过 `effective_memory_policy()` 再查档位表，未知档位记 warning 后回落 balanced |
+| `ui/settings_dialog.py:397-421` | 三档下拉；Android 上 `setEnabled(False)` **禁用但保留**（与同文件 `console_check` 的非 Windows 处理同做法），tooltip 换成平台说明 |
+| `ui/settings_dialog.py:551-553` | 「恢复默认」复位到 `default_memory_policy()`——Android 上复位到激进（否则灰控件会显示成"平衡"，与事实不符） |
+| `ui/settings_dialog.py:585-588` | `apply_to()` 写入前再过一次 `effective_memory_policy()`：程序化改下拉也绕不过锁定 |
+| `ui/main_window.py:373` / `config/settings.py:278-282` | 首次运行提醒条文案按平台给：Android 版不提"内存策略"（它已不可调，提了会指向一个改不了的设置项） |
+| 实际数值（仍是 `ui/main_window.py:131-135` 的 `_MEMORY_POLICIES`） | `aggressive`：bg 池 **68 MB** + LRU **256 MB**；`balanced`：512 MB + 512 MB；`relaxed`：768 MB + 768 MB |
 
-### 5.2 Android 端"只允许激进"的实现方案
+**三个容易踩的坑（都有测试守着）**
 
-1. **平台判定**：`QOperatingSystemVersion.currentType() == QOperatingSystemVersion.OSType.Android`（PySide6 已绑定：`current()`/`currentType()`/`type()` 与 `OSType.Android`，见 `QtCore.pyi:6218-6240` ✅）或 `sys.platform == "android"`（p4a 下通常成立）；
-2. **加载即强制**：`Settings.load()` 后若为 Android → `memory_policy = "aggressive"`，并把强制后的值写回 `settings.json`（保证外部工具/后续版本读到一致值）；
-3. **UI 收敛**：设置页在 Android 上把三档下拉替换为只读展示（例如一行"内存策略：激进（Android 固定）"），或保留控件但禁用非激进项；
-4. **兜底断言**：`_apply_memory_policy()` 内若发现 Android 且策略 ≠ aggressive，强制按 aggressive 应用并记一条 warning 日志（防止旧配置文件绕过）；
-5. **后台释放钩子**：`QGuiApplication.applicationStateChanged` → 进入 `Qt.ApplicationInactive`/`ApplicationSuspended` 时主动逐出非当前文档缓存与 bg 池（Android 在后台更容易被杀；回到前台时已有预加载机制补齐）；
-6. **可调参数集中**：把"Android 上更激进的预算"（例如 LRU 256MB → 192MB、bg 池 2 张 → 1 张）定义在同一处常量表里，便于真机调优（这属于**数值调整**，需在 P2 依据实测决定，不建议现在就拍）。
+1. **写回的判据必须是文件里的原始值**，不能看 `manager.settings.memory_policy`——后者在读取阶段
+   就被强制成 aggressive 了，拿它判断会永远"已一致"，写回形同虚设（`config/settings.py:529-532`）。
+2. **首次运行（文件不存在）不写回**：此时内存值就是默认激进，磁盘上没有旧值要纠正；凭空建出
+   `settings.json` 会让「首次使用」提醒条立刻收起（`_refresh_settings_banner` 判 `has_settings_file`）。
+3. **非法值在 Android 上回落激进而不是 balanced**：`_from_dict` 原来硬编码回落
+   `DEFAULT_MEMORY_POLICY`，照搬会让一份损坏的配置静默拿到 512 MB 档。
+
+**不做的事**：不改三档预算数值（需求方决策 #7：就用激进档，不再额外收紧）；桌面端行为零改动
+（默认值、三档可选、复位逻辑全部照旧）。
+
+### 5.2 测试（`tests/test_android_memory_policy.py`，10 项）
+
+| 覆盖 | 断言 |
+|------|------|
+| 平台判定与规整 | Android 锁定/桌面不锁；`effective_memory_policy` 对 `relaxed/balanced/aggressive/turbo/None/42` 在两端各自的输出 |
+| 强制 + 写回 | 旧配置写 `balanced` → 读到 `aggressive`，reconcile 后文件里也是 `aggressive`；再调一次返回 `None`（幂等） |
+| 非法值/缺键 | Android 回落 aggressive；桌面回落 balanced |
+| 桌面不受影响 | 读到 `relaxed` 就是 `relaxed`；reconcile 不落盘；文件里不出现 `aggressive` |
+| 路径正确性 | 写回落在 `manager.path`；首次运行不凭空创建文件 |
+| 设置页 | Android 控件 `isEnabled() is False`、显示"激进"、tooltip 含"固定"；「恢复默认」复位到激进；绕过控件改下拉后 `apply_to()` 仍写回激进。桌面 `count() == 3` 且可编辑 |
+| 横幅文案 | Android 文案不含"内存策略"、含"界面缩放"；桌面含"内存策略" |
+
+> 测试用 `monkeypatch.setattr(settings_mod, "is_android_strict", lambda: True)` 模拟平台
+> （与 `tests/test_android_ui_scale.py` 同手法）；在真实 Android 上跑时桌面侧用例自动 skip。
 
 ### 5.3 风险与验收
 
 | 风险 | 说明 | 验收/缓解 |
 |------|------|-----------|
 | 大 PSD 频繁重解码 | 激进档意味着窗口外图层更早被逐出，切页/切层可能重解码 | 真机用 15 页·大 PSD 压测：连续翻页 30 次，记录卡顿与重解码次数 |
-| 后台被杀后状态 | Android 可能直接杀进程 | 依赖现有"任务文件自动保存 + 启动恢复"链路；确认自动保存频率在 Android 上够用 |
-| 双档位语义混淆 | 桌面仍是三档 | 文档/设置页明确"Android 固定激进" |
-| 峰值内存仍偏高 | Qt + numpy + Pillow 自身占用 | 用 `adb shell dumpsys meminfo <pkg>` 观察 PSS 峰值；必要时进一步下调 |
+| 进程被杀后状态 | Android 可能直接杀进程 | 依赖现有"任务文件自动保存 + 启动恢复"链路；确认自动保存频率在 Android 上够用 |
+| 双档位语义混淆 | 桌面仍是三档 | 设置页用 tooltip 说明"Android 固定为激进"；桌面文案不变 |
+| 峰值内存仍偏高 | Qt + numpy + Pillow 自身占用；256 MB LRU 是桌面视角的"激进" | 用 `adb shell dumpsys meminfo <pkg>` 观察 PSS 峰值；数据说话后再决定是否调数值 |
 
 ---
 
@@ -836,7 +866,7 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 
 | 阶段 | 内容 | 验收 |
 |------|------|------|
-| **P0 打包链路（APK only）** | 上游文档 §5 的 CI + 包装脚本；`android.release_artifact=apk`；`android.api=35`（targetSdk）、`minapi=30`；`android.manifest.orientation=sensorLandscape`、`fullscreen=1`、`p4a.extra_args` 追加 `--display-cutout shortEdges`；`MANAGE_EXTERNAL_STORAGE` 权限；启动底色主题；内存强制激进 | CI 出签名 APK；模拟器/真机安装后**横屏全屏**启动；设置页显示"激进（固定）"；未授权时弹窗（§2.7） |
+| **P0 打包链路（APK only）** | 上游文档 §5 的 CI + 包装脚本；`android.release_artifact=apk`；`android.api=35`（targetSdk）、`minapi=30`；`android.manifest.orientation=sensorLandscape`、`fullscreen=1`、`p4a.extra_args` 追加 `--display-cutout shortEdges`；`MANAGE_EXTERNAL_STORAGE` 权限；启动底色主题；**内存强制激进 ✅ 已实现（§5）** | CI 出签名 APK；模拟器/真机安装后**横屏全屏**启动；设置页内存策略显示"激进"且灰显不可改；未授权时弹窗（§2.7） |
 | **P1 选目录 + 路径直读** | `storage/**`（`android_uri.py` 映射与权限检测、`picker.py` 选目录、`service.py`）；`main_window` 改用 Url 版选择器 + 映射；任务文件写回原目录 | 真机从"本机存储"选目录 → 直读标注 → `.mangaproof.json` 落在原目录；云盘/受限目录给出明确拒绝提示；全程 UI 不卡 |
 | **P2 真机核验 + 收尾** | §2.10 的核验清单（URI 形态、卷 UUID、权限检测、性能、内存）；图标接入 + CI 图标校验；PDF 导出路径；启动底色资源 | 内置存储/SD 卡/Download 三类目录都能直读；图标自适应生效；大 PSD 不 OOM |
 | **P3 触屏交互改造** | 菜单/工具栏化、Dock 改面板、手势缩放/长按菜单、快捷键辅助（外接键盘） | 全程无键鼠完成"打开目录→标注→导出 PDF" |
@@ -856,7 +886,7 @@ p4a 生成 XML 时直接 `open('res/mipmap-anydpi-v26/icon.xml', "w")` 却从不
 | 4 | 图标 | 美术三层资源**已就位**：`ico/Android-foreground.png`、`ico/Android-background.png`、`ico/Android-fallback.png`（已合成的旧系统兜底图）；**不使用 monochrome 层**；实测结论见 §4.6 |
 | 5 | 屏幕常亮 | **不需要**（连带省掉 Java 注入工作项） |
 | 6 | 最低 Android 版本 | **API 30**（随 ① 的权限模型上抬；Qt 官方下限为 28） |
-| 7 | Android 内存预算 | **就用激进档**（LRU 256 MB + bg 池 68 MB），不再额外收紧 |
+| 7 | Android 内存预算 | **就用激进档**（LRU 256 MB + bg 池 68 MB），不再额外收紧。已实现：读取强制 + 写回配置 + 设置页禁用该档（§5.1） |
 | 8 | 首屏启动底色/Logo | **做**：纯色底 `#2b2d30` + 用 `ico/ico.png` 作居中 logo；通过自定义主题 `android:windowBackground` 实现（注意 `.Fullscreen` 后缀） |
 | 9（新增·待确认） | 无法映射的目录（云盘/网络位置、媒体库入口、其他应用专属目录） | 方案按**直接拒绝 + 提示"请从『本机存储』入口选择文件夹"**处理（§2.9）——如无异议即按此实现 |
 | 10 | 辅助功能（无障碍 / 读屏） | **永久不适配**（需求方明确：本项目是效率工具，未来也不准备适配无障碍）。Android 端的做法是用 Qt 官方开关 `QT_ANDROID_DISABLE_ACCESSIBILITY=1` **主动声明不参与**，以规避部分系统（HyperOS）读屏查询与 Qt 主线程建窗并发导致的死锁——实现见打包文档 §5.10 ⑦ |
