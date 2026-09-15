@@ -214,7 +214,11 @@ def test_unexpected_template_activity_is_hard_failure(hook, fake_dist, monkeypat
 # ---------------------------------------- 入口 Activity 的 Jinja 变量写法（CI run 34947644803）
 
 def _p4a_style_manifest(entry: str) -> str:
-    """p4a Qt 模板的入口写法：`android:name="{{args.android_entrypoint}}"`。"""
+    """p4a Qt 模板的入口写法：`android:name="{{args.android_entrypoint}}"`。
+
+    结构按真实模板还原（含 `LAUNCHER` category 与 Qt 的 meta-data）——夹具与线上
+    不一致曾让我的"按 launcher 定位"兜底在测试里假失败，故此处严格对齐。
+    """
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
@@ -225,10 +229,16 @@ def _p4a_style_manifest(entry: str) -> str:
         '                 android:extractNativeLibs="true" = needed for smaller apk size\n'
         '                -->\n'
         f'        <activity android:name="{entry}"\n'
-        '                  android:exported="true">\n'
+        '                  android:label="@string/app_name"\n'
+        '                  android:exported="true"\n'
+        '                  >\n'
         '            <intent-filter>\n'
         '                <action android:name="android.intent.action.MAIN" />\n'
+        '                <category android:name="android.intent.category.LAUNCHER" />\n'
         '            </intent-filter>\n'
+        '            <meta-data\n'
+        '                    android:name="android.app.lib_name"\n'
+        '                    android:value="main"/>\n'
         '        </activity>\n'
         '    </application>\n'
         '</manifest>\n'
@@ -238,12 +248,15 @@ def _p4a_style_manifest(entry: str) -> str:
 @pytest.mark.parametrize("entry", [
     "{{args.android_entrypoint}}",
     "{{ args.android_entrypoint }}",
+    "org.qtproject.qt.android.bindings.QtActivity",
+    # CI run 34950341979 实测 p4a 渲染出的就是这个名字
+    "org.kivy.android.PythonActivity",
 ])
-def test_swap_handles_jinja_entrypoint_variable(hook, entry):
-    """入口写成模板变量时必须也能替换。
+def test_swap_handles_known_entrypoint_shapes(hook, entry):
+    """入口的四种已知形态都要能替换。
 
-    本轮 CI 失败就是这个：只匹配字面类名 → 出现 0 次 → 我那道硬失败断言把
-    **正确的构建**挡死了（run 34947644803）。
+    两轮 CI 失败换来的：先是只认 Qt 模板类名（命中 0 次），再是只加 Jinja 变量
+    写法（渲染出来其实是 org.kivy.android.PythonActivity，仍命中 0 次）。
     """
     out, ok = hook._swap_entry_activity(_p4a_style_manifest(entry))
     assert ok is True
@@ -251,25 +264,47 @@ def test_swap_handles_jinja_entrypoint_variable(hook, entry):
     assert entry not in out
 
 
-def test_swap_handles_rendered_class_name(hook):
-    """渲染成 buildozer.spec 里的 entrypoint 类名时（原路径）也要能替换。"""
-    out, ok = hook._swap_entry_activity(
-        _p4a_style_manifest("org.qtproject.qt.android.bindings.QtActivity"))
+def test_swap_falls_back_to_launcher_intent_filter(hook):
+    """未知类名（p4a/部署工具换名）也要能定位：按 MAIN/LAUNCHER 找唯一 launcher。"""
+    out, ok = hook._swap_entry_activity(_p4a_style_manifest("com.example.BrandNewEntry"))
     assert ok is True
     assert 'android:name="com.mangaproof.picker.PickerActivity"' in out
+    assert "com.example.BrandNewEntry" not in out
 
 
-def test_swap_is_idempotent_for_both_shapes(hook):
+def test_swap_launcher_fallback_needs_exactly_one(hook):
+    """有多个 launcher 时不能猜，必须报错（避免改错入口）。"""
+    two_launchers = _p4a_style_manifest("com.example.A").replace(
+        "    </application>",
+        '        <activity android:name="com.example.B">\n'
+        '            <intent-filter>\n'
+        '                <category android:name="android.intent.category.LAUNCHER" />\n'
+        '            </intent-filter>\n'
+        '        </activity>\n'
+        '    </application>',
+    )
+    with pytest.raises(RuntimeError, match="无法定位入口 Activity"):
+        hook._swap_entry_activity(two_launchers)
+
+
+def test_swap_is_idempotent_for_all_shapes(hook):
     for entry in ("{{args.android_entrypoint}}",
-                  "org.qtproject.qt.android.bindings.QtActivity"):
+                  "org.qtproject.qt.android.bindings.QtActivity",
+                  "org.kivy.android.PythonActivity",
+                  "com.example.BrandNewEntry"):
         once, _ = hook._swap_entry_activity(_p4a_style_manifest(entry))
         twice, _ = hook._swap_entry_activity(once)
-        assert twice == once
+        assert twice == once, entry
 
 
 def test_swap_failure_message_lists_actual_activity_names(hook):
-    """定位失败时要能自诊断：错误信息里给出清单中真实的 activity 名。"""
-    broken = _p4a_style_manifest("com.example.Whatever")
+    """定位失败时要能自诊断：错误信息里给出清单中真实的 activity 名。
+
+    构造一个"既非已知入口、又没有 LAUNCHER 可兜底"的清单（去掉 category）——
+    这正是前两轮 CI 里我最需要、却拿不到的那种信息。
+    """
+    broken = _p4a_style_manifest("com.example.Whatever").replace(
+        '                <category android:name="android.intent.category.LAUNCHER" />\n', "")
     with pytest.raises(RuntimeError) as exc:
         hook._swap_entry_activity(broken)
     msg = str(exc.value)

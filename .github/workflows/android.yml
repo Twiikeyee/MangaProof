@@ -350,9 +350,15 @@ jobs:
               echo "::error::最终清单里没有 extractNativeLibs 属性（p4a hook 的注入没生效？）"
               exit 1
             fi
-            # 入口 Activity 也顺手确认（hook 若失效，SAF 选择器会收不到结果）
-            grep -q "com.mangaproof.picker.PickerActivity" "$MAN" \
-              || echo "::warning::最终清单里未见 PickerActivity（选择器可能收不到结果）"
+            # 入口 Activity 必须是我们的 PickerActivity：p4a 渲染出的入口类
+            # （org.kivy.android.PythonActivity 等）并不在我们的 DEX 里，若没换掉，
+            # 包能装上但启动即崩；同时它也决定 SAF 选择器能否收到 onActivityResult。
+            if grep -q "com.mangaproof.picker.PickerActivity" "$MAN"; then
+              echo "✅ 入口 Activity = com.mangaproof.picker.PickerActivity"
+            else
+              echo "::error::最终清单的入口 Activity 不是 PickerActivity（p4a hook 的替换没生效）→ 启动会 ClassNotFoundException"
+              exit 1
+            fi
           else
             echo "::warning::找不到 aapt2（$AAPT2），跳过清单属性校验"
           fi

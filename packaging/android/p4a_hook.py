@@ -74,7 +74,9 @@ PROVIDER_AUTHORITY = "com.priloba.mangaproof.a11y.env"
 
 #: p4a Qt 模板写下的入口 Activity
 QT_TEMPLATE_ACTIVITY = "org.qtproject.qt.android.bindings.QtActivity"
-#: 我们的入口 Activity（继承上面那个，只为截获自己的 onActivityResult）
+#: CI 实测 p4a 实际渲染出的入口类名（buildozer.spec 的 android.entrypoint 取值）
+P4A_ENTRYPOINT_FALLBACK = "org.kivy.android.PythonActivity"
+#: 我们的入口 Activity（继承 Qt 的 QtActivity，只为截获自己的 onActivityResult）
 PICKER_ACTIVITY = "com.mangaproof.picker.PickerActivity"
 
 #: 必须显式打开的清单属性（详见 `_patch_extract_native_libs` 的说明）
@@ -203,24 +205,36 @@ def _patch_extract_native_libs(text: str) -> tuple[str, bool]:
 def _swap_entry_activity(text: str) -> tuple[str, bool]:
     """把清单里的入口 Activity 换成 `PickerActivity`（幂等）。
 
-    **两个候选写法都要认**（这是本轮 CI run 34947644803 失败的原因）：
-    p4a 的 Qt 模板里入口**不是字面量类名**，而是 Jinja 变量：
+    **为什么需要多级匹配**（两轮 CI 失败换来的教训）：
+    p4a 的 Qt 模板里入口**不是固定类名**，渲染结果取决于构建参数：
 
         <activity android:name="{{args.android_entrypoint}}" …>
 
-    构建命令里带的 `--android-entrypoint org.kivy.android.PythonActivity` 会被
-    buildozer 的 spec 覆盖（我们的 spec 写的是 `org.qtproject.qt.android.bindings.QtActivity`），
-    因此渲染结果既可能是那个类名，也可能（在模板变量未渲染的形态下）保留 `{{ … }}` 原文。
-    最初只按字面类名匹配 → 实测出现 0 次 → 我那道"找不到就硬失败"的保护把**正确的构建**
-    挡死了。现在两种都试，都找不到才失败，并且把清单里真实的 activity 名打进错误信息。
+    - 第一次（run 34947644803）我以为模板里是字面量
+      `org.qtproject.qt.android.bindings.QtActivity` → 命中 0 次 → 我那道
+      "找不到就硬失败"的保护把**正确的构建**挡死了；
+    - 第二次（run 34950341979）加上模板变量写法后，实测渲染出的是
+      **`org.kivy.android.PythonActivity`**（p4a/buildozer 的默认 entrypoint，
+      与 Qt bootstrap 无关）→ 仍然命中 0 次。
+
+    所以现在的策略是三级：① 已知字面类名（Qt 模板名 / p4a 默认名）→
+    ② 未渲染的模板变量 → ③ **按 `MAIN`/`LAUNCHER` intent-filter 定位唯一 launcher**
+    （不依赖任何具体类名，p4a 或部署工具换名也不会再挡构建）。三级都失败才报错，
+    并列出清单里真实的 activity 名，便于一眼定位。
+
+    注意：这个替换是**必须生效**的——只有启动选择器的 Activity 才收得到
+    `onActivityResult`，而 p4a 渲染出的入口类（如 PythonActivity）并不存在于我们的
+    DEX 里（我们并未打包 p4a 的 Java 源），不换掉它连启动都起不来。
     """
     if PICKER_ACTIVITY in text:
         _log("清单入口 Activity 已是 PickerActivity，跳过")
         return text, True
 
     candidates = (
-        # ① 渲染后的字面类名（buildozer.spec 的 entrypoint，p4a Qt 模板的期望值）
+        # ① 渲染后的字面类名：CI 实测 p4a 用的是 buildozer.spec 里的 android.entrypoint，
+        #    即 org.kivy.android.PythonActivity（Qt bootstrap 也沿用这个名字）
         f'android:name="{QT_TEMPLATE_ACTIVITY}"',
+        f'android:name="{P4A_ENTRYPOINT_FALLBACK}"',
         # ② 模板变量原文（含/不含花括号内空格两种写法）
         'android:name="{{args.android_entrypoint}}"',
         'android:name="{{ args.android_entrypoint }}"',
@@ -235,10 +249,25 @@ def _swap_entry_activity(text: str) -> tuple[str, bool]:
             _log(f"入口 Activity 已替换（匹配写法：{marker}）")
             return text, True
 
+    # ③ 兜底：入口 Activity 是**主 launcher**（带 MAIN/LAUNCHER intent-filter 的那个），
+    #    只要它唯一存在就替换——不依赖任何具体类名，p4a/部署工具换名也不会再挡构建。
+    activity_tags = list(re.finditer(r"<activity\b.*?</activity>", text, flags=re.S))
+    launchers = [m for m in activity_tags if "android.intent.category.LAUNCHER" in m.group(0)]
+    if len(launchers) == 1:
+        block = launchers[0].group(0)
+        replaced = re.sub(r'android:name="[^"]*"',
+                          f'android:name="{PICKER_ACTIVITY}"', block, count=1)
+        text = text[:launchers[0].start()] + replaced + text[launchers[0].end():]
+        if PICKER_ACTIVITY not in text:
+            raise RuntimeError("[mangaproof-hook] 入口 Activity 替换后校验失败（launcher 兜底路径）")
+        _log("入口 Activity 已替换（按 MAIN/LAUNCHER intent-filter 定位）")
+        return text, True
+
     found = re.findall(r'<activity[^>]*android:name="([^"]*)"', text, flags=re.S)
     raise RuntimeError(
-        "[mangaproof-hook] 无法定位入口 Activity：既没有 "
-        f'android:name="{QT_TEMPLATE_ACTIVITY}"，也没有模板变量 android:name="{{{{args.android_entrypoint}}}}"。\n'
+        "[mangaproof-hook] 无法定位入口 Activity：清单里既没有已知的入口写法，"
+        f"也没有唯一的 MAIN/LAUNCHER activity（找到 {len(launchers)} 个 launcher、"
+        f"{len(activity_tags)} 个 activity）。\n"
         f"        清单里现有的 activity 名：{found or '（一个都没有）'}\n"
         "        请核对 p4a 的 Qt bootstrap 模板是否改了入口写法，以及 "
         "build_android.py 里是否设置了 android.entrypoint"
