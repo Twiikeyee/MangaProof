@@ -204,8 +204,7 @@ if (!request.fallBackFamilies.isEmpty()) {
 
 | 文件 | 内容 |
 |---|---|
-| `font/NotoSansSymbols2-Regular.ttf` | 回退字体（家族名 `Noto Sans Symbols2`，641 KB），随包分发 |
-| `font/LICENSE-NotoSansSymbols2.txt` | OFL-1.1 原文；同时在「帮助 → 第三方许可」里以内嵌文本展示（`third_party.py`） |
+| `font/NotoSansSymbols2-Regular.ttf` | 回退字体（家族名 `Noto Sans Symbols2`，641 KB），随包分发；OFL-1.1 全文内嵌在 `third_party.py`，展示于「帮助 → 第三方许可」（不再单独放 .txt） |
 | `mangaproof/fonts.py` | `fallback_font_candidates()` / `load_symbol_fallback_families()`：注册回退字体并返回家族名；**`is_android_strict()` 为假时直接返回空**（桌面不挂链） |
 | `mangaproof/ui/theme.py` | `apply_dark_theme(app, primary_family, fallback_families=())`：家族链 = 主字体 → 回退字体 → 桌面默认家族；`app.font()` 同步带上同一条链（QSS 覆盖不到的场合也能回退） |
 | `mangaproof/main.py` | 组合并打印启动日志 `字体家族链：[...]`（真机核对用） |

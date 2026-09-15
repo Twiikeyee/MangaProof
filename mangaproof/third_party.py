@@ -158,6 +158,61 @@ non-free programs (including commercial ones)."
 完整许可证文本（官方链接）：
 https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt"""
 
+# ---------------------------------------------------------------------------
+# Android 打包工具链（PySide6 官方 pyside6-android-deploy 及其依赖）
+# ---------------------------------------------------------------------------
+# 这些组件**只在构建 APK 时使用，不随应用分发**；但按"开源组件与许可透明"的原则，
+# 在「帮助 → 第三方许可」里对所有平台一致展示（不区分平台）。
+
+APACHE20_NOTICE = """Apache License 2.0（Apache-2.0）
+
+- 允许商业使用、修改与再分发；需保留版权与许可声明，随附 NOTICE 文件（若有）；
+- 分发修改版时需说明改动；
+- 含专利授权；若对贡献者发起专利诉讼，该授权终止；
+- 软件按"现状"提供，不附带任何明示或默示担保。
+
+完整许可证文本（官方链接）：
+https://www.apache.org/licenses/LICENSE-2.0"""
+
+MPL2_NOTICE = """Mozilla Public License 2.0（MPL-2.0）
+
+- 文件级 copyleft：被修改过的 MPL 源文件需继续以 MPL 提供，可与其它许可的
+  代码组合、链接；
+- 需保留版权与许可声明；
+- 软件按"现状"提供，不附带任何担保。
+
+完整许可证文本（官方链接）：
+https://www.mozilla.org/MPL/2.0/"""
+
+AGPL3_NOTICE = """GNU Affero General Public License v3（AGPL-3.0-or-later）
+
+- 本项目**仅把 Nuitka 当作构建期工具**：把 Python 源码编译成 C 再交叉编译成
+  Android 原生库；不修改、不再分发 Nuitka 本体，最终产物中也不包含 Nuitka；
+- 若你打算再分发 Nuitka 本体或其修改版，需自行遵守 AGPL 的源码提供义务。
+
+完整许可证文本（官方链接）：
+https://www.gnu.org/licenses/agpl-3.0.txt"""
+
+ANDROID_SDK_NOTICE = """Android SDK（cmdline-tools / build-tools / platform）
+
+- Android SDK 以 Apache License 2.0 授权（© Google LLC）；
+- 本项目仅用它**构建** Android 安装包，不随应用分发。
+
+官方链接：
+https://developer.android.com/studio/terms
+https://www.apache.org/licenses/LICENSE-2.0"""
+
+ANDROID_NDK_NOTICE = """Android NDK（Native Development Kit，r27c）
+
+- NDK 适用《Android NDK License Agreement》（© Google LLC，专有许可）；
+  以其编译出的产物不受该协议约束；
+- 本项目仅用它**构建** Android 安装包（交叉编译 Python 依赖闭包），
+  不随应用分发。
+
+官方链接：
+https://developer.android.com/ndk/downloads
+https://developer.android.com/studio/terms"""
+
 MISANS_LICENSE = """MiSans 字体知识产权许可协议
 
 本《MiSans 字体知识产权许可协议》（以下简称“协议”）是您与小米科技有限
@@ -184,7 +239,8 @@ MISANS_LICENSE = """MiSans 字体知识产权许可协议
 # JetBrains Mono（Nerd Fonts 补丁版）——符号图标回退字体，OFL-1.1。
 # 官方许可原文同时随包分发在 font/LICENSE-JetBrainsMonoNerdFont.txt。
 # Noto Sans Symbols 2（符号回退字体，OFL-1.1）。
-# 官方许可原文同时随包分发在 font/LICENSE-NotoSansSymbols2.txt。
+# 许可全文内嵌在下方（NOTO_SYMBOLS2_LICENSE），展示于「帮助 → 第三方许可」；
+# 不再单独随包放一份 .txt（软件内即可查阅，避免同一份协议两处维护）。
 NOTO_SYMBOLS2_LICENSE = """Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
@@ -329,7 +385,8 @@ def build_third_party_items() -> list[ThirdPartyItem]:
         ),
         ThirdPartyItem(
             "PySide6 / Qt（GUI 框架）",
-            _resolve_version("PySide6", "6.11.2"),
+            f'{_resolve_version("PySide6", "6.11.2")}（含部署工具 '
+            "pyside6-deploy / pyside6-android-deploy）",
             "LGPL-3.0-only",
             "© The Qt Company Ltd.",
             "https://www.qt.io/",
@@ -366,6 +423,87 @@ def build_third_party_items() -> list[ThirdPartyItem]:
             "© Istvan Albert 及贡献者",
             "https://altgraph.readthedocs.io/",
             MIT_LICENSE,
+        ),
+        # ---- Android 打包工具链（仅构建期使用，不随应用分发；所有平台一致展示）----
+        ThirdPartyItem(
+            "python-for-android（p4a，Android 打包工具链）",
+            "由 pyside6-android-deploy 安装（仅 Android 打包用）",
+            "MIT",
+            "© 2010-2025 Kivy Team and other contributors",
+            "https://github.com/kivy/python-for-android",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "buildozer（Android 打包驱动）",
+            "1.5.0（仅 Android 打包用）",
+            "MIT",
+            "© 2010-2017 Kivy Team and other contributors",
+            "https://github.com/kivy/buildozer",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "Cython（编译 p4a recipe）",
+            "0.29.33（仅 Android 打包用）",
+            "Apache-2.0",
+            "© Cython contributors",
+            "https://cython.org/",
+            APACHE20_NOTICE,
+        ),
+        ThirdPartyItem(
+            "Nuitka（Python → C 编译，供交叉编译）",
+            "4.1.1（仅 Android 打包用）",
+            "AGPL-3.0-or-later",
+            "© Kay Hayen and Nuitka contributors",
+            "https://nuitka.net/",
+            AGPL3_NOTICE,
+        ),
+        ThirdPartyItem(
+            "Jinja2（打包模板渲染）",
+            _resolve_version("jinja2", "3.1"),
+            "BSD-3-Clause",
+            "© 2007 Pallets",
+            "https://palletsprojects.com/p/jinja/",
+            BSD3_LICENSE,
+        ),
+        ThirdPartyItem(
+            "packaging（版本解析）",
+            _resolve_version("packaging", "24.1"),
+            "Apache-2.0 或 BSD-2-Clause（双许可，任选其一）",
+            "© Donald Stufft and individual contributors",
+            "https://github.com/pypa/packaging",
+            APACHE20_NOTICE,
+        ),
+        ThirdPartyItem(
+            "pkginfo（包元数据查询）",
+            _resolve_version("pkginfo", "1.13"),
+            "MIT",
+            "© 2009-2024 Agendaless Consulting and Contributors",
+            "https://github.com/pypa/pkginfo",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "tqdm（进度显示）",
+            _resolve_version("tqdm", "4.70"),
+            "MPL-2.0 AND MIT",
+            "© 2013-2026 tqdm developers",
+            "https://tqdm.github.io/",
+            MPL2_NOTICE,
+        ),
+        ThirdPartyItem(
+            "Android SDK（cmdline-tools / build-tools / platform）",
+            "API 35 / build-tools（仅 Android 打包用）",
+            "Apache-2.0",
+            "© Google LLC",
+            "https://developer.android.com/studio",
+            ANDROID_SDK_NOTICE,
+        ),
+        ThirdPartyItem(
+            "Android NDK（r27c）",
+            "27.2.12479018（仅 Android 打包用）",
+            "Android NDK License Agreement（专有）",
+            "© Google LLC",
+            "https://developer.android.com/ndk",
+            ANDROID_NDK_NOTICE,
         ),
         ThirdPartyItem(
             "MiSans 字体",
