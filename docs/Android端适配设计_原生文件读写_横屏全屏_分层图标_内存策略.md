@@ -427,6 +427,67 @@ mangaproof/ui/main_window.py                                       ← 两处调
 | 桌面零改动 | 门面分流单测 + 全量回归（`QFileDialog` 分支逐项对照） | ✅ 201 项全绿 |
 | 真机：选择器可用、路径正确、不卡死 | `adb logcat -s MangaProofPicker`（含 `SAF authority=… documentId=…` 与最终 `realPath`） | ⏳ 待 CI 出包后复测 |
 
+### 2.12 【已实现】release 包必须显式 `extractNativeLibs="true"`（否则 so 不被解压）
+
+> **现象（真机实测）**：APK 内 `lib/<abi>/` 的 so **是全的**，但**安装后没有解压出来**；
+> 同一份代码的 **debug 构建正常**。失败表现是启动时 `dlopen failed` / `import PySide6.*` 失败。
+
+#### （1）机制
+
+`android:extractNativeLibs` 决定**安装时是否把 APK 内 `lib/<abi>/*.so` 解压到**
+`/data/app/<pkg>/lib/<abi>/`：
+
+| 取值 | 安装后形态 | 对加载方式的影响 |
+|------|-----------|------------------|
+| `true` | 解压落盘，`ApplicationInfo.nativeLibraryDir` 真实存在 | `System.load("绝对路径")` 与 `System.loadLibrary("名字")` 都可用 |
+| `false`（AGP 现代默认） | **不解压**，so 以「未压缩 + 页对齐」留在 APK 内 | 只能靠 `System.loadLibrary`/链接器命名空间从 APK 内映射 |
+
+而 **p4a 的 Qt 清单模板把这一行注释掉了**（`AndroidManifest.tmpl.xml`）：
+
+```xml
+<!--
+ android:extractNativeLibs="true" = needed for smaller apk size
+ android:requestLegacyExternalStorage="true"
+ android:allowNativeHeapPointerTagging="false"
+-->
+```
+
+于是取值落到 AGP 默认，**debug 与 release 的实际行为不一致** —— 这就是"debug 包没问题、
+release 包装完 so 没解压"的来源。
+
+#### （2）为什么"不解压"对我们必然致命
+
+p4a 渲染的 `libs.tmpl.xml` 里，`load_local_libs` 同时列出了两种命名：
+
+```xml
+<item>{{arch}};libshiboken6.abi3.so</item>
+<item>{{arch}};libpyside6.abi3.so</item>
+<item>{{arch}};Qt{{qt_lib}}.abi3.so</item>   <!-- 没有 lib 前缀 -->
+```
+
+`bundle_local_qt_libs=1` 时 QtLoader 倾向用 `m_extractedNativeLibsDir`（= `nativeLibraryDir`）
+拼**绝对路径** `System.load(...)`；一旦 so 没解压，该目录为空/不存在。而
+`QtCore.abi3.so` / `QtGui.abi3.so` / `QtWidgets.abi3.so` 这类**不带 `lib` 前缀**的名字，
+又天然不满足 `System.loadLibrary` 在 APK 内查找 `lib<name>.so` 的约定 → 两头都够不着。
+
+#### （3）修复与验证
+
+| 项 | 内容 |
+|----|------|
+| 修复 | `packaging/android/p4a_hook.py` 新增 `_patch_extract_native_libs()`：在 `<application>` 开始标签内注入 `android:extractNativeLibs="true"`；`before_apk_assemble` 阶段断言成功，否则**拒绝组装**（避免打出"装上也起不来"的包） |
+| 一个已踩的坑 | 判定"是否已注入"若用朴素的 `in text`，会被**模板注释里那句** `android:extractNativeLibs="true"` 骗过去 → 根本没注入（本地实测）。因此判定前先剥掉 `<!-- … -->`，只认真正的属性 |
+| 冲突值处理 | 若清单里已有该属性但不是 `true`（例如 `false`）→ **硬失败**而不是叠加第二个同名属性（aapt2 会因重复属性报错） |
+| Gradle 侧 | **无需改**：p4a 的 `build.tmpl.gradle` 已对 debug/release 统一设置 `packagingOptions { jniLibs { useLegacyPackaging = true } }`（所以差异不在 Gradle，而在清单属性）；自 AGP 7 起显式清单属性是最终裁决者 |
+| 代价（已接受） | APK 体积略增 + 安装后多占一份磁盘；换来"确定能加载"。与 Android 15+/Play 的「未压缩 + 16 KB 对齐」现代形态方向相反，但本项目只侧载、不上架，且 CI 里的 16 KB 校验仍为告警级 |
+
+**CI 新增产物校验**（`.github/workflows/android.yml` → `Verify APK native libs and manifest flag`）：
+APK 产出后按 ABI ①校验必需 so 清单（`QtCore/QtGui/QtWidgets.abi3.so`、`libpyside6/libshiboken6.abi3.so`、
+`libpython3.11.so`、`libc++_shared.so`、每个模块的 `libQt6Xxx_<abi>.so`、Qt 平台插件），
+②用 `aapt2 dump xmltree` 读**最终**清单确认 `extractNativeLibs=true`（`(type 0x12)0xffffffff`）。
+此前流水线只断言"APK 文件存在"，这两类问题（so 缺失 / 不解压）本可一路全绿到真机才暴露。
+
+> 说明：`libpybundle.so` 与 openssl 系列库名随 p4a 版本变化且本应用不直接依赖，校验里只做**提示**、不阻断，避免校验本身误报。
+
 ---
 
 ## 3. 强制横屏 + 全面屏全屏

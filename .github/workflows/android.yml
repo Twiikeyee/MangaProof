@@ -266,6 +266,97 @@ jobs:
           echo "APK=$APK" >> "$GITHUB_ENV"
           ls -la "$APK"
 
+      # 产物内容校验（本轮新增）：挡「so 缺失」与「release 不解压 so」这两类只在真机
+      # 才暴露、且流水线原本全绿的问题。
+      #   ① 必需 so 清单：缺一个 → 装上也起不来，必须当场失败；
+      #   ② extractNativeLibs=true：缺了它 release 包安装时**不会解压** so 到
+      #      /data/app/<pkg>/lib/<abi>/，而 p4a 的 libs.tmpl.xml 要求按绝对路径加载
+      #      QtCore/QtGui/QtWidgets.abi3.so（它们不带 lib 前缀，走不通 System.loadLibrary）
+      #      → 启动即 dlopen failed（真机实测：debug 包正常、release 包如此）。
+      - name: Verify APK native libs and manifest flag
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(cat "$RUNNER_TEMP/apk_path.txt")"
+          ABI="${{ matrix.arch == 'aarch64' && 'arm64-v8a' || 'x86_64' }}"
+          echo "校验 ABI=$ABI 的 APK：$APK"
+          LIST="$RUNNER_TEMP/apk_libs.txt"
+          unzip -l "$APK" | awk '{print $4}' \
+            | grep -E "^lib/$ABI/" | grep -v '/$' | sort > "$LIST" || true
+          echo "包内 lib/$ABI 文件数：$(wc -l < "$LIST")"
+          echo "--- abi3 / 关键库 ---"
+          grep -E "abi3|libpython|libc\+\+_shared|libQt6Core" "$LIST" || true
+
+          # 必需 so：全部来自我核对过的来源，避免"校验本身误报"卡死构建 ——
+          #   · Qt*/libpyside6/libshiboken6 的 abi3：PySide6 wheel 顶层 + deploy 工具
+          #     的 PySideRecipe.build_arch() 无条件拷贝；
+          #   · libpython3.11.so：python3 recipe（我们钉 3.11.5，与 Qt wheel 的 cp311 匹配）；
+          #   · libc++_shared.so：PySideRecipe.build_arch() 从 NDK sysroot 拷贝；
+          #   · libQt6Core/Gui/Widgets_<abi>.so：Qt wheel 的 PySide6/Qt/lib；
+          #   · libplugins_platforms_qtforandroid_<abi>.so：Qt wheel 的平台插件，
+          #     CI 的 --load-local-libs 里已包含（缺了 Qt 起不来）。
+          REQUIRED=(
+            "lib/$ABI/QtCore.abi3.so"
+            "lib/$ABI/QtGui.abi3.so"
+            "lib/$ABI/QtWidgets.abi3.so"
+            "lib/$ABI/libpyside6.abi3.so"
+            "lib/$ABI/libshiboken6.abi3.so"
+            "lib/$ABI/libpython3.11.so"
+            "lib/$ABI/libc++_shared.so"
+          )
+          MISSING=()
+          for f in "${REQUIRED[@]}"; do
+            grep -qxF "$f" "$LIST" || MISSING+=("$f")
+          done
+          # 每个 Qt 模块都要有对应的 libQt6Xxx_<abi>.so（漏了就说明 recipe 拷贝不完整）
+          for m in Core Gui Widgets; do
+            grep -qE "^lib/$ABI/libQt6${m}_${ABI}\.so$" "$LIST" \
+              || MISSING+=("lib/$ABI/libQt6${m}_${ABI}.so")
+          done
+          # Qt Android 平台插件（没有它 Qt 起不来）
+          grep -qE "^lib/$ABI/libplugins_platforms_qtforandroid_${ABI}\.so$" "$LIST" \
+            || MISSING+=("lib/$ABI/libplugins_platforms_qtforandroid_${ABI}.so")
+
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            for f in "${MISSING[@]}"; do echo "::error::APK 内缺少必需库：$f"; done
+            exit 1
+          fi
+          echo "✅ 必需 so 齐全（共 $(wc -l < "$LIST") 个）"
+
+          # 附加提示（不阻断）：binder 库名与 openssl 的具体命名随 p4a 版本变化，
+          # 仅记录在案便于排查，不作为失败条件。
+          grep -qE "^lib/$ABI/libpybundle\.so$" "$LIST" \
+            || echo "::warning::未见 libpybundle.so（p4a 版本差异？仅提示）"
+          grep -qE "^lib/$ABI/lib(crypto|ssl)[^/]*\.so$" "$LIST" \
+            || echo "::warning::未见 openssl 系列库（本应用不依赖，仅提示）"
+
+          # ② 清单属性校验：用 build-tools 的 aapt2 读最终清单
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)"
+          AAPT2="$BT/aapt2"
+          if [ -x "$AAPT2" ]; then
+            MAN="$RUNNER_TEMP/manifest_dump.txt"
+            "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" > "$MAN"
+            if grep -q "extractNativeLibs" "$MAN"; then
+              echo "--- extractNativeLibs（最终清单）---"
+              grep -A 3 "extractNativeLibs" "$MAN" | head -8
+              # aapt2 xmltree 里布尔 true 打印为 (type 0x12)0xffffffff
+              if grep -A 3 "extractNativeLibs" "$MAN" | grep -q "0xffffffff"; then
+                echo "✅ extractNativeLibs=true（安装时会解压 so）"
+              else
+                echo "::error::extractNativeLibs 不是 true → release 包不会解压 so，PySide6 的 abi3 模块加载不到"
+                exit 1
+              fi
+            else
+              echo "::error::最终清单里没有 extractNativeLibs 属性（p4a hook 的注入没生效？）"
+              exit 1
+            fi
+            # 入口 Activity 也顺手确认（hook 若失效，SAF 选择器会收不到结果）
+            grep -q "com.mangaproof.picker.PickerActivity" "$MAN" \
+              || echo "::warning::最终清单里未见 PickerActivity（选择器可能收不到结果）"
+          else
+            echo "::warning::找不到 aapt2（$AAPT2），跳过清单属性校验"
+          fi
+
       # 16 KB page size（Android 15+ / Play 要求）：先只告警，不阻断
       - name: Check 16 KB page alignment (advisory)
         continue-on-error: true

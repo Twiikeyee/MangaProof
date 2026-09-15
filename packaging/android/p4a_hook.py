@@ -55,6 +55,7 @@ p4a 的 Qt 模板把入口写成 `org.qtproject.qt.android.bindings.QtActivity`�
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -76,6 +77,9 @@ QT_TEMPLATE_ACTIVITY = "org.qtproject.qt.android.bindings.QtActivity"
 #: 我们的入口 Activity（继承上面那个，只为截获自己的 onActivityResult）
 PICKER_ACTIVITY = "com.mangaproof.picker.PickerActivity"
 
+#: 必须显式打开的清单属性（详见 `_patch_extract_native_libs` 的说明）
+EXTRACT_NATIVE_LIBS_ATTR = 'android:extractNativeLibs="true"'
+
 _PROVIDER_XML = (
     "\n        <!-- MangaProof: 在 Activity 之前把 QT_ANDROID_DISABLE_ACCESSIBILITY=1"
     " 与 MANGAPROOF_SW_DP（最小宽度 dp，供界面缩放按机型分档）写入进程环境"
@@ -86,7 +90,12 @@ _PROVIDER_XML = (
 )
 
 #: before_apk_assemble 时必须已经注入成功
-_state = {"java_copied": False, "manifest_patched": False, "activity_swapped": False}
+_state = {
+    "java_copied": False,
+    "manifest_patched": False,
+    "activity_swapped": False,
+    "extract_native_libs": False,
+}
 
 
 def _log(message: str) -> None:
@@ -122,8 +131,77 @@ def _install_java(dist_dir: Path) -> None:
         _state["java_copied"] = True
 
 
+def _find_application_start_tag(text: str) -> re.Match[str] | None:
+    """定位 `<application …>` 开始标签。
+
+    只匹配**真正的标签**，不匹配 `<!-- … -->` 注释里的同名文字——p4a 的 Qt 模板
+    注释里就写着 `android:extractNativeLibs="true" = needed for smaller apk size`，
+    若用朴素的 `in text` 判断会被它骗过去（本地实测踩过）。
+    """
+    scrubbed = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    return re.search(r"<application\b[^>]*>", scrubbed)
+
+
+def _patch_extract_native_libs(text: str) -> tuple[str, bool]:
+    """给 `<application>` 注入 `android:extractNativeLibs="true"`。
+
+    **为什么必须显式打开**（真机实测：debug 包能装能用、release 包 so 不会被解压）
+    -------------------------------------------------------------------------
+    `android:extractNativeLibs` 决定**安装时是否把 APK 内 `lib/<abi>/*.so`
+    解压到** `/data/app/<pkg>/lib/<abi>/`：
+
+    - `true`：安装器解压落盘 → `ApplicationInfo.nativeLibraryDir`（= Qt 的
+      `m_extractedNativeLibsDir`）真实存在，`System.load("绝对路径")` 可用；
+    - `false`（AGP 的现代默认）：**不解压**，so 以「未压缩 + 页对齐」形式留在
+      APK 内，只能靠 `System.loadLibrary`/链接器命名空间从 APK 里映射。
+
+    p4a 的 Qt 清单模板里这一行是**被注释掉的**（`AndroidManifest.tmpl.xml` 中
+    `<!-- android:extractNativeLibs="true" = needed for smaller apk size ... -->`），
+    于是取值落到 AGP 默认，而 release 与 debug 的实际行为并不一致 —— 这正是
+    "debug 构建没问题、release 装完 so 没解压出来"的原因。
+
+    而 p4a 渲染的 `libs.tmpl.xml` 明确要求按**绝对路径**加载这些库：
+    `load_local_libs` 里既有 `libshiboken6.abi3.so` / `libpyside6.abi3.so`，
+    也有**不带 lib 前缀**的 `Qt{{qt_lib}}.abi3.so`（即 `QtCore.abi3.so` /
+    `QtGui.abi3.so` / `QtWidgets.abi3.so`）。后者天然不符合 `System.loadLibrary`
+    在 APK 内查找 `lib<name>.so` 的命名约定 → 不解压时必然 `dlopen failed`。
+
+    因此这里显式注入 `true`，让 release 与**已被真机验证可用**的 debug 行为对齐。
+
+    Gradle 侧不需要改：p4a 的 `build.tmpl.gradle` 已对 debug/release 统一设置了
+    `packagingOptions { jniLibs { useLegacyPackaging = true } }`；而自 AGP 7 起，
+    清单属性才是最终裁决者（显式设置会覆盖 `useLegacyPackaging` 推导出的默认值）。
+
+    代价（已知并接受）：APK 体积略增 + 安装后多占一份磁盘；换来的是"确定能加载"。
+    """
+    # 真实属性（排除注释）视图：用于判断"是不是已经设过"
+    scrubbed = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    existing = re.search(r'android:extractNativeLibs\s*=\s*"([^"]*)"', scrubbed)
+    if existing is not None:
+        value = existing.group(1).strip().lower()
+        if value == "true":
+            _log("清单已包含 extractNativeLibs=true，跳过注入")
+            return text, True
+        raise RuntimeError(
+            f'[mangaproof-hook] 清单里 extractNativeLibs="{existing.group(1)}"（非 true）：'
+            "release 包会不解压 so → PySide6 的 abi3 模块加载不到；"
+            "同名属性重复注入会让 aapt2 直接报错，因此这里硬失败而不是静默叠加"
+        )
+
+    match = _find_application_start_tag(text)
+    if match is None:
+        raise RuntimeError("[mangaproof-hook] 清单里找不到 <application …> 开始标签")
+    tag = match.group(0)
+    injected = tag[:-1] + " " + EXTRACT_NATIVE_LIBS_ATTR + ">"
+    text = text[:match.start()] + injected + text[match.end():]
+    if EXTRACT_NATIVE_LIBS_ATTR not in text:
+        raise RuntimeError("[mangaproof-hook] extractNativeLibs 注入后校验失败")
+    _log('已在 <application> 注入 android:extractNativeLibs="true"（保证 so 被解压）')
+    return text, True
+
+
 def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
-    """注入 provider 声明，并把入口 Activity 换成 PickerActivity。"""
+    """注入 provider 声明、入口 Activity，并打开 extractNativeLibs。"""
     manifest = dist_dir / "src" / "main" / "AndroidManifest.xml"
     if not manifest.is_file():
         if required:
@@ -166,11 +244,15 @@ def _patch_manifest(dist_dir: Path, *, required: bool) -> None:
         if PICKER_ACTIVITY not in text:
             raise RuntimeError("[mangaproof-hook] 入口 Activity 替换后校验失败")
 
+    # 3) extractNativeLibs=true（否则 release 包不解压 so，PySide 的 abi3 模块加载不到）
+    text, extract_ok = _patch_extract_native_libs(text)
+
     if text != original:
         manifest.write_text(text, encoding="utf-8")
     _state["manifest_patched"] = True
     _state["activity_swapped"] = True
-    _log(f"清单已就绪：provider 注入 + 入口 Activity = {PICKER_ACTIVITY}")
+    _state["extract_native_libs"] = extract_ok
+    _log(f"清单已就绪：provider + 入口 Activity = {PICKER_ACTIVITY} + extractNativeLibs=true")
 
 
 def _apply(*, require_manifest: bool) -> None:
@@ -195,5 +277,10 @@ def before_apk_assemble(toolchain=None) -> None:   # noqa: ARG001
         raise RuntimeError("[mangaproof-hook] 无障碍开关注入未完成，拒绝继续组装 APK")
     if not _state["activity_swapped"]:
         raise RuntimeError("[mangaproof-hook] 入口 Activity 未替换成 PickerActivity，拒绝继续组装 APK")
+    if not _state["extract_native_libs"]:
+        raise RuntimeError(
+            "[mangaproof-hook] extractNativeLibs=true 未注入，拒绝继续组装 APK"
+            "（否则 release 包安装后 so 不会被解压，PySide6 的 abi3 模块加载不到）"
+        )
     if not _state["java_copied"]:
         raise RuntimeError("[mangaproof-hook] Java 源未安装，拒绝继续组装 APK")
