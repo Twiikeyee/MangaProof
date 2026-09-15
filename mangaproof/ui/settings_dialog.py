@@ -56,7 +56,10 @@ from mangaproof.config.settings import (
     DISPLAY_RATIOS,
     JPEG_QUALITY_CHOICES,
     Settings,
+    android_ui_scaling,
+    default_ui_scale,
     shortcut_conflicts,
+    ui_scale_choices,
 )
 from mangaproof.ui.theme import COLOR_ACCENT, COLOR_BG_WIDGET, COLOR_TEXT, COLOR_WARN
 from mangaproof.ui.widgets import NoWheelComboBox
@@ -309,6 +312,30 @@ class SettingsDialog(QDialog):
             "切换图层、翻页、改设置均即时生效。"
         )
         display_form.addRow(self.layer_outline_check)
+
+        # 界面缩放：**仅 Android 显示**。桌面端缩放恒为 1.0（由
+        # config/settings.resolve_ui_scale 的平台判定硬保证），因此桌面既不
+        # 显示这一项、也不读取设置文件里的值，避免误改桌面显示。
+        self.ui_scale_combo: Optional[NoWheelComboBox] = None
+        if android_ui_scaling():
+            self.ui_scale_combo = NoWheelComboBox()
+            for scale in ui_scale_choices():
+                self.ui_scale_combo.addItem(f"{int(round(scale * 100))}%", scale)
+            idx = self.ui_scale_combo.findData(settings.ui_scale)
+            if idx < 0:   # 兼容手工写入的非标准档位
+                self.ui_scale_combo.addItem(
+                    f"{int(round(settings.ui_scale * 100))}%", settings.ui_scale
+                )
+                idx = self.ui_scale_combo.count() - 1
+            self.ui_scale_combo.setCurrentIndex(max(0, idx))
+            self.ui_scale_combo.setToolTip(
+                "整个界面（含对话框）的显示缩放，安卓端专有；桌面端恒为 100%。\n"
+                "改动需要**重启应用**后完全生效——Qt 只在启动时读取一次缩放。\n"
+                "提示：50% 时文字会非常小；折叠屏内屏上想让顶部工具栏整行不折叠，\n"
+                "经验值是 75% 及以下（与设备宽度有关）。"
+            )
+            display_form.addRow("界面缩放（重启后生效）：", self.ui_scale_combo)
+
         body_layout.addWidget(display_group)
 
         # ---- 自动对比 ----
@@ -515,6 +542,10 @@ class SettingsDialog(QDialog):
         self.report_quality_combo.setCurrentIndex(max(0, idx))
         self.report_hide_clean_check.setChecked(True)
         self._update_report_quality_enabled()
+        # 界面缩放（仅 Android 存在该控件）：回到平台默认（Android 75% / 桌面 100%）
+        if self.ui_scale_combo is not None:
+            idx = self.ui_scale_combo.findData(default_ui_scale())
+            self.ui_scale_combo.setCurrentIndex(max(0, idx))
         # 快捷键同样复位：记录"应用默认"意图，OK 时写回默认值
         self._kb_dialog = None
         self._kb_reset_defaults = True
@@ -534,6 +565,8 @@ class SettingsDialog(QDialog):
         settings.report_hide_clean_files = self.report_hide_clean_check.isChecked()
         settings.hide_console = self.console_check.isChecked()
         settings.memory_policy = str(self.memory_policy_combo.currentData())
+        if self.ui_scale_combo is not None:   # 仅 Android 存在
+            settings.ui_scale = float(self.ui_scale_combo.currentData())
 
         if self._kb_reset_defaults:
             settings.keybindings = dict(DEFAULT_KEYBINDINGS)

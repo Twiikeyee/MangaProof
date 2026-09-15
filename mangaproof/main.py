@@ -1,6 +1,7 @@
 """MangaProof 程序入口。
 
-启动顺序：日志 → QApplication → 暗色主题 → 设置 → 主窗口。
+启动顺序：日志 → Android 界面缩放（写 QT_SCALE_FACTOR，需早于 QApplication）
+→ QApplication → Android 菜单栏属性（早于任何 QMenuBar）→ 暗色主题 → 设置 → 主窗口。
 程序目录判定统一走 config.paths.get_app_dir()（需求 §56、§57）。
 """
 
@@ -46,6 +47,38 @@ def apply_app_icon(app, icon_path: Path | None = None) -> Path | None:
     return None
 
 
+def configure_android_menu_bar() -> bool:
+    """Android 上禁用 Qt 的"原生菜单栏"路径，让 文件/设置/帮助 回到窗口内。
+
+    为什么需要（源码级）：Android 平台主题实现了
+    `QAndroidPlatformTheme::createPlatformMenuBar()`，Qt 因此认为该平台"有原生
+    菜单栏"，在 `QMenuBarPrivate::init()` 里直接 `q->hide()`，并把菜单交给 Android
+    的 options menu（ActionBar 溢出菜单）；而本项目打包出的 Activity 主题是
+    p4a 的 `Theme.NoTitleBar.Fullscreen` + `@style/KivySupportCutout`
+    （`windowNoTitle=true`、沉浸式全屏）→ `getActionBar()` 为 null，
+    `QtActivityDelegate::setActionBarVisibility()` 直接返回 → 菜单既不在窗口内，
+    也没有系统入口，用户看不到 文件/设置/帮助。
+
+    用法要点：
+    - 必须在**任何 QMenuBar 创建之前**设置该属性（`QMenuBarPrivate::init()` 里判定）；
+    - 用属性而不是"事后 `menuBar().setNativeMenuBar(False)`"：后者只删菜单栏、
+      不清理各顶层菜单已经绑定的原生子菜单对象（`QMenuBarPrivate::getPlatformMenu()`），
+      存在悬空引用隐患；
+    - 桌面端不设置 → macOS 的系统菜单栏行为保持不变。
+
+    返回是否已设置（供日志/测试使用）。
+    """
+    from mangaproof.utils.platform import is_android_strict
+
+    if not is_android_strict():
+        return False
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeMenuBar)
+    return True
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
 
@@ -60,6 +93,22 @@ def main(argv=None) -> int:
     log = get_logger("main")
     log.info("%s v%s 启动，程序目录：%s", APP_NAME, __version__, app_dir)
 
+    # ---- Android 专有界面缩放（必须在创建 QApplication 之前）----
+    # Qt 只在启动时读一次 QT_SCALE_FACTOR（QHighDpiScaling 在 QGuiApplication
+    # 初始化时取值），因此这里先算好并写入环境变量；桌面端由平台判定硬保证
+    # 恒为 1.0（Windows/macOS 是编译期平台类型、Linux 为 Unknown，且不看任何
+    # 环境变量），所以桌面显示逻辑不受影响，详见 config/settings.py。
+    from mangaproof.config.settings import apply_startup_ui_scale
+    from mangaproof.utils.platform import is_android_strict, qt_os_type_name
+
+    ui_scale = apply_startup_ui_scale(app_dir)
+    log.info(
+        "界面缩放 = %.2f（Qt 平台类型：%s，Android 专有判定：%s）",
+        ui_scale,
+        qt_os_type_name(),
+        "是" if is_android_strict() else "否",
+    )
+
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
@@ -67,6 +116,10 @@ def main(argv=None) -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setOrganizationName("MangaProof")
+
+    # ---- 找回「文件 / 设置 / 帮助」（Android 专有）----
+    # 必须在任何 QMenuBar 创建之前调用（QMenuBarPrivate::init() 里判定该属性）。
+    configure_android_menu_bar()
 
     from mangaproof.config.settings import SettingsManager
     from mangaproof.console import apply_console_visibility

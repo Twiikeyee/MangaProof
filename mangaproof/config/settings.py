@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from mangaproof.config import paths
+from mangaproof.utils.platform import is_android_strict
 
 log = logging.getLogger("mangaproof.config.settings")
 
@@ -221,6 +223,127 @@ DEFAULT_JPEG_QUALITY = 80
 MEMORY_POLICIES: tuple[str, ...] = ("relaxed", "balanced", "aggressive")
 DEFAULT_MEMORY_POLICY = "balanced"
 
+# ---------------------------------------------------------------------------
+# 界面缩放（**Android 专有**）
+# ---------------------------------------------------------------------------
+# 背景：Qt 在 Android 上 1 逻辑像素 == 1 dp（设备像素比 = 屏幕密度 / 160），
+# 而本软件的界面是按 1440×900 桌面窗口设计的；平板上逻辑空间只有
+# 1097×617 ~ 1280×800 dp，同样的控件占比更大、顶部整行工具栏（实测 1396 dp）
+# 会被折进 "»" 扩展按钮。缩放的机制与取舍见
+# docs/Android端界面适配_缩放与菜单栏.md。
+#
+# 硬约束：桌面端（Windows / Linux / macOS）**永远**是 1.0——由
+# utils/platform.is_android_strict() 的编译期平台判定保证，与设置文件内容、
+# 环境变量均无关。
+DEFAULT_UI_SCALE = 1.0
+# Android 默认 0.75：在 1097 dp 宽设备上"整行工具栏不折叠"的最大 5% 档
+# （0.80 时工具栏逻辑宽约 1396 > 1097/0.8 ≈ 1371，会折叠）。
+ANDROID_DEFAULT_UI_SCALE = 0.75
+UI_SCALE_MIN = 0.5
+UI_SCALE_MAX = 1.5
+UI_SCALE_STEP = 0.05
+
+#: 本次启动实际生效的缩放（由 apply_startup_ui_scale 写入；默认 1.0）
+_effective_ui_scale: float | None = None
+
+
+def ui_scale_choices() -> list[float]:
+    """设置页可选缩放档位：50%～150%，步进 5%（共 21 档）。"""
+    count = round((UI_SCALE_MAX - UI_SCALE_MIN) / UI_SCALE_STEP)
+    return [round(UI_SCALE_MIN + i * UI_SCALE_STEP, 2) for i in range(count + 1)]
+
+
+def android_ui_scaling() -> bool:
+    """界面缩放是否适用于当前平台（**仅 Android**）。
+
+    界面缩放的唯一判定入口：设置页是否显示该选项、默认值、启动时是否写入
+    QT_SCALE_FACTOR、改完是否提示重启，全部走这里，避免多处各自判断平台
+    （判定本身见 utils/platform.is_android_strict 的编译期说明）。
+    """
+    return is_android_strict()
+
+
+def default_ui_scale() -> float:
+    """当前平台的默认缩放：Android 0.75，桌面 1.0。"""
+    return ANDROID_DEFAULT_UI_SCALE if android_ui_scaling() else DEFAULT_UI_SCALE
+
+
+def clamp_ui_scale(value: Any, *, default: float = DEFAULT_UI_SCALE) -> float:
+    """把界面缩放规整到合法档位。
+
+    非法（非数字 / NaN）或越界（不在 [0.5, 1.5]）→ 返回 default；
+    合法值对齐到 5% 步进。与 layer_display_ratio 等设置项一致：越界即回默认，
+    不做"就近夹取"，避免把明显损坏的配置静默改成另一个意外值。
+    """
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return default
+    if scale != scale:  # NaN
+        return default
+    if not (UI_SCALE_MIN <= scale <= UI_SCALE_MAX):
+        return default
+    return round(round(scale / UI_SCALE_STEP) * UI_SCALE_STEP, 2)
+
+
+def _read_raw_settings(path: Path) -> dict[str, Any]:
+    """容错读取 settings.json 原始字典（失败返回 {}）。
+
+    仅供启动期"读一个键"使用：此时 SettingsManager 还没构造（必须在
+    QApplication 之前拿到缩放），所以这里不复用它的解析逻辑。
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def resolve_ui_scale(app_dir: Path | None = None) -> float:
+    """决定本次启动的界面缩放。
+
+    **桌面端直接返回 1.0**（连设置文件都不读）：即使 settings.json 里写着 0.5、
+    即使环境里存在 ANDROID_ROOT 之类的变量，也不缩放——见 utils/platform.py。
+    Android：读 settings.json 的 ui_scale；缺键 → 0.75；非法/越界 → 0.75。
+    """
+    if not android_ui_scaling():
+        return DEFAULT_UI_SCALE
+    directory = Path(app_dir) if app_dir is not None else paths.get_app_dir()
+    raw = _read_raw_settings(directory / "settings.json")
+    if "ui_scale" not in raw:
+        return ANDROID_DEFAULT_UI_SCALE
+    return clamp_ui_scale(raw.get("ui_scale"), default=ANDROID_DEFAULT_UI_SCALE)
+
+
+def apply_startup_ui_scale(app_dir: Path | None = None) -> float:
+    """在创建 QApplication **之前**调用：把缩放交给 Qt（Android 专有）。
+
+    - Qt 只在启动时读一次 `QT_SCALE_FACTOR`（QHighDpiScaling 在 QGuiApplication
+      初始化时取值），所以必须在此刻写入，改设置后需重启应用生效；
+    - 桌面端不写任何环境变量（resolve_ui_scale 恒为 1.0）；
+    - 用 `setdefault`：**绝不覆盖**用户/系统自己设置的 `QT_SCALE_FACTOR`；
+    - 返回值与 effective_ui_scale() 记录的是"实际生效值"（含环境变量优先的情况）。
+    """
+    global _effective_ui_scale
+    scale = resolve_ui_scale(app_dir)
+    if scale != DEFAULT_UI_SCALE:
+        os.environ.setdefault("QT_SCALE_FACTOR", f"{scale:g}")
+
+    env_value = os.environ.get("QT_SCALE_FACTOR")
+    if env_value:
+        try:
+            scale = float(env_value)
+        except ValueError:
+            pass
+    _effective_ui_scale = scale
+    return scale
+
+
+def effective_ui_scale() -> float:
+    """本次启动实际生效的界面缩放（未调用 apply_startup_ui_scale 时为 1.0）。"""
+    return DEFAULT_UI_SCALE if _effective_ui_scale is None else _effective_ui_scale
+
 
 @dataclass
 class Settings:
@@ -251,6 +374,8 @@ class Settings:
     custom_comment_key: str = "Ctrl+Return"
     # 内存回收策略：aggressive（激进）/ balanced（平衡）/ relaxed（宽松）
     memory_policy: str = DEFAULT_MEMORY_POLICY
+    # 界面缩放（**Android 专有**，桌面端恒 1.0；改后需重启应用生效）
+    ui_scale: float = DEFAULT_UI_SCALE
 
     # -- 派生查询 ----------------------------------------------------------
 
@@ -375,13 +500,24 @@ class SettingsManager:
     def _load(self) -> Settings:
         try:
             if not self._path.exists():
-                return Settings()
+                return self._default_settings()
             with open(self._path, "r", encoding="utf-8") as f:
                 raw: dict[str, Any] = json.load(f)
             return self._from_dict(raw)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             log.warning("读取 settings.json 失败，使用默认设置：%s", exc)
-            return Settings()
+            return self._default_settings()
+
+    @staticmethod
+    def _default_settings() -> Settings:
+        """无配置文件（或文件损坏）时的默认设置。
+
+        界面缩放取**平台默认**（Android 0.75 / 桌面 1.0），与 resolve_ui_scale()
+        保持一致——这样设置页显示的档位就是本次启动实际生效的档位。
+        """
+        s = Settings()
+        s.ui_scale = default_ui_scale()
+        return s
 
     def _from_dict(self, raw: dict[str, Any]) -> Settings:
         s = Settings()
@@ -483,6 +619,10 @@ class SettingsManager:
         policy = raw.get("memory_policy", DEFAULT_MEMORY_POLICY)
         s.memory_policy = policy if policy in MEMORY_POLICIES else DEFAULT_MEMORY_POLICY
 
+        # 界面缩放（Android 专有）：缺键时取平台默认（Android 0.75 / 桌面 1.0），
+        # 与实际生效值保持一致；桌面端该值不会被用于缩放（见 resolve_ui_scale）。
+        s.ui_scale = clamp_ui_scale(raw.get("ui_scale"), default=default_ui_scale())
+
         return s
 
     def save(self) -> None:
@@ -509,6 +649,7 @@ class SettingsManager:
                     "issue_types": self.settings.issue_types,
                     "issue_types_version": ISSUE_TYPES_VERSION,
                     "memory_policy": self.settings.memory_policy,
+                    "ui_scale": self.settings.ui_scale,
                 }
                 tmp = self._path.with_suffix(".json.tmp")
                 with open(tmp, "w", encoding="utf-8") as f:

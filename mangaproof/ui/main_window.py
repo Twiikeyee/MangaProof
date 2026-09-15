@@ -36,6 +36,8 @@ from mangaproof.config.settings import (
     DISPLAY_RATIOS,
     Settings,
     SettingsManager,
+    android_ui_scaling,
+    effective_ui_scale,
     normalize_key,
     shortcut_conflicts,
 )
@@ -2334,6 +2336,27 @@ class MainWindow(QMainWindow):
                 args=(self.settings,),
                 daemon=True,
             ).start()
+            self._notify_ui_scale_restart_needed()
+
+    def _notify_ui_scale_restart_needed(self) -> None:
+        """界面缩放（Android 专有）改动后提示需重启应用。
+
+        Qt 只在启动时读一次 QT_SCALE_FACTOR（见 config/settings.apply_startup_ui_scale），
+        所以本次会话改不了，必须重启才完全生效——这里如实告知，不做"假装生效"。
+        桌面端恒为 1.0，不会进入提示分支。
+        """
+        if not android_ui_scaling():
+            return
+        if abs(self.settings.ui_scale - effective_ui_scale()) < 1e-9:
+            return
+        QMessageBox.information(
+            self,
+            "界面缩放",
+            "界面缩放已保存。\n\n"
+            f"当前显示仍为 {int(round(effective_ui_scale() * 100))}%，"
+            f"新设置的 {int(round(self.settings.ui_scale * 100))}% 需要"
+            "**重启应用**后完全生效。",
+        )
 
     def _on_ratio_changed(self, index: int) -> None:
         ratio = float(self.ratio_combo.itemData(index))
