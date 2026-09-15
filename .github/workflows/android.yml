@@ -1,21 +1,25 @@
 name: android
 
-# 只出 APK（不上 Play，不做 AAB）。首次迭代仅支持手动触发，
-# 等流水线稳定后再考虑加 `push: tags: ["v*"]`（注意与 build.yml 的 release 作业
-# 共用同一个 tag，届时要把 APK 归并到同一个 Release，避免两个作业抢占同名 Release）。
+# 只出 APK（不上 Play，不做 AAB）。
+#
+# 触发方式：
+#   · push 到 master     → 自动构建（release，配了 keystore secrets 就签名）
+#   · workflow_dispatch  → 手动构建（可选 release/debug、是否签名）
+#
+# Qt bootstrap 一次只能处理一个 ABI，所以用 matrix **同时跑两个 ABI**：
+# arm64-v8a（aarch64，真机）与 x86_64（模拟器）；两个 APK 分别作为独立 artifact。
+# 备注：若将来要挂 tag 发布，注意与 build.yml 的 release 作业共用同一个 tag，
+# 需把 APK 归并到同一个 Release，避免两个作业抢占同名 Release。
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       mode:
-        description: "构建类型：debug（默认，可直接安装）/ release（release 变体，同样产出 APK）"
+        description: "构建类型：release（默认，签名后可直接分发）/ debug（便于排查）"
         type: choice
-        options: [debug, release]
-        default: debug
-      arch:
-        description: "目标 ABI（Qt bootstrap 一次只能一个 ABI）"
-        type: choice
-        options: [aarch64, x86_64]
-        default: aarch64
+        options: [release, debug]
+        default: release
       sign:
         description: "使用仓库 secrets 中的 keystore 签名"
         type: boolean
@@ -43,9 +47,14 @@ env:
 
 jobs:
   build-android:
-    name: android-${{ inputs.arch }}-${{ inputs.mode }}
+    name: android-${{ matrix.arch }}-${{ inputs.mode || 'release' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    # 两个 ABI 并行；一个失败不拖累另一个（两个 artifact 都要）
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -189,14 +198,14 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/qt-wheels
-          key: qt-android-wheels-${{ env.PYSIDE_VERSION }}-${{ inputs.arch }}
+          key: qt-android-wheels-${{ env.PYSIDE_VERSION }}-${{ matrix.arch }}
 
       - name: Download Qt Android wheels
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/qt-wheels" && cd "$RUNNER_TEMP/qt-wheels"
-          PS="pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ inputs.arch }}.whl"
-          SH="shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ inputs.arch }}.whl"
+          PS="pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ matrix.arch }}.whl"
+          SH="shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ matrix.arch }}.whl"
           [ -f "$PS" ] || curl -fL -o "$PS" "${QT_WHEEL_BASE}/pyside6/${PS}"
           [ -f "$SH" ] || curl -fL -o "$SH" "${QT_WHEEL_BASE}/shiboken6/${SH}"
           ls -la
@@ -209,10 +218,10 @@ jobs:
           source "$RUNNER_TEMP/android-venv/bin/activate"
           set -o pipefail
           python scripts/android/build_android.py \
-            --pyside-wheel   "$RUNNER_TEMP/qt-wheels/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ inputs.arch }}.whl" \
-            --shiboken-wheel "$RUNNER_TEMP/qt-wheels/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ inputs.arch }}.whl" \
+            --pyside-wheel   "$RUNNER_TEMP/qt-wheels/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ matrix.arch }}.whl" \
+            --shiboken-wheel "$RUNNER_TEMP/qt-wheels/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${{ matrix.arch }}.whl" \
             --ndk-path "$ANDROID_NDK_PATH" --sdk-path "$ANDROID_HOME" \
-            --name MangaProof --mode "${{ inputs.mode }}" --arch "${{ inputs.arch }}" \
+            --name MangaProof --mode "${{ inputs.mode || 'release' }}" --arch "${{ matrix.arch }}" \
             --apk-out "$RUNNER_TEMP/apk_path.txt" -v 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # 构建失败时把日志尾部转成 annotation + job summary：
@@ -268,8 +277,11 @@ jobs:
             echo "::warning::zipalign 16 KB 校验未通过（记录在案，暂不阻断构建）"
 
       # ---------- 签名 ----------
+      # push 触发时总是尝试签名；手动触发时看 sign 输入。
+      # 没配 keystore secrets（例如 fork）时只告警、跳过签名，产出未签名 APK，
+      # 不让整条流水线因为"没有 secret"而变红。
       - name: Sign APK
-        if: ${{ inputs.sign }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.sign }}
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -278,11 +290,14 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -e
-          [ -n "$KEYSTORE_B64" ] || { echo "::error::缺少 secret KEYSTORE_BASE64"; exit 1; }
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::未配置 KEYSTORE_BASE64，跳过签名（将产出未签名 APK，不能直接安装）"
+            exit 0
+          fi
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           KS="$RUNNER_TEMP/release.jks"
           echo "$KEYSTORE_B64" | base64 -d > "$KS"
-          OUT="$GITHUB_WORKSPACE/MangaProof-${APP_VERSION}-android-${{ inputs.arch }}.apk"
+          OUT="$GITHUB_WORKSPACE/MangaProof-${APP_VERSION}-android-${{ matrix.arch }}.apk"
           "$BT/zipalign" -p -f 4 "$APK" "$RUNNER_TEMP/aligned.apk"
           "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$KEY_ALIAS" \
             --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
@@ -296,16 +311,16 @@ jobs:
         shell: bash
         run: |
           if [ -z "${SIGNED_APK:-}" ]; then
-            OUT="$GITHUB_WORKSPACE/MangaProof-${APP_VERSION}-android-${{ inputs.arch }}-unsigned.apk"
+            OUT="$GITHUB_WORKSPACE/MangaProof-${APP_VERSION}-android-${{ matrix.arch }}-unsigned.apk"
             cp "$APK" "$OUT"
             echo "SIGNED_APK=$OUT" >> "$GITHUB_ENV"
-            echo "未签名（sign=false）：$OUT"
+            echo "未签名：$OUT"
           fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: MangaProof-${{ env.APP_VERSION }}-android-${{ inputs.arch }}
+          name: MangaProof-${{ env.APP_VERSION }}-android-${{ matrix.arch }}
           path: ${{ env.SIGNED_APK }}
           if-no-files-found: error
           retention-days: 30

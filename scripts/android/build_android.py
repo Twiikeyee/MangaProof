@@ -298,6 +298,11 @@ def patch_buildozer_config(*, requirements: list[str], icons: dict[str, str],
             put("app", "fullscreen", "1")                      # buildozer 默认 0
             put("app", "orientation", "landscape")             # buildozer 默认 portrait
             put("app", "android.manifest.orientation", "sensorLandscape")  # 允许左右横屏翻转
+            # 应用 ID = package.domain + "." + package.name（buildozer 1.5.0
+            # targets/android.py:1004-1007 的拼接规则）→ com.priloba.mangaproof。
+            # 不设 domain 时 PySide6 部署工具会写 org.<Title>（org.MangaProof），
+            # 所以这里必须显式覆盖。
+            put("app", "package.domain", "com.priloba")
             put("app", "package.name", "mangaproof")           # 包名小写惯例
             put("app", "version", version)
             put("app", "android.numeric_version", str(numeric_version(version)))

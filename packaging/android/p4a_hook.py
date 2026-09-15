@@ -39,7 +39,10 @@ JAVA_REL = Path("com/mangaproof/a11y/A11yEnvProvider.java")
 JAVA_SRC = REPO_ROOT / "packaging" / "android" / "java" / JAVA_REL
 
 PROVIDER_CLASS = "com.mangaproof.a11y.A11yEnvProvider"
-PROVIDER_AUTHORITY = "com.mangaproof.a11y.env"
+# 授权名必须**全局唯一**（同一设备同时装着旧包 org.MangaProof.mangaproof 与本包
+# com.priloba.mangaproof 时，若授权名相同会 INSTALL_FAILED_CONFLICTING_PROVIDER），
+# 所以跟随应用 ID 一起改。
+PROVIDER_AUTHORITY = "com.priloba.mangaproof.a11y.env"
 
 _PROVIDER_XML = (
     "\n        <!-- MangaProof: 在 Activity 之前把 QT_ANDROID_DISABLE_ACCESSIBILITY=1"

@@ -179,7 +179,7 @@ https://download.qt.io/official_releases/QtForPython/shiboken6/shiboken6-6.11.2-
 
 | 键 | 工具写入值 | 我们需要追加/修正 |
 |----|-----------|-------------------|
-| `title` / `package.name` / `package.domain` | `<name>` / `<name>` / `org.<name>` | 建议 `package.name` 改为小写（包名惯例） |
+| `title` / `package.name` / `package.domain` | `<name>` / `<name>` / `org.<name>` | 已定：`package.name` 小写、`package.domain` 显式设为 `com.priloba` → 应用 ID **`com.priloba.mangaproof`**（buildozer 按 `domain + "." + name` 拼接，见 `targets/android.py:1004-1007`；不显式设 domain 会得到 `org.MangaProof.mangaproof`） |
 | `requirements` | **`python3,shiboken6,PySide6`（写死）** | 必须注入 `numpy,Pillow,reportlab,attrs,typing-extensions,charset-normalizer,psd-tools`（+ 本地 recipe 名） |
 | `source.dir` / `source.include_exts` | `.` / `py,png,jpg,kv,atlas`（buildozer 1.5.0 默认）+ 工具追加 `qml,js` | 需加 **`ttf`**（MiSans 字体 `font/MiSans-Medium.ttf`）、`json`；否则字体不会进包 |
 | `source.exclude_dirs` | 默认注释掉 | **必须**排除 `.git,.venv,.uv-cache,deployment,tests,local_samples,logs,.pytest_cache,.benchmarks,packaging,README.assets,美术素材原文件` 等，否则包体会失控 |
@@ -424,7 +424,7 @@ if __name__ == "__main__":
 2. **构建环境与项目环境隔离**：Android 构建用 Python 3.11 的临时 venv（放 `$RUNNER_TEMP`，**必须在项目目录之外**）；项目自身的 `uv` 环境（3.12）完全不参与 Android 构建。
 3. **可复现**：wheel 版本、NDK 版本、Android API、p4a commit 全部显式钉住。
 4. **成功判据以产物为准**：因为工具会吞异常，必须检查 APK/AAB 文件存在 + 用 `apksigner verify` 校验。
-5. **与现有 `build.yml` 解耦**：新增独立 workflow（例如 `android.yml`），只在 `workflow_dispatch` / `v*` tag 时跑，避免拖慢桌面构建。
+5. **与现有 `build.yml` 解耦**：独立 workflow `android.yml`。现状（已落地）：**push 到 master 自动构建**（`release` + 签名）与 `workflow_dispatch` 手动构建，且用 matrix **同时构建 aarch64 与 x86_64 两个 ABI**（互不阻塞）。
 
 ### 5.2 Job 图
 
@@ -554,11 +554,17 @@ Play 要求（届时再核对当季政策）：AAB 格式、targetSdk 达标、*
 
 ### 5.6 发布
 
-- `workflow_dispatch` 手动触发 → 只上传 artifact（便于迭代调试）；
-- push `v*` tag → 构建 + 签名 + 上传 artifact + 追加到 Release（沿用现有 `gh release create` 风格，或 `softprops/action-gh-release@v3`）；
-- 产物命名建议：`MangaProof-<version>-android-arm64-v8a.apk`（与现有桌面命名风格 `MangaProof-<version>-<platform>` 对齐）。
+**现状（已落地）**：
+
+- **push 到 `master` → 自动构建**：两个 ABI（`aarch64` / `x86_64`）并行，`release` 模式，配置了 keystore secrets 就签名；产出的两个 APK 分别作为独立 artifact（`MangaProof-<version>-android-<abi>`）上传，保留 30 天；
+- `workflow_dispatch` 手动触发：可选 `release`/`debug` 与是否签名（未配 secrets 时只告警、跳过签名，产出 `-unsigned` APK，不让流水线变红）；
+- 尚未做（需要时再加）：push `v*` tag → 追加到 Release（沿用 `gh release create` / `softprops/action-gh-release@v3`，注意与 `build.yml` 的 release 作业共用 tag，别抢占同名 Release）；
+- 产物命名：`MangaProof-<version>-android-<abi>.apk`（与桌面 `MangaProof-<version>-<platform>` 风格对齐）。
 
 ### 5.7 完整 workflow 骨架（可直接演化为 `.github/workflows/android.yml`）
+
+> 注：实际落地的 `android.yml` 在此基础上改为 **push 到 master 自动触发**，并用 matrix
+> 同时构建 `aarch64` 与 `x86_64` 两个 ABI（Qt bootstrap 一次只能一个 ABI，因此按 ABI 拆 job）。
 
 > 标注：✅=已核实可用；🔶=需要实测/按当季政策调整；🚧=需要先创建包装脚本与 recipe 文件。
 
@@ -681,7 +687,7 @@ jobs:
 | 首次构建（冷缓存） | 40–90 分钟 | 含 NDK 下载（压缩包 634 MB，解压后 >2 GB）、cmdline-tools、目标 CPython 编译、numpy/Pillow 源码编译、Gradle 首次下载 |
 | 命中缓存后 | 20–40 分钟 | 主要剩 CPython/依赖重编译（p4a 构建目录缓存可以显著缩短） |
 | APK 体积 | 60–120 MB | PySide6 Qt 库（147 个 `.so`，仅实际用到的会被 copy）+ numpy + Pillow；单 ABI 比多 ABI 小一半 |
-| CI 配额 | 每次 1 个 runner 名额；建议只在 tag/手动触发 | 避免污染每次 push 的构建时间 |
+| CI 配额 | 每次运行占 **2 个 runner**（两个 ABI 并行，各约 30–60 分钟）；push 到 master 自动跑 | 若只想按需构建，可在 `push` 上加 `paths-ignore`（如 `docs/**`）或改回手动触发 |
 
 ### 5.9 仓库文件清单（✅ = 已落地 / 🚧 = 待落地）
 
@@ -690,7 +696,7 @@ jobs:
 | `scripts/android/analyze_lock_deps.py` | ✅ | 解析 `uv.lock` 输出运行时依赖闭包（§3.7）；`--fail-on-unknown` 作为 CI 卡口 |
 | `scripts/android/build_android.py` | ✅ | 包装脚本：预置 `pysidedeploy.spec` → 劫持 `BuildozerConfig` 注入 requirements/权限/横屏/图标/打包范围 → 调用官方工具 → **断言 APK 存在**（工具会吞异常） |
 | `packaging/android/recipes/{attrs,typing-extensions,charset-normalizer,psd-tools}/__init__.py` | ✅ | 4 个本地 p4a recipe（版本取自 `uv.lock`，URL 已逐个实测 HTTP 200） |
-| `.github/workflows/android.yml` | ✅ | 手动触发的 Android 构建（**按需求不做冒烟测试**）：依赖覆盖卡口 → 宿主 venv → Qt wheel → 构建 → 断言产物 → 16KB 告警 → 签名 → 上传 artifact |
+| `.github/workflows/android.yml` | ✅ | Android 构建（**按需求不做冒烟测试**）：push 到 master 自动 + 手动触发；matrix 并行 `aarch64`/`x86_64` 两个 ABI；流程＝依赖覆盖卡口 → 宿主 venv → Qt wheel → 构建 → 断言产物 → 16KB 告警 → 签名 → 上传 artifact |
 | `.gitignore` 增补 | ✅ | `pysidedeploy.spec`、`buildozer.spec`、`deployment/`、`*.apk`、`*.aab` |
 | `packaging/android/recipes/reportlab/__init__.py` | ✅ | **必须**覆盖：p4a 内置 recipe 的 hg 源已 403（§5.10 ③） |
 | `ico/android/res/mipmap-anydpi-v26/icon.xml` | ✅ | 自带自适应图标 XML（绕开 p4a 不建目录的 bug，§5.10 ④） |
