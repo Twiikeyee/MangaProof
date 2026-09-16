@@ -36,18 +36,24 @@ def test_natural_sort():
 def test_document_load_001():
     doc = PSDDocument(DATA_DIR / "001.psd")
     names = [info.name for info in doc.layers]
-    # 隐藏图层不应进入可监制列表；顺序为 psd-tools 迭代顺序（自下而上）
-    assert names == [
-        "bg", "dialogue_01", "dialogue_02", "dialogue_03", "text1", "text2",
-    ], names
-    # merged image 来自 PSD 自带数据
+    # 真实夹具（美术完整 PSD）结构：bg（可见原版底图）+ bg 拷贝（已涂抹原文的
+    # 修图底版）+「框内翻译」组内 10 个 type 文字层。隐藏图层不进入可监制列表；
+    # 顺序为 psd-tools 迭代顺序（自下而上）。
+    assert names[0] == "bg", names
+    assert names[1] == "bg 拷贝", names
+    assert len(doc.layers) == 12, names
+    assert [i.image_mode for i in doc.layers[2:]] == ["topil_only"] * 10, names
+    # 旧占位夹具的层名不应再出现（防夹具回退成 make_test_psd.py 的产物）
+    assert not ({"dialogue_01", "text1", "text2"} & set(names)), names
+    # merged image 来自 PSD 自带数据，尺寸与画布一致
     merged = doc.merged_np()
-    assert merged.shape == (600, 400, 4)
-    # 图层像素中心颜色
-    img = doc.layer_image(doc.layers[1].id)
-    assert img.shape == (60, 120, 4)
-    # bg 选择：精确 "bg"
+    assert merged.shape == (1536, 1024, 4), merged.shape
+    # 图层像素形状 = 该图层 bbox 尺寸（bg 为全画布）
+    img = doc.layer_image(doc.layers[0].id)
+    assert img.shape == (1536, 1024, 4), img.shape
+    # bg 选择：精确 "bg"（可见原版底图 → 自动对比基准）
     assert doc.bg_layer_id() == doc.layers[0].id
+    assert doc.layer_by_id(doc.bg_layer_id()).name == "bg"
 
 
 def test_hidden_layers_excluded_from_structure():
@@ -130,21 +136,42 @@ def test_layer_image_mode_split():
     """图层预热分流：type→topil_only，bg/最底部→topil，其余→composite。"""
     import numpy as np
     from psd_tools import PSDImage
+    from psd_tools.api.layers import Group
 
     doc = PSDDocument(DATA_DIR / "001.psd")
     by_name = {info.name: info for info in doc.layers}
     # 迭代顺序自下而上：bg 是第一个（最底部）可见 pixel 层
     assert by_name["bg"].image_mode == "topil"
-    assert by_name["dialogue_01"].image_mode == "composite"
-    assert by_name["text1"].image_mode == "topil_only"   # type → 仅 topil
-    assert by_name["text2"].image_mode == "composite"    # 顶层 pixel → composite
+    # bg 拷贝 是顶层 pixel 层（非最底部）→ composite 路径
+    assert by_name["bg 拷贝"].image_mode == "composite"
+    # 「框内翻译」组内的 type 层 → 仅 topil
+    type_names = [i.name for i in doc.layers if i.image_mode == "topil_only"]
+    assert len(type_names) == 10, type_names
 
     # type 层视觉边界 = PS 预生成文字栅格的 alpha bbox（与 topil 一致），
     # 而不是整个 bbox 矩形（composite 不渲染字形，只会整块/全透明）
-    vb = layer_visual_bounds(by_name["text1"])
+    text_name = type_names[0]
+    vb = layer_visual_bounds(by_name[text_name])
     assert vb is not None
+    # type 层嵌在「框内翻译」组里，需递归查找同名节点
     psd = PSDImage.open(DATA_DIR / "001.psd")
-    node = next(l for l in psd if l.name == "text1")
+
+    def _find(node, name):
+        if node.name == name:
+            return node
+        if isinstance(node, Group):
+            for child in node:
+                found = _find(child, name)
+                if found is not None:
+                    return found
+        return None
+
+    node = None
+    for top in psd:
+        node = _find(top, text_name)
+        if node is not None:
+            break
+    assert node is not None and node.kind == "type", text_name
     img = np.asarray(node.topil().convert("RGBA"))
     ys, xs = np.where(img[:, :, 3] > 0)
     left, top = int(node.bbox[0]), int(node.bbox[1])
@@ -152,8 +179,8 @@ def test_layer_image_mode_split():
               left + int(xs.max()) + 1, top + int(ys.max()) + 1)
     assert vb == expect, (vb, expect)
 
-    # text1/text2 像素可提取、视觉边界已可用（WARM_ALL 预热路径）
-    for name in ("text1", "text2"):
+    # type 层像素可提取、视觉边界已可用（WARM_ALL 预热路径）
+    for name in type_names:
         info = by_name[name]
         img = doc.layer_image(info.id)
         assert img is not None and img.shape[2] == 4
@@ -226,11 +253,23 @@ def test_make_image_loader_modes():
 
 def test_visual_bounds_and_center():
     doc = PSDDocument(DATA_DIR / "001.psd")
-    info = doc.layers[1]  # dialogue_01: (40,60,160,120)
+    # bg：全画布、alpha 完全不透明 → 视觉边界 == bounds
+    info = doc.layers[0]
+    assert info.name == "bg", info.name
+    w, h = doc.size
     vb = layer_visual_bounds(info)
-    assert vb == (40, 60, 160, 120), vb
+    assert vb == (0, 0, w, h), vb
     cx, cy = layer_visual_center(info)
-    assert (cx, cy) == (100.0, 90.0)
+    assert (cx, cy) == (w / 2.0, h / 2.0)
+    # type 文字层：视觉边界 = bbox + 栅格 alpha 偏移（世界坐标）
+    text = next(i for i in doc.layers if i.image_mode == "topil_only")
+    tvb = layer_visual_bounds(text)
+    tb = text.bounds
+    assert tvb is not None
+    assert tb[0] <= tvb[0] and tb[1] <= tvb[1]
+    assert tvb[2] <= tb[2] and tvb[3] <= tb[3]
+    tcx, tcy = layer_visual_center(text)
+    assert (tcx, tcy) == ((tvb[0] + tvb[2]) / 2.0, (tvb[1] + tvb[3]) / 2.0)
     # 全透明图层 → fallback 到 bounds
     import numpy as np
     from mangaproof.psd.layer_model import LayerInfo
@@ -243,23 +282,67 @@ def test_visual_bounds_and_center():
     assert layer_visual_center(empty) is None
 
 
+def test_bg_exact_match_on_real_fixture():
+    """真实夹具：精确 "bg" 命中，且不会误选到「bg 拷贝」（已涂抹原文的修图底版）。
+
+    「bg 拷贝」与「bg」像素仅差 1～2%（白色涂抹掉原文的区域），一旦选错，
+    自动对比就会拿修图底版当原版基准，肉眼几乎看不出来——所以这里同时断言
+    「选中了谁」和「没选中谁」。
+    """
+    for name in ("001.psd", "002.psd", "003.psd"):
+        doc = PSDDocument(DATA_DIR / name)
+        bg_id = doc.bg_layer_id()
+        info = doc.layer_by_id(bg_id)
+        assert info.name == "bg", (name, info.name)
+        assert info.image_mode == "topil", (name, info.image_mode)
+        copy_info = next((i for i in doc.layers if i.name == "bg 拷贝"), None)
+        assert copy_info is not None, name
+        assert copy_info.id != bg_id, name
+        # 1) 严格名称匹配优先于「最底部有内容图层」兜底
+        assert doc.layers[0].id == bg_id, name
+        bg = doc.bg_image()
+        assert bg is not None
+        w, h = doc.size
+        assert bg[2].shape == (h, w, 4), (name, bg[2].shape)
+
+
 def test_bg_fallback_bottom_most():
-    """无 "bg" 名时兜底选最底部有内容图层（需求 §24）。
+    """无精确 "bg" 名时兜底选最底部有内容图层（需求 §24）。
+
+    真实夹具（001/002/003）都有可见的精确 "bg"，走的是严格名称匹配，
+    所以这条兜底分支必须用合成 PSD 单独覆盖。
 
     psd-tools 1.18 迭代顺序为自下而上（实证）：第一个即 PS 图层面板
-    最底部图层——回归保护：不能选到最顶部的内容图层（text_01）。
+    最底部图层——回归保护：不能选到最顶部的内容图层（合成用例里的 text_01）。
     """
-    doc = PSDDocument(DATA_DIR / "002.psd")
-    names = [info.name for info in doc.layers]
-    assert names[0] == "background_painting", names  # 最底部
-    assert names[-1] == "text_01", names             # 最顶部
-    bg_id = doc.bg_layer_id()
-    info = doc.layer_by_id(bg_id)
-    assert info.name == "background_painting", info.name
-    # bg 取 topil 路径（原版底图无蒙版/特效）
-    assert info.image_mode == "topil", info.image_mode
-    bg = doc.bg_image()
-    assert bg is not None and bg[2].shape == (200, 400, 4)
+    from PIL import Image
+    from psd_tools import PSDImage
+    from psd_tools.api.layers import PixelLayer
+
+    with tempfile.TemporaryDirectory() as tmp:
+        canvas = Image.new("RGBA", (400, 600), (255, 255, 255, 255))
+        bottom = Image.new("RGBA", (400, 200), (240, 220, 180, 255))
+        top_box = Image.new("RGBA", (200, 100), (10, 120, 200, 255))
+        psd = PSDImage.frompil(canvas)
+        PixelLayer.frompil(canvas, psd, name="underlay", top=0, left=0)
+        PixelLayer.frompil(bottom, psd, name="background_painting", top=400, left=0)
+        PixelLayer.frompil(top_box, psd, name="text_01", top=100, left=100)
+        path = Path(tmp) / "nobg.psd"
+        psd.save(path)
+
+        doc = PSDDocument(path)
+        names = [info.name for info in doc.layers]
+        assert names[0] == "underlay", names           # 最底部
+        assert names[-1] == "text_01", names           # 最顶部（不得被选中）
+        bg_id = doc.bg_layer_id()
+        info = doc.layer_by_id(bg_id)
+        # 最底部有内容者胜出：underlay 是全画布白底，比 background_painting 更靠下
+        assert info.name == "underlay", info.name
+        assert info.id != doc.layers[-1].id, "不得选到最顶部内容图层"
+        # bg 取 topil 路径（原版底图无蒙版/特效）
+        assert info.image_mode == "topil", info.image_mode
+        bg = doc.bg_image()
+        assert bg is not None and bg[2].shape == (600, 400, 4)
 
 
 def test_camera():
@@ -306,7 +389,7 @@ def test_persistence_roundtrip_and_verify():
         sampled = [f for f in task.files if f.sample_sha256]
         assert len(sampled) == 2, [f.file_name for f in sampled]
         assert sampled[0].relative_path == "001.psd"
-        assert sampled[-1].relative_path == "10.psd"
+        assert sampled[-1].relative_path == "003.psd"
 
         ok, reason = persistence.verify_folder(task, files, folder)
         assert ok, reason
@@ -367,7 +450,7 @@ def test_report_generation():
         task.set_status("001.psd", ids1[2], FAILED)
         task.set_status("001.psd", ids1[3], PASSED)
         task.set_status("001.psd", ids1[0], PASSED)
-        for other in ("002.psd", "10.psd"):
+        for other in ("002.psd", "003.psd"):
             doc = PSDDocument(folder / other)
             for i in doc.layers:
                 task.set_status(other, i.id, PASSED)
@@ -375,7 +458,7 @@ def test_report_generation():
         layer_ids = {
             "001.psd": [i.id for i in PSDDocument(folder / "001.psd").layers],
             "002.psd": [i.id for i in PSDDocument(folder / "002.psd").layers],
-            "10.psd": [i.id for i in PSDDocument(folder / "10.psd").layers],
+            "003.psd": [i.id for i in PSDDocument(folder / "003.psd").layers],
         }
         out = resolve_report_path(folder, "Chapter01_Final_Review.pdf", "chapter01")
         assert out.name == "Chapter01_Final_Review.pdf"
@@ -418,7 +501,7 @@ def test_report_progress_and_cancel():
         layer_ids = {
             "001.psd": ids1,
             "002.psd": ids2,
-            "10.psd": [i.id for i in PSDDocument(folder / "10.psd").layers],
+            "003.psd": [i.id for i in PSDDocument(folder / "003.psd").layers],
         }
         provider = lambda rel: PSDDocument(folder / rel)  # noqa: E731
 
@@ -627,7 +710,7 @@ def test_pdf_badge_number_outside_rect():
         out = folder / "badge.pdf"
         generate_report(
             task,
-            {"001.psd": ids, "002.psd": [], "10.psd": []},
+            {"001.psd": ids, "002.psd": [], "003.psd": []},
             out,
             image_provider=lambda rel: PSDDocument(folder / rel),
         )
@@ -653,10 +736,29 @@ def test_pdf_badge_number_outside_rect():
         assert m_rect and m_num, "未解析到红框或徽标文本"
         rx, ry, rw, rh = (float(v) for v in m_rect.groups())
         num_y = float(m_num.group(2))
-        assert num_y > ry + rh, (
-            f"徽标应在红框外侧上方：徽标基线 y={num_y}，红框顶边 y={ry + rh}"
-        )
-        print("PDF badge OK：数字在框外", num_y, ">", ry + rh)
+        # 徽标位置有两条既定分支（见 AnnotatedPageFlowable.draw，需求 §53）：
+        #   1) 框外上方：rect_top + gap + badge_h 仍在本 Flowable 内 →
+        #      徽标基线落在红框顶边之上；
+        #   2) 空间不足（问题框贴近页面/Flowable 顶边，真实大尺寸夹具常见）→
+        #      退回框内左上角。
+        # 断言真正的不变量：徽标整体不越出红框所在区域，且必落在其中一条
+        # 分支上——而不是写死「永远在框外」（那只是小尺寸占位夹具的巧合）。
+        from reportlab.lib.units import mm
+
+        badge_h = 6 * mm
+        gap = 1.2 * mm
+        margin = 3.0  # 允许的浮点/换算误差（pt）
+        if num_y > ry + rh:
+            # 分支 1：框外上方
+            assert abs(num_y - (ry + rh + gap + badge_h / 2.0 - 2.4)) < margin, (
+                f"框外徽标偏移异常：基线 y={num_y}，红框顶边 y={ry + rh}"
+            )
+        else:
+            # 分支 2：框内左上角
+            assert ry + rh - 2 * badge_h < num_y < ry + rh, (
+                f"框内徽标越界：基线 y={num_y}，红框区间 [{ry}, {ry + rh}]"
+            )
+        print("PDF badge OK：徽标基线", num_y, "红框顶边", ry + rh)
 
 
 def test_report_uses_misans_font(monkeypatch):
@@ -694,7 +796,7 @@ def test_report_uses_misans_font(monkeypatch):
         out = folder / "misans.pdf"
         generate_report(
             task,
-            {"001.psd": ids, "002.psd": [], "10.psd": []},
+            {"001.psd": ids, "002.psd": [], "003.psd": []},
             out,
             image_provider=lambda rel: PSDDocument(folder / rel),
         )
@@ -752,7 +854,7 @@ def test_report_font_fallback(monkeypatch):
         out = folder / "fallback.pdf"
         generate_report(
             task,
-            {"001.psd": ids, "002.psd": [], "10.psd": []},
+            {"001.psd": ids, "002.psd": [], "003.psd": []},
             out,
             image_provider=lambda rel: PSDDocument(folder / rel),
         )
@@ -784,13 +886,13 @@ def test_issue_numbering_check_and_renumber():
         }
         ids1 = layer_ids["001.psd"]
         ids2 = layer_ids["002.psd"]
-        ids3 = layer_ids["10.psd"]
+        ids3 = layer_ids["003.psd"]
 
         # 001.psd：#1、#2（#2 稍后删除）
         first = task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误", "", (0, 0, 10, 10))
         removed = task.add_issue("001.psd", ids1[1], "dialogue_01", "漏字", "", (0, 0, 10, 10))
-        # 监制完后面的 PSD：#3（10.psd 最后）、#4（002.psd 中间）
-        last = task.add_issue("10.psd", ids3[1], "dialogue_01", "居中错误", "", (0, 0, 10, 10))
+        # 监制完后面的 PSD：#3（003.psd 最后）、#4（002.psd 中间）
+        last = task.add_issue("003.psd", ids3[1], "dialogue_01", "居中错误", "", (0, 0, 10, 10))
         middle = task.add_issue("002.psd", ids2[1], "dialogue_01", "字号错误", "", (0, 0, 10, 10))
         task.remove_issue(removed.issue_id)           # 删除 → 编号空号
         # 回到前面的 PSD 再补一个问题 → 编号最大（用户报告的第二个场景）
@@ -809,7 +911,7 @@ def test_issue_numbering_check_and_renumber():
         assert any("001.psd" in m for _, _, m in steps)
 
         assert apply_numbering(task, plan) == 3
-        # 文档顺序：001.psd（同图层按创建顺序）→ 002.psd → 10.psd，编号连续 1..N
+        # 文档顺序：001.psd（同图层按创建顺序）→ 002.psd → 003.psd，编号连续 1..N
         assert [i.issue_id for i in task.issues] == [
             first.issue_id, back.issue_id, middle.issue_id, last.issue_id
         ]
@@ -963,19 +1065,19 @@ def test_report_overview_hide_clean_files():
         # 002.psd：一处问题
         task.set_status("002.psd", ids2[1], FAILED)
         task.add_issue("002.psd", ids2[1], "dialogue_01", "居中错误", "", (10, 10, 40, 40))
-        # 10.psd：未监制（不得被隐藏）
-        for lid in layer_ids["10.psd"][:1]:
-            task.set_status("10.psd", lid, PASSED)
+        # 003.psd：未监制（不得被隐藏）
+        for lid in layer_ids["003.psd"][:1]:
+            task.set_status("003.psd", lid, PASSED)
 
         rows_all, hidden_all = _overview_rows(task, layer_ids, hide_clean_files=False)
         assert hidden_all == 0 and len(rows_all) == 3
 
         rows, hidden = _overview_rows(task, layer_ids, hide_clean_files=True)
         assert hidden == 1, hidden                      # 只有 001.psd 被隐藏
-        assert len(rows) == 2                            # 002.psd（有问题）+ 10.psd（未监制）
+        assert len(rows) == 2                            # 002.psd（有问题）+ 003.psd（未监制）
         assert _is_clean_file(task.count_file("001.psd", ids1))          # 全部通过且无问题
         assert not _is_clean_file(task.count_file("002.psd", ids2))       # 有问题
-        assert not _is_clean_file(task.count_file("10.psd", layer_ids["10.psd"]))  # 未监制
+        assert not _is_clean_file(task.count_file("003.psd", layer_ids["003.psd"]))  # 未监制
 
         # 生成端到端：隐藏与不隐藏都能正常出报告，页数一致（总览仍是一页）
         import re
@@ -1057,7 +1159,7 @@ def test_report_toc_skipped_without_issues():
         folder = _copy_fixtures(Path(tmp) / "chapter01")
         task, _ = persistence.create_task_folder(folder, sorted(folder.glob("*.psd")))
         out = folder / "clean.pdf"
-        generate_report(task, {"001.psd": [], "002.psd": [], "10.psd": []}, out,
+        generate_report(task, {"001.psd": [], "002.psd": [], "003.psd": []}, out,
                         lambda rel: PSDDocument(folder / rel))
         raw = out.read_bytes()
         # 封面 + 总览 + 「本任务暂无未通过问题」页；不插目录页（省一页）
@@ -1171,12 +1273,15 @@ def test_merged_fast_path_matches():
     doc = PSDDocument(path)
     arr = doc.merged_np()
     ref = np.asarray(PSDImage.open(path).topil().convert("RGBA"))
-    assert arr.shape == ref.shape == (600, 400, 4)
+    # 尺寸随夹具走（不再写死占位夹具的 400x600）；重点是两条路径结果一致
+    assert arr.shape == ref.shape, (arr.shape, ref.shape)
+    w, h = doc.size
+    assert arr.shape[:2] == (h, w), (arr.shape, (h, w))
     assert np.array_equal(arr, ref), "C 路径与 psd-tools 结果不一致"
 
     # 直接调用快速路径
-    img = get_merged_pil_fast(path, expect_size=(400, 600))
-    assert img is not None and img.size == (400, 600)
+    img = get_merged_pil_fast(path, expect_size=(w, h))
+    assert img is not None and img.size == (w, h)
     # 尺寸校验不符 → 回退信号
     assert get_merged_pil_fast(path, expect_size=(999, 999)) is None
     # 文件缺失 → 回退信号

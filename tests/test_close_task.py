@@ -71,6 +71,16 @@ def _open_fixture_task(root: Path, window: MainWindow):
     app.processEvents()
     window.open_folder(folder)
     _wait_for_task(window)
+    # 背景图由预加载线程阶段 B 异步提取（真实尺寸 PSD 下不再是瞬时完成）。
+    # 自动对比需要 bg 才能启动，wait 一下让首文件背景就绪，
+    # 否则 toggle_compare() 直接返回、is_running 恒为 False。
+    deadline = time.time() + 60.0
+    while time.time() < deadline:
+        doc = window.current_doc
+        if doc is not None and doc.bg_image() is not None:
+            break
+        app.processEvents()
+        time.sleep(0.02)
     window.activateWindow()      # 快捷键只在窗口激活时触发
     app.processEvents()
     return folder

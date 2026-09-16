@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         self._bg_qimage_quota = _MEMORY_POLICIES["balanced"]["bg_qimage_bytes"]
         self._pinned_bg_key = None           # 当前文档钉住的 LRU 键 (path, layer_id)
         self._keep_set: set = set()          # 最近一次预加载调度的窗口集合
+        self._evict_pending: set = set()     # 因 io 锁被占而推迟驱逐的文档
 
         self._compare = CompareController(self)
         self._compare.display_changed.connect(self._on_compare_display_changed)
@@ -969,23 +970,8 @@ class MainWindow(QMainWindow):
         self._open_restore = False
         self._close_open_progress()
 
-        # 任务数据与缓存
-        self.task = None
-        self._base_dir = None
-        self._current_file = ""
-        self._current_index = -1
-        self._docs.clear()
-        self._layer_ids_by_file.clear()
-        self._layer_names_by_file.clear()
-        self._layer_cache.clear()
-        self._warned_no_composite.clear()
-        self._pending_qimages.clear()
-        self._preload_targets.clear()
-        self._extra_targets.clear()
-        self._keep_set.clear()
-        self._pinned_bg_key = None
-        self._preload_scheduled = False
-        self._completion_announced = False
+        # 任务数据与缓存（重载荷释放：见 _release_task_data）
+        self._release_task_data()
 
         # 画布与面板回到初始空态
         self.viewer.set_document(None)
@@ -1010,6 +996,47 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("已关闭当前任务", 3000)
         log.info("任务已关闭：%s", name)
 
+    def _release_task_data(self) -> None:
+        """释放与当前任务绑定的全部重载荷，回到「无任务」数据态。
+
+        为什么单独抽一个方法
+        --------------------
+        窗口关闭（closeEvent）过去只停线程 + 存盘，**没有释放文档与图层像素
+        缓存**：实测每关一个窗口常驻内存只涨不落（真实尺寸 PSD 下约 110 MB/
+        窗口），开着多个任务或反复开关窗口会持续积累，最终把进程撑爆。
+        这里与 close_task() 共用同一段释放逻辑，保证「关任务」和「关窗口」
+        两条路径的释放行为不会再次分叉。
+
+        释放对象（都是随任务生命周期存在的重载荷）：
+        - _docs：每份 PSDDocument 持有 merged / 背景 numpy（全分辨率）；
+        - _layer_cache：图层像素 LRU（全分辨率 RGBA）；
+        - _pending_qimages：预加载预生成的 QImage；
+        - 以及各查询表 / 预加载调度状态。
+
+        幂等：无任务时调用无副作用；`task` 本身只置 None，任务文件不动
+        （落盘由调用方负责，见 close_task 的「先落盘再关闭」）。
+        """
+        # 先开启缓存新一代：预加载线程可能仍持有旧文档并在途写入像素，
+        # 递增代次后这些迟到写入会被丢弃，不会在 clear() 之后重新长回来。
+        self._layer_cache.begin_release()
+        self.task = None
+        self._base_dir = None
+        self._current_file = ""
+        self._current_index = -1
+        self._docs.clear()
+        self._layer_ids_by_file.clear()
+        self._layer_names_by_file.clear()
+        self._layer_cache.clear()
+        self._warned_no_composite.clear()
+        self._pending_qimages.clear()
+        self._preload_targets.clear()
+        self._extra_targets.clear()
+        self._keep_set.clear()
+        self._evict_pending.clear()
+        self._pinned_bg_key = None
+        self._preload_scheduled = False
+        self._completion_announced = False
+
     # ================================================================= 文档管理
 
     def _ensure_doc(self, rel: str) -> Optional[PSDDocument]:
@@ -1017,6 +1044,13 @@ class MainWindow(QMainWindow):
             return None
         doc = self._docs.get(rel)
         if doc is None:
+            # 保留窗口之外的页不得因「迟到的预加载」重新住留：预加载线程
+            # 在切页后仍可能为旧页请求文档，若无条件重建就会把刚被驱逐的
+            # 文档对象重新塞回 _docs（真实尺寸下每份都很大）。
+            # 需要时后续正常打开路径会重新创建，不影响功能。
+            if self._preload_scheduled and rel not in self._keep_set:
+                if rel != self._current_file:
+                    return None
             try:
                 doc = PSDDocument(self._base_dir / rel, layer_cache=self._layer_cache)
             except PSDReadError:
@@ -1049,6 +1083,10 @@ class MainWindow(QMainWindow):
 
         快速连续切换时，新请求会替换未处理的旧请求（见 PreloadWorker）。
         """
+        # 先把保留窗口切到目标页：_ensure_doc 会拒绝为窗口外页面重建文档
+        # （防迟到的预加载把已驱逐的大文档塞回来），所以顺序不能反。
+        if self.task is not None:
+            self._keep_set = self._window_keep_set(rel)
         doc = self._ensure_doc(rel)
         if doc is None:
             QMessageBox.warning(self, "打开 PSD", f"无法读取该 PSD 文件：{rel}")
@@ -1170,6 +1208,8 @@ class MainWindow(QMainWindow):
             if slot:
                 self._pending_qimages[rel] = slot
                 self._trim_bg_qimages()
+        # 预加载目标告一段落：重试被 io 锁推迟的驱逐
+        self._drain_pending_evictions()
         if kind == KIND_PRELOAD:
             # 阶段 A（merged）完成：切换文件已可用
             self._preload_targets.discard(rel)
@@ -1194,6 +1234,9 @@ class MainWindow(QMainWindow):
                 self._select_layer_internal(index)
                 self._refresh_layer_selection()
                 self._mark_dirty()
+                # 慢路径也把焦点还给画布：与快路径（_request_layer_switch
+                # 命中已预热边界）保持一致。进度框是非模态的，关闭后焦点
+                # 可能停在按钮上，单键快捷键（Enter/Space/←→）就按不动了。
                 self.viewer.setFocus()
             return
         # 文件打开
@@ -1234,12 +1277,39 @@ class MainWindow(QMainWindow):
             pass
         dialog.close()
         dialog.deleteLater()
+        # 进度框会抢走窗口激活态：非模态框关闭后系统不一定会还给主窗口，
+        # 窗口不激活则所有 WindowShortcut 单键快捷键（Enter/Space/←→）全部失效
+        #（实测按 ←/→ 触发一次后台提取后，后续 Enter 完全无响应）。
+        # 这里显式把激活态与焦点交还主窗口 / 画布。
+        self.activateWindow()
+        self.raise_()
+        self.viewer.setFocus()
 
     def _on_open_progress_cancelled(self) -> None:
         self._preload.cancel_open()
         self._pending_open = None
         self._close_open_progress()
         self.statusBar().showMessage("已取消打开", 3000)
+
+    def _window_keep_set(self, rel: str) -> set:
+        """以 rel 为当前页的驱逐保留窗口 = 当前页 + 全部邻域（与预热范围同源）。
+
+        与 _current_keep_set 的区别：那个以「已生效」的 _current_file 为准，
+        这个接受调用方指定的目标页——切页时必须**先**用目标页刷新窗口，
+        否则目标页会被当成窗口外页面拒绝创建（见 _ensure_doc 的迟到预加载防护）。
+        """
+        if self.task is None:
+            return set()
+        order = [r.relative_path for r in self.task.files]
+        try:
+            i = order.index(rel)
+        except ValueError:
+            return {rel}
+        return {
+            order[i + d]
+            for d in preload_window_offsets()
+            if 0 <= i + d < len(order)
+        }
 
     def _schedule_preloads(self, rel: str) -> None:
         """预加载当前文件邻域（后 3 个 + 前 1 个），并回收窗口外大图内存。
@@ -1265,7 +1335,7 @@ class MainWindow(QMainWindow):
             if d != 0 and 0 <= i + d < len(order)
         ]
         # 驱逐保留窗口 = 当前页 + 全部邻域（与预热范围同源）
-        keep = {rel, *candidates}
+        keep = self._window_keep_set(rel)
 
         def target_layer_of(target_rel: str) -> str:
             index = self._choose_layer_index(target_rel, restore=False)
@@ -1391,16 +1461,7 @@ class MainWindow(QMainWindow):
         """
         if self.task is None or not self._current_file:
             return set()
-        order = [r.relative_path for r in self.task.files]
-        try:
-            i = order.index(self._current_file)
-        except ValueError:
-            return {self._current_file}
-        return {
-            order[i + d]
-            for d in preload_window_offsets()
-            if 0 <= i + d < len(order)
-        }
+        return self._window_keep_set(self._current_file)
 
     def _evict_outside_window(self, keep: set) -> None:
         """驱逐窗口外的完整文档对象（psd-tools 结构 ≈ 文件大小，
@@ -1412,22 +1473,39 @@ class MainWindow(QMainWindow):
         """
         for rel in list(self._docs):
             if rel in keep or rel == self._current_file:
+                self._evict_pending.discard(rel)
                 continue
             pending = self._pending_open
             if pending is not None and pending[0] == rel:
                 continue
             doc = self._docs.get(rel)
             if doc is None:
+                self._evict_pending.discard(rel)
                 continue
             # 非阻塞拿锁：后台正在提取则跳过，避免 UI 卡在锁上
             if not doc._io_lock.acquire(blocking=False):
+                # 锁被预加载线程占着 → 记入待驱逐集，等该线程交还后再收。
+                # 只跳过不重试会让窗口外文档永久驻留（实测切到 p08 后
+                # p01 因预加载在途而留在 _docs），内存窗口就形同虚设。
+                self._evict_pending.add(rel)
                 continue
             try:
                 self._docs.pop(rel, None)
                 self._pending_qimages.pop(rel, None)
+                self._evict_pending.discard(rel)
                 doc.release()   # 释放 merged/bg + 按路径逐出共享 LRU 条目
             finally:
                 doc._io_lock.release()
+
+    def _drain_pending_evictions(self) -> None:
+        """重试因 io 锁被占而推迟的驱逐（无待驱逐项时零开销）。
+
+        预加载线程是一次性的短任务，完成一个目标后锁即交还；每当预加载
+        结果回到主线程就重试一次，窗口外文档随即被回收，不会永久驻留。
+        """
+        if not self._evict_pending:
+            return
+        self._evict_outside_window(self._current_keep_set())
 
     def _update_preload_label(self) -> None:
         """两阶段独立显示：图像预加载（A）在左、图层预热（B）在右。"""
@@ -2569,5 +2647,10 @@ class MainWindow(QMainWindow):
         if self.task is not None:
             self._autosave_timer.stop()
             self.save_task()
+        # 释放文档 / 图层像素 / 预生成 QImage 等重载荷。
+        # 关闭路径过去漏了这一步：窗口对象关闭后仍持有整份任务数据，
+        # 每窗口常驻内存只涨不落（真实尺寸 PSD 下约 110 MB）。
+        # 放在 save_task() 之后：任务数据已落盘，清空不会丢进度。
+        self._release_task_data()
         self._save_settings()
         super().closeEvent(event)

@@ -21,6 +21,23 @@ class LayerImageCache:
         self._bytes = 0
         self._pinned: set = set()   # 钉住键：淘汰时跳过
         self._lock = threading.Lock()
+        # 代次：begin_release() 递增后，上一代文档的写入一律丢弃。
+        # 为什么需要：预加载线程持有 PSDDocument 引用，即便主线程已
+        # clear()，在途的 _warm_layer / _warm_all_layers 仍会往缓存里
+        # 写像素——残留条目会跟着窗口活到下次任务（实测关闭任务后仍留 2 条）。
+        # 代次计数让「关任务 / 关窗口」之后的写入自然失效，且无需等待线程。
+        self._generation = 0
+        self._stale_generations: set = set()
+
+    def current_generation(self) -> int:
+        """当前代次。PSDDocument 创建时记录它，用于写入归属判定。"""
+        return self._generation
+
+    def begin_release(self) -> None:
+        """开启新一代：老一代文档此后的写入全部作废。"""
+        with self._lock:
+            self._stale_generations.add(self._generation)
+            self._generation += 1
 
     def get(self, psd_path: str, layer_id: str) -> Optional[np.ndarray]:
         key = (psd_path, layer_id)
@@ -30,9 +47,17 @@ class LayerImageCache:
                 self._store.move_to_end(key)
             return img
 
-    def put(self, psd_path: str, layer_id: str, image: np.ndarray) -> None:
+    def put(
+        self,
+        psd_path: str,
+        layer_id: str,
+        image: np.ndarray,
+        generation: Optional[int] = None,
+    ) -> None:
         key = (psd_path, layer_id)
         with self._lock:
+            if generation is not None and generation in self._stale_generations:
+                return  # 上一代文档的迟到写入：丢弃
             if key in self._store:
                 self._store.move_to_end(key)
                 return

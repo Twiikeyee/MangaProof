@@ -67,6 +67,9 @@ class PSDDocument:
         self.path = Path(path)
         self._psd = psd if psd is not None else loader.open_psd_tools(self.path)
         self._layer_cache = layer_cache if layer_cache is not None else LayerImageCache()
+        # 创建时所属代次：文档在「关任务 / 关窗口」之后若仍被预加载线程
+        # 持有并写入，会被缓存按代次丢弃（见 LayerImageCache.begin_release）。
+        self._cache_generation = self._layer_cache.current_generation()
 
         # 像素提取可能在后台预加载线程与 UI 线程间并发，
         # 用可重入锁串行化对 psd-tools 惰性解析的访问。
@@ -382,7 +385,7 @@ class PSDDocument:
             return None
         img = info.load_image()
         if img is not None:
-            self._layer_cache.put(key_path, layer_id, img)
+            self._layer_cache.put(key_path, layer_id, img, self._cache_generation)
         return img
 
     # -- 背景图层（需求 §24、§25） ----------------------------------------

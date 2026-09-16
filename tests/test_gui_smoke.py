@@ -34,7 +34,10 @@ from PySide6.QtWidgets import (
 )
 
 import mangaproof.ui.main_window as mw
+from mangaproof.camera.centering import layer_visual_bounds, layer_visual_center
+from mangaproof.camera.zoom import fit_zoom
 from mangaproof.config.settings import SettingsManager
+from mangaproof.psd.document import PSDDocument
 from mangaproof.review import persistence
 from mangaproof.review.state import FAILED, PARTIAL, PASSED, UNREVIEWED, TaskState
 from mangaproof.storage import picker
@@ -86,6 +89,37 @@ def _wait_for_report(window: MainWindow, timeout_s: float = 60.0) -> None:
     assert window._report_dialog is None, "返修单进度框未关闭"
 
 
+def _wait_layer_settled(window: MainWindow, timeout_s: float = 30.0) -> None:
+    """等待异步图层切换落定（后台提取完成、进度框关闭）。
+
+    图层切换在未预热时走后台线程 + 进度框；进度框存在期间窗口失去激活态，
+    WindowShortcut 类快捷键不会触发，所以按键体检必须逐个等落定。
+    """
+    deadline = time.time() + timeout_s
+    while (
+        window._pending_open is not None or window._open_dialog is not None
+    ) and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    app.processEvents()
+
+
+def _close_window(window: MainWindow) -> None:
+    """关窗前先关任务，释放文档 / 图层像素 / 预生成 QImage。
+
+    为什么不能只调 window.close()：closeEvent 只负责停线程与存盘，
+    真正的重载荷释放走 close_task()。本套件会创建 20+ 个 MainWindow，
+    若都只 close()，真实尺寸夹具下每个窗口会残留上百 MB，
+    整个会话累积后直接把进程撑爆（曾导致测试跑到一半卡死）。
+    """
+    with patch.object(
+        QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok
+    ):
+        window.close_task()
+    window.close()
+    app.processEvents()
+
+
 def test_preload_worker() -> None:
     """预加载线程：open 请求缓存 merged/背景/目标图层；队列可整体替换。"""
     from mangaproof.psd.document import PSDDocument
@@ -131,25 +165,25 @@ def test_preload_worker() -> None:
         # 两阶段队列：阶段 A 先铺 merged，阶段 B 补背景图与图层像素
         jobs = [
             ("002.psd", docs["002.psd"].layers[0].id),
-            ("10.psd", docs["10.psd"].layers[0].id),
+            ("003.psd", docs["003.psd"].layers[0].id),
         ]
         worker.set_preloads(jobs, list(jobs))
         deadline = time.time() + 30
         while time.time() < deadline:
             ready = all(
                 d.has_merged() and d.bg_image() is not None
-                for d in (docs["002.psd"], docs["10.psd"])
+                for d in (docs["002.psd"], docs["003.psd"])
             )
             if ready:
                 break
             app.processEvents()
             time.sleep(0.02)
         assert docs["002.psd"].has_merged() and docs["002.psd"].bg_image() is not None
-        assert docs["10.psd"].has_merged() and docs["10.psd"].bg_image() is not None
+        assert docs["003.psd"].has_merged() and docs["003.psd"].bg_image() is not None
         # 目标图层像素与视觉边界已预热（快速路径定位免等待）
         assert docs["002.psd"].layer_image(docs["002.psd"].layers[0].id) is not None
         assert docs["002.psd"].layers[0].visual_bounds() is not None
-        assert docs["10.psd"].layer_image(docs["10.psd"].layers[0].id) is not None
+        assert docs["003.psd"].layer_image(docs["003.psd"].layers[0].id) is not None
 
         # 快速切换：cancel_open 丢弃未处理请求，新 open 请求立即生效
         worker.cancel_open()
@@ -216,7 +250,7 @@ def test_layer_panel_layout_and_elide() -> None:
         item = lw.item(0)
         assert item is not None and "（2 个问题）" in item.toolTip()
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_layer_panel_layout_and_elide")
@@ -308,7 +342,7 @@ def test_file_panel_status_icons() -> None:
         assert text.startswith("● "), (text, color)
         assert color == QColor(COLOR_WARN).name(), (text, color)
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_file_panel_status_icons")
@@ -375,7 +409,7 @@ def test_numbering_worker() -> None:
         }
         ids1 = layer_ids["001.psd"]
         a = task.add_issue("001.psd", ids1[1], "dialogue_01", "字体选择错误", "", (0, 0, 1, 1))
-        task.add_issue("10.psd", layer_ids["10.psd"][1], "dialogue_01", "漏字", "", (0, 0, 1, 1))
+        task.add_issue("003.psd", layer_ids["003.psd"][1], "dialogue_01", "漏字", "", (0, 0, 1, 1))
         task.remove_issue(a.issue_id)          # 制造空号
         task.add_issue("001.psd", ids1[1], "dialogue_01", "居中错误", "", (0, 0, 1, 1))
         assert [i.issue_no for i in task.issues] == [2, 3]
@@ -390,7 +424,7 @@ def test_numbering_worker() -> None:
         _pump_until(lambda: bool(results))
         assert results and results[0].kind == KIND_OK
         plan = results[0].plan
-        # 001.psd 的问题排在 10.psd 之前：#2（10.psd）保持 2，#3（001.psd）改为 1
+        # 001.psd 的问题排在 003.psd 之前：#2（003.psd）保持 2，#3（001.psd）改为 1
         assert plan.total == 2 and plan.fixed == 1
         assert [i.issue_no for i in task.issues] == [2, 3], "worker 不应直接修改任务"
         assert messages[-1][0] == messages[-1][1]
@@ -433,12 +467,12 @@ def test_check_issue_numbers_workflow() -> None:
         assert window.action_renumber.isEnabled()
 
         ids = window._layer_ids_by_file["001.psd"]
-        ids10 = window._layer_ids_by_file["10.psd"]
+        ids3 = window._layer_ids_by_file["003.psd"]
         first = window.task.add_issue("001.psd", ids[1], "dialogue_01", "字体选择错误",
                                       "", (10, 10, 50, 50))
         removed = window.task.add_issue("001.psd", ids[1], "dialogue_01", "漏字",
                                         "", (60, 60, 50, 50))
-        last = window.task.add_issue("10.psd", ids10[1], "dialogue_01", "居中错误",
+        last = window.task.add_issue("003.psd", ids3[1], "dialogue_01", "居中错误",
                                      "", (10, 10, 50, 50))
         window.task.remove_issue(removed.issue_id)
         back = window.task.add_issue("001.psd", ids[1], "dialogue_01", "原文字擦除错误",
@@ -462,7 +496,7 @@ def test_check_issue_numbers_workflow() -> None:
             _wait_for_numbering(window)
             assert info.called, "有编号被修正时应给出结果提示"
 
-        # 文档顺序：001.psd（按创建顺序）→ 10.psd，编号连续
+        # 文档顺序：001.psd（按创建顺序）→ 003.psd，编号连续
         assert [i.issue_id for i in window.task.issues] == [
             first.issue_id, back.issue_id, last.issue_id
         ]
@@ -483,7 +517,7 @@ def test_check_issue_numbers_workflow() -> None:
             assert not info2.called, "无需调整时不应弹结果提示"
         assert "无需调整" in window.statusBar().currentMessage()
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_check_issue_numbers_workflow")
@@ -505,7 +539,7 @@ def test_report_worker() -> None:
             "001.psd", ids[1], "dialogue_01", "字体选择错误", "这里应使用 Bold",
             (40, 60, 120, 60),
         )
-        layer_ids = {"001.psd": ids, "002.psd": [], "10.psd": []}
+        layer_ids = {"001.psd": ids, "002.psd": [], "003.psd": []}
 
         # 1) 正常生成：进度消息推进，产物落盘
         out = folder / "worker.pdf"
@@ -595,7 +629,7 @@ def test_report_progress_dialog_and_cancel() -> None:
 
         assert not (folder / "chapter01.pdf").exists(), "取消后不应留下返修单文件"
         assert "已取消" in window.statusBar().currentMessage()
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_report_progress_dialog_and_cancel")
@@ -734,11 +768,21 @@ def test_full_workflow() -> None:
         assert window._current_file == "001.psd"
         assert window._current_index == 0  # 第一个未监制图层
         # 第一个图层是 bg（整幅画布）→ 自动缩放为画布比例、中心在画布中心
-        assert 0.5 < window.viewer.camera.zoom < 1.0
-        assert abs(window.viewer.camera.center_x - 200.0) < 1.0
-        assert abs(window.viewer.camera.center_y - 300.0) < 1.0
-
         doc = window.current_doc
+        cw, ch = doc.size
+        info0 = doc.layers[0]
+        vb0 = info0.visual_bounds()
+        expect_zoom = fit_zoom(
+            vb0 if vb0 is not None else info0.bounds,
+            (window.viewer.width(), window.viewer.height()),
+            window.settings.layer_display_ratio,
+        )
+        assert window.viewer.camera.zoom == expect_zoom, (
+            window.viewer.camera.zoom, expect_zoom
+        )
+        assert abs(window.viewer.camera.center_x - cw / 2.0) < 1.0
+        assert abs(window.viewer.camera.center_y - ch / 2.0) < 1.0
+
         ids = [info.id for info in doc.layers]
 
         # 回归：统计面板卡片必须按富文本渲染（否则 HTML 源码会直接显示）
@@ -747,8 +791,12 @@ def test_full_workflow() -> None:
             assert "<br/>" in cell.text()
         assert "通过" in window.stats_panel.total_cells["passed"].text()
         assert "3" in window.stats_panel.total_cells["files"].text()  # 3 个 PSD
-        # 总图层 = 001 可监制 6（bg/dialogue×3/text1/text2）+ 002 两个 + 10 两个
-        assert "10" in window.stats_panel.total_cells["layers"].text()
+        # 总图层 = 各夹具可监制层数之和（不写死，随夹具走）
+        expect_layers = sum(
+            len(PSDDocument(folder / p.name).layers)
+            for p in sorted(folder.glob("*.psd"))
+        )
+        assert str(expect_layers) in window.stats_panel.total_cells["layers"].text()
 
         # 回归：按钮动态显示当前绑定（需求 §30），重绑定后文案跟随更新
         assert "Enter" in window.issue_panel.pass_btn.text()
@@ -802,10 +850,20 @@ def test_full_workflow() -> None:
         app.processEvents()
         assert window.task.status_of("001.psd", ids[0]) == PASSED
         assert window._current_index == 1
-        # 切换到 dialogue_01（120x60）→ 视觉中心定位 + 按比例缩放（需求 §17、§20）
-        assert abs(window.viewer.camera.center_x - 100.0) < 1.0
-        assert abs(window.viewer.camera.center_y - 90.0) < 1.0
-        assert window.viewer.camera.zoom > 2.0
+        # 切到下一个图层 → 视觉中心定位 + 按比例缩放（需求 §17、§20）
+        info_next = window.current_doc.layers[window._current_index]
+        vb_next = layer_visual_bounds(info_next)
+        cx_next, cy_next = layer_visual_center(info_next)
+        assert abs(window.viewer.camera.center_x - cx_next) < 1.0
+        assert abs(window.viewer.camera.center_y - cy_next) < 1.0
+        assert window.viewer.camera.zoom > 0.0
+        if vb_next is not None:
+            expect_next = fit_zoom(
+                vb_next,
+                (window.viewer.width(), window.viewer.height()),
+                window.settings.layer_display_ratio,
+            )
+            assert window.viewer.camera.zoom == expect_next
 
         # / → 未通过，停留在当前图层
         window.mark_fail()
@@ -885,7 +943,7 @@ def test_full_workflow() -> None:
         assert loaded.status_of("001.psd", ids[0]) == PASSED
         assert loaded.status_of("001.psd", ids[1]) == FAILED
         assert len(loaded.issues) == 2
-        window.close()
+        _close_window(window)
         app.processEvents()
 
         # ---- 重启恢复（需求 §6：自动恢复进度，无需手动加载） ----
@@ -921,7 +979,7 @@ def test_full_workflow() -> None:
         with open(out, "rb") as f:
             assert f.read(5) == b"%PDF-"
 
-        window2.close()
+        _close_window(window2)
         app.processEvents()
 
     print("PASS test_full_workflow")
@@ -1092,7 +1150,7 @@ def test_compare_manual_mode_workflow() -> None:
         assert not window._compare.is_running
         assert window.viewer.source == "merged"
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_compare_manual_mode_workflow")
@@ -1216,7 +1274,7 @@ def test_report_dialog_hide_clean_option() -> None:
         assert window.settings.report_hide_clean_files is False, "选择应写回设置"
         assert SettingsManager(root / "settings.json").settings.report_hide_clean_files is False
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_report_dialog_hide_clean_option")
@@ -1289,7 +1347,7 @@ def test_completion_auto_report_once() -> None:
             app.processEvents()
             assert info.call_count == 3 and calls == [False, False]
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_completion_auto_report_once")
@@ -1342,7 +1400,7 @@ def test_completion_paths_from_panel_and_fail() -> None:
                 assert "监制完成" in titles(info2), "面板通过按钮也应触发完成提示"
                 assert calls == [False, False], calls
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_completion_paths_from_panel_and_fail")
@@ -1410,8 +1468,8 @@ def test_issue_scope_setting_and_viewer() -> None:
         assert len(window.viewer._issues) == 3
 
         # 翻到没有问题的问题页 → 空；范围设置不影响问题数据
-        window._switch_file("10.psd")
-        _wait_for_file(window, "10.psd")
+        window._switch_file("003.psd")
+        _wait_for_file(window, "003.psd")
         app.processEvents()
         assert window.viewer._issues == []
         assert len(window.task.issues) == 3
@@ -1420,7 +1478,7 @@ def test_issue_scope_setting_and_viewer() -> None:
         sm.save()
         assert SettingsManager(root / "settings.json").settings.issue_scope == "page"
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_issue_scope_setting_and_viewer")
@@ -1511,7 +1569,7 @@ def test_wheel_modes() -> None:
         assert cam.zoom == zoom5
         assert cam.center_x == cx5 and cam.center_y > cy5
 
-        window.close()
+        _close_window(window)
 
     print("PASS test_wheel_modes")
 
@@ -1622,7 +1680,7 @@ def test_layer_outline_geometry_and_setting() -> None:
             SettingsManager(root / "settings.json").settings.show_layer_outline is True
         )
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_layer_outline_geometry_and_setting")
@@ -1846,7 +1904,7 @@ def test_no_wheel_combo_app_wide() -> None:
         assert_wheel_inert(ratio, focused=False)
         assert_wheel_inert(ratio, focused=True)
         assert window.settings.layer_display_ratio == saved, "滚轮不得改动设置值"
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_no_wheel_combo_app_wide")
@@ -1933,6 +1991,10 @@ def test_all_default_shortcuts_fire() -> None:
                 combo = QKeySequence(seq)[0]
                 QTest.keyClick(window, combo.key(), combo.keyboardModifiers())
                 app.processEvents()
+                # 图层切换对真实尺寸 PSD 是异步的（未预热 → 后台提取 + 进度框）。
+                # 不等它落定就按下一个键，下一个键会打在仍开着进度框的窗口上
+                # （窗口失去激活态 → WindowShortcut 不触发），表现为"按键没反应"。
+                _wait_layer_settled(window)
                 assert fired == [seq], f"{seq} 应恰好触发自身，实际 {fired}"
             window._compare.interrupt()
             # 导航键：Up/Down 切换 PSD（异步），逐个等待落定
@@ -1952,7 +2014,7 @@ def test_all_default_shortcuts_fire() -> None:
             assert fired == [close_seq], f"{close_seq} 应恰好触发自身，实际 {fired}"
             assert window.task is None, f"{close_seq}（关闭当前任务）应卸载当前任务"
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_all_default_shortcuts_fire")
@@ -2101,7 +2163,7 @@ def test_shortcut_conflict_detection_and_fixes() -> None:
         msg = window.statusBar().currentMessage()
         assert "红框模式" in msg and "漏字" in msg, msg
         # 冲突配置重建后仍应提示（便于用户发现）
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_shortcut_conflict_detection_and_fixes")
@@ -2192,7 +2254,7 @@ def test_shortcut_actions_take_effect() -> None:
         progress = persistence.progress_path_for_folder(folder)
         assert progress.exists(), progress
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_shortcut_actions_take_effect")
@@ -2372,10 +2434,10 @@ def test_one_shot_annotation_and_continuous_toggle() -> None:
         assert reborn.settings.continuous_annotation is True
         assert reborn.issue_panel.continuous() is True, "启动时应恢复勾选态"
         assert reborn.issue_panel.continuous_btn.text().startswith("✓")
-        reborn.close()
+        _close_window(reborn)
         app.processEvents()
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_one_shot_annotation_and_continuous_toggle")
@@ -2499,7 +2561,7 @@ def test_auto_box_current_layer() -> None:
             app.processEvents()
             assert window.issue_panel.auto_box_btn.isEnabled() is False
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_auto_box_current_layer")
@@ -2642,7 +2704,7 @@ def test_auto_box_type_picker_dialog() -> None:
                 "type": "居中错误", "focus_comment": False,
             }, seen
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_auto_box_type_picker_dialog")
@@ -2738,7 +2800,7 @@ def test_issue_dialog_enter_submits_shift_enter_newline() -> None:
             # 一标一退：Enter 确认后模式同样自动退出
             assert window.viewer.redraw_mode is False
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_issue_dialog_enter_submits_shift_enter_newline")
@@ -2823,7 +2885,7 @@ def test_issue_type_picker_shows_keys() -> None:
             window._on_rect_drawn(10, 10, 60, 60)
             app.processEvents()
         assert window.task.issues[-1].type == "文字颜色错误", window.task.issues[-1].type
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_issue_type_picker_shows_keys")
@@ -2900,7 +2962,7 @@ def test_hidden_layers_ignored_in_gui() -> None:
         for info in window.current_doc.layers:
             assert info.has_visual_bounds(), info.name
 
-        window.close()
+        _close_window(window)
         app.processEvents()
 
     print("PASS test_hidden_layers_ignored_in_gui")
