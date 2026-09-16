@@ -389,5 +389,5 @@ mangaproof/
 └── _psd_fast.c        # 纯 C 解码加速（scripts/build_accel.py 编译）
 packaging/             # 三平台 PyInstaller spec、Linux 桌面模板与 Android Java 源/p4a hook
 scripts/               # 构建/加速扩展/图标生成脚本
-tests/                 # 测试夹具生成与冒烟测试
+tests/                 # 冒烟测试（夹具为美术真实 PSD，已无生成脚本）
 ```

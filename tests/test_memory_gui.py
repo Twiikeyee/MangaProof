@@ -124,6 +124,10 @@ def test_eviction_reopen_preserves_progress(window, tmp_path):
     window._request_open_file("p08.psd", restore=False)
     _wait(window, lambda: window._current_file == "p08.psd")
     app.processEvents()
+    # 驱逐是「尽快」而非「瞬时」：预加载线程正持有该文档的 io 锁时会记入
+    # 待驱逐集，等预加载结果回到主线程再补收。所以这里等它真正落定，
+    # 而不是在切页瞬间就断言（否则会随机看到仍在 _docs 里的中间态）。
+    _wait(window, lambda: rel1 not in window._docs)
     assert "p01.psd" not in window._docs, "窗口外文档对象应被驱逐"
 
     # 重开被驱逐页：惰性重建，进度与图层列表完整保留

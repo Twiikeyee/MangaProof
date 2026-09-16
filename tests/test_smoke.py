@@ -33,6 +33,43 @@ def test_natural_sort():
     assert natural_sorted(["010.psd", "2.psd", "002.psd"]) == ["002.psd", "2.psd", "010.psd"]
 
 
+def test_fixture_files_are_real_artwork():
+    """夹具完整性守卫：必须是美术真实 PSD，不能被占位夹具顶替。
+
+    历史背景：`tests/make_test_psd.py` 会用 psd-tools 程序化生成 400x600 的
+    英文层占位夹具（bg / dialogue_0x / text1 / text2 / 10.psd）。夹具改为真实
+    美术 PSD 后该脚本已删除——它一旦被重新运行，就会**静默覆盖** `001.psd`
+    等真实素材，而真实素材是手工维护、无法程序化重建的。这里把「真实素材」
+    的特征写死成断言，作为最后一道防线：谁再把占位夹具放回来，测试立刻红。
+    """
+    expected = {
+        "001.psd": (1024, 1536),
+        "002.psd": (1024, 1536),
+        "003.psd": (1024, 1536),
+    }
+    found = {p.name for p in DATA_DIR.glob("*.psd")}
+    assert found == set(expected), (
+        f"夹具文件集不符：{sorted(found)}；"
+        "真实夹具应为 001/002/003.psd（10.psd 是已删除的占位夹具）"
+    )
+    for name, (w, h) in expected.items():
+        path = DATA_DIR / name
+        # 1) 真实素材远大于占位夹具（各约 11 MB vs 34～117 KB）
+        assert path.stat().st_size > 1_000_000, (
+            f"{name} 只有 {path.stat().st_size} 字节，疑似被占位夹具覆盖"
+        )
+        # 2) 画布尺寸
+        doc = PSDDocument(path)
+        assert doc.size == (w, h), (name, doc.size)
+        names = [i.name for i in doc.layers]
+        # 3) 精确 "bg" + 「bg 拷贝」双底图结构（真实素材特征）
+        assert names[0] == "bg", (name, names[:3])
+        assert "bg 拷贝" in names, (name, names[:3])
+        # 4) 占位夹具的层名一个都不许回来
+        legacy = {"dialogue_01", "dialogue_02", "dialogue_03", "text1", "text2"}
+        assert not (legacy & set(names)), (name, sorted(legacy & set(names)))
+
+
 def test_document_load_001():
     doc = PSDDocument(DATA_DIR / "001.psd")
     names = [info.name for info in doc.layers]
@@ -43,7 +80,7 @@ def test_document_load_001():
     assert names[1] == "bg 拷贝", names
     assert len(doc.layers) == 12, names
     assert [i.image_mode for i in doc.layers[2:]] == ["topil_only"] * 10, names
-    # 旧占位夹具的层名不应再出现（防夹具回退成 make_test_psd.py 的产物）
+    # 旧占位夹具的层名不应再出现（完整性守卫见 test_fixture_files_are_real_artwork）
     assert not ({"dialogue_01", "text1", "text2"} & set(names)), names
     # merged image 来自 PSD 自带数据，尺寸与画布一致
     merged = doc.merged_np()

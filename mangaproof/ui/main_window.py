@@ -136,6 +136,11 @@ _MEMORY_POLICIES = {
     "relaxed": {"bg_qimage_bytes": 768 * 1024 * 1024, "lru_bytes": 768 * 1024 * 1024},
 }
 
+# 推迟驱逐的重试节奏：io 锁被预加载线程占用时，按此间隔重试，
+# 上限次数避免预加载长期占锁时无限重试（上限内没等到就交给下次调度）。
+_EVICT_RETRY_MS = 200
+_EVICT_RETRY_MAX = 25
+
 
 class MainWindow(QMainWindow):
     def __init__(self, settings_manager: SettingsManager):
@@ -197,6 +202,11 @@ class MainWindow(QMainWindow):
         self._pinned_bg_key = None           # 当前文档钉住的 LRU 键 (path, layer_id)
         self._keep_set: set = set()          # 最近一次预加载调度的窗口集合
         self._evict_pending: set = set()     # 因 io 锁被占而推迟驱逐的文档
+        self._evict_retries = 0              # 推迟驱逐的连续重试计数
+        self._evict_timer = QTimer(self)     # 推迟驱逐的重试定时器
+        self._evict_timer.setSingleShot(True)
+        self._evict_timer.setInterval(_EVICT_RETRY_MS)
+        self._evict_timer.timeout.connect(self._drain_pending_evictions)
 
         self._compare = CompareController(self)
         self._compare.display_changed.connect(self._on_compare_display_changed)
@@ -1033,6 +1043,8 @@ class MainWindow(QMainWindow):
         self._extra_targets.clear()
         self._keep_set.clear()
         self._evict_pending.clear()
+        self._evict_timer.stop()
+        self._evict_retries = 0
         self._pinned_bg_key = None
         self._preload_scheduled = False
         self._completion_announced = False
@@ -1502,10 +1514,21 @@ class MainWindow(QMainWindow):
 
         预加载线程是一次性的短任务，完成一个目标后锁即交还；每当预加载
         结果回到主线程就重试一次，窗口外文档随即被回收，不会永久驻留。
+
+        单靠回调还不够：文档的 io 锁覆盖整段像素提取，若预加载线程手上
+        还压着整队邻域任务，排队期间窗口外文档会一直挂着。所以待驱逐集
+        非空时再挂一个短定时器持续重试——有界（最多 _EVICT_RETRY_MAX 次），
+        锁一空出来就收，避免"只在队列全部跑完才回收"。
         """
         if not self._evict_pending:
+            self._evict_retries = 0
             return
         self._evict_outside_window(self._current_keep_set())
+        if self._evict_pending and self._evict_retries < _EVICT_RETRY_MAX:
+            self._evict_retries += 1
+            self._evict_timer.start(_EVICT_RETRY_MS)
+        else:
+            self._evict_retries = 0
 
     def _update_preload_label(self) -> None:
         """两阶段独立显示：图像预加载（A）在左、图层预热（B）在右。"""
@@ -2644,6 +2667,7 @@ class MainWindow(QMainWindow):
             self._numbering_worker.wait(5000)
         self._preload.stop()
         self._preload.wait(8000)
+        self._evict_timer.stop()   # 关窗后不再重试驱逐
         if self.task is not None:
             self._autosave_timer.stop()
             self.save_task()
