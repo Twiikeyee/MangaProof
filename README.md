@@ -6,8 +6,8 @@
 
 逐层检查嵌字质量 · 键盘驱动标注 · 一键生成返修单
 
-[![build](https://github.com/gunfub/MangaProof/actions/workflows/build.yml/badge.svg)](https://github.com/gunfub/MangaProof/actions/workflows/build.yml)
-[![android](https://github.com/gunfub/MangaProof/actions/workflows/android.yml/badge.svg)](https://github.com/gunfub/MangaProof/actions/workflows/android.yml)
+[![Desktop Build](https://github.com/gunfub/MangaProof/actions/workflows/build.yml/badge.svg)](https://github.com/gunfub/MangaProof/actions/workflows/build.yml)
+[![Android Build](https://github.com/gunfub/MangaProof/actions/workflows/android.yml/badge.svg)](https://github.com/gunfub/MangaProof/actions/workflows/android.yml)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-4b5563)
 ![python](https://img.shields.io/badge/python-3.12%2B-3776ab)
 [![license](https://img.shields.io/badge/license-GPL--3.0--only-blue)](./LICENSE)

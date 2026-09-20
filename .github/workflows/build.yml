@@ -1,4 +1,4 @@
-name: build
+name: Desktop Build
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
   # Windows 的 _psd_fast.pyd 在 Linux 上用 mingw-w64 交叉编译（纯 C，
   # ctypes 可直接加载），避免依赖 Windows runner 上的 MSVC 环境。
   accel-win:
-    name: windows accel (mingw cross)
+    name: Windows accel (mingw-w64)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -36,7 +36,7 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: ${{ matrix.artifact }}
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -44,10 +44,12 @@ jobs:
         include:
           - os: ubuntu-24.04
             arch: x64
+            label: Linux x64
             spec: packaging/main_linux.spec
             artifact: linux-x64
           - os: ubuntu-24.04-arm
             arch: arm64
+            label: Linux arm64
             spec: packaging/main_linux.spec
             artifact: linux-arm64
     steps:
@@ -104,7 +106,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: ${{ matrix.artifact }}
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -112,10 +114,12 @@ jobs:
         include:
           - os: macos-15-intel
             arch: x64
+            label: macOS x64
             spec: packaging/main_macos.spec
             artifact: macos-x64
           - os: macos-15
             arch: arm64
+            label: macOS arm64
             spec: packaging/main_macos.spec
             artifact: macos-arm64
     steps:
@@ -168,7 +172,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    name: windows-x64
+    name: Windows x64
     runs-on: windows-latest
     needs: accel-win
     steps:
@@ -242,7 +246,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Create release
+    name: Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
