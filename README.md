@@ -397,6 +397,7 @@ packaging/             # 三平台 PyInstaller spec、Linux 桌面模板、Andro
 scripts/               # 构建 / 加速扩展 / 图标生成脚本
 docs/                  # Android 适配与打包研究文档
 tests/                 # 测试套件：状态机 / 内存策略 / 打包 hook / GUI 冒烟（夹具为真实美术 PSD）
+THIRD_PARTY_LICENSES.md  # 第三方组件与许可全文（由 scripts/build_third_party_doc.py 生成）
 ```
 
 ## 设计边界
@@ -416,5 +417,9 @@ tests/                 # 测试套件：状态机 / 内存策略 / 打包 hook /
   依据《MiSans 字体知识产权许可协议》使用：不改编、不单独分发；字体文件缺失时回退内置宋体，生成不受影响；
   Android 端额外附带 `NotoSansSymbols2` 作为符号回退（该平台无系统字体回退）；
 - 图标由 `ico/` 提供（Windows `.ico` / macOS `.icns` / Linux `.png` / Android 自适应图标）；
-- 第三方组件（Python、psd-tools、NumPy、PySide6 / Qt、reportlab、Pillow、PyInstaller 等）
-  的版本、许可证与版权信息，可在程序内 **帮助 → 第三方许可** 中查看。
+- 第三方组件（Python、psd-tools、NumPy、PySide6 / Qt、shiboken6、reportlab、Pillow、
+  attrs、charset-normalizer、MiSans 字体等）的版本、许可证与版权信息有两种查看方式，
+  内容同源：
+  - **不装软件直接看** → 仓库内 [`THIRD_PARTY_LICENSES.md`](./THIRD_PARTY_LICENSES.md)
+    （含全部 29 个组件的版本、SPDX 标识、版权、主页与许可证全文）；
+  - **程序内看** → **帮助 → 第三方许可**。

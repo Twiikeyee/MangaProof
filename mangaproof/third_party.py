@@ -6,6 +6,10 @@ VS Code Third Party Notices）：组件名 + 版本 + SPDX 许可证标识 +
 
 版本号优先从已安装包元数据（importlib.metadata）解析，缺失时回退
 到随代码记录的版本。
+
+同一份数据会导出为仓库根目录的 `THIRD_PARTY_LICENSES.md`
+（`scripts/build_third_party_doc.py`），供不运行程序的人直接查阅；
+两者由 tests/test_third_party_doc.py 守卫一致性。
 """
 
 from __future__ import annotations
@@ -158,6 +162,16 @@ non-free programs (including commercial ones)."
 完整许可证文本（官方链接）：
 https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt"""
 
+GPL2_NOTICE = """GNU General Public License v2 或更高版本（GPL-2.0-or-later）
+
+- PyInstaller 社区 hooks 集（pyinstaller-hooks-contrib）以 GPL-2.0-or-later
+  授权；其中**随可执行文件分发**的运行期 hook 部分单独采用 Apache-2.0；
+- 本项目仅在打包期使用它生成可执行文件，不修改、也不再分发其本体。
+
+完整许可证文本（官方链接）：
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+https://github.com/pyinstaller/pyinstaller-hooks-contrib/blob/develop/LICENSE"""
+
 # ---------------------------------------------------------------------------
 # Android 打包工具链（PySide6 官方 pyside6-android-deploy 及其依赖）
 # ---------------------------------------------------------------------------
@@ -236,8 +250,6 @@ MISANS_LICENSE = """MiSans 字体知识产权许可协议
 下载地址：https://hyperos.mi.com/font/download"""
 
 
-# JetBrains Mono（Nerd Fonts 补丁版）——符号图标回退字体，OFL-1.1。
-# 官方许可原文同时随包分发在 font/LICENSE-JetBrainsMonoNerdFont.txt。
 # Noto Sans Symbols 2（符号回退字体，OFL-1.1）。
 # 许可全文内嵌在下方（NOTO_SYMBOLS2_LICENSE），展示于「帮助 → 第三方许可」；
 # 不再单独随包放一份 .txt（软件内即可查阅，避免同一份协议两处维护）。
@@ -393,6 +405,14 @@ def build_third_party_items() -> list[ThirdPartyItem]:
             LGPL3_NOTICE,
         ),
         ThirdPartyItem(
+            "shiboken6（PySide6 绑定运行时）",
+            _resolve_version("shiboken6", "6.11.2"),
+            "LGPL-3.0-only（亦可选 GPL-2.0 / GPL-3.0 或商业授权）",
+            "© The Qt Company Ltd.",
+            "https://pyside.org/",
+            LGPL3_NOTICE,
+        ),
+        ThirdPartyItem(
             "reportlab（PDF 生成）",
             _resolve_version("reportlab", "5.0.1"),
             "BSD-3-Clause",
@@ -409,6 +429,30 @@ def build_third_party_items() -> list[ThirdPartyItem]:
             HPND_LICENSE,
         ),
         ThirdPartyItem(
+            "attrs（psd-tools 依赖）",
+            _resolve_version("attrs", "26.1.0"),
+            "MIT",
+            "© 2015-2026 Hynek Schlawack",
+            "https://www.attrs.org/",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "typing-extensions（psd-tools 依赖）",
+            _resolve_version("typing-extensions", "4.16.0"),
+            "PSF-2.0",
+            "© Python Software Foundation 及 typing_extensions 贡献者",
+            "https://github.com/python/typing_extensions",
+            PSF_LICENSE,
+        ),
+        ThirdPartyItem(
+            "charset-normalizer（reportlab 依赖）",
+            _resolve_version("charset-normalizer", "3.5.1"),
+            "MIT",
+            "© 2019-2026 Ahmed TAHRI（jawah）",
+            "https://github.com/jawah/charset_normalizer",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
             "PyInstaller（打包工具）",
             _resolve_version("pyinstaller", "6.22.2"),
             "GPL-2.0-or-later（bootloader 例外）",
@@ -423,6 +467,46 @@ def build_third_party_items() -> list[ThirdPartyItem]:
             "© Istvan Albert 及贡献者",
             "https://altgraph.readthedocs.io/",
             MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "pyinstaller-hooks-contrib（PyInstaller hooks 集）",
+            _resolve_version("pyinstaller-hooks-contrib", "2026.6"),
+            "GPL-2.0-or-later（运行期 hook 部分为 Apache-2.0）",
+            "© PyInstaller Development Team 及贡献者",
+            "https://github.com/pyinstaller/pyinstaller-hooks-contrib",
+            GPL2_NOTICE,
+        ),
+        ThirdPartyItem(
+            "setuptools（PyInstaller 依赖）",
+            _resolve_version("setuptools", "84.0.0"),
+            "MIT",
+            "© Python Packaging Authority（PyPA）",
+            "https://github.com/pypa/setuptools",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "macholib（PyInstaller 依赖，仅 macOS 打包）",
+            _resolve_version("macholib", "1.16.4"),
+            "MIT（Expat）",
+            "© 2006-2009 Bob Ippolito；© 2008-2023 Ronald Oussoren",
+            "https://github.com/ronaldoussoren/macholib",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "pefile（PyInstaller 依赖，仅 Windows 打包）",
+            _resolve_version("pefile", "2024.8.26"),
+            "MIT",
+            "© 2004-2024 Ero Carrera",
+            "https://github.com/erocarrera/pefile",
+            MIT_LICENSE,
+        ),
+        ThirdPartyItem(
+            "pywin32-ctypes（PyInstaller 依赖，仅 Windows 打包）",
+            _resolve_version("pywin32-ctypes", "0.2.3"),
+            "BSD-3-Clause",
+            "© 2014 Enthought, Inc.",
+            "https://github.com/enthought/pywin32-ctypes",
+            BSD3_LICENSE,
         ),
         # ---- Android 打包工具链（仅构建期使用，不随应用分发；所有平台一致展示）----
         ThirdPartyItem(

@@ -715,10 +715,13 @@ def test_license_page() -> None:
 
     items = build_third_party_items()
     names = [i.name for i in items]
-    # 覆盖：运行时、PSD 解析、图像分析、GUI、PDF、图像处理、打包工具及其依赖、
-    # Android 打包工具链（p4a / buildozer / Cython / Nuitka / SDK / NDK）、字体
-    for keyword in ("Python", "psd-tools", "NumPy", "PySide6", "reportlab",
-                    "Pillow", "PyInstaller", "altgraph", "MiSans",
+    # 覆盖：运行时、PSD 解析、图像分析、GUI、PDF、图像处理、传递依赖、
+    # 打包工具及其依赖、Android 打包工具链（p4a / buildozer / Cython / Nuitka / SDK / NDK）、字体
+    for keyword in ("Python", "psd-tools", "NumPy", "PySide6", "shiboken6",
+                    "reportlab", "Pillow", "attrs", "typing-extensions",
+                    "charset-normalizer", "PyInstaller", "altgraph",
+                    "pyinstaller-hooks-contrib", "setuptools", "macholib",
+                    "pefile", "pywin32-ctypes", "MiSans",
                     "python-for-android", "buildozer", "Cython", "Nuitka",
                     "Jinja2", "Android SDK", "Android NDK"):
         assert any(keyword in n for n in names), f"缺少组件：{keyword}"
