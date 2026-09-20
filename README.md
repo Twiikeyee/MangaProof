@@ -205,9 +205,9 @@ R 拖框圈问题 + 快捷键选类型 + 批注  →  自动跳到下一个未�
 | --- | --- |
 | <img src="./README.assets/screenshot-08.png" width="440" alt="Android Pad"> | <img src="./README.assets/screenshot-09.png" width="440" alt="Android Phone"> |
 
-| Android 模拟器 |
-| --- |
-| <img src="./README.assets/screenshot-11.png" width="440" alt="Android Emulator"> |
+| Android 折叠屏 | Android 模拟器 |
+| --- | --- |
+| <img src="./README.assets/screenshot-10.png" width="440" alt="Android Foldable"> | <img src="./README.assets/screenshot-11.png" width="440" alt="Android Emulator"> |
 
 ## 快速开始
 
