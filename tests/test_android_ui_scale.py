@@ -407,7 +407,9 @@ def test_main_window_has_file_settings_help_menus(qapp, tmp_path):
         assert [a.text() for a in settings_menu.actions()] == ["设置…"]
 
         help_menu = menubar.actions()[2].menu()
-        assert [a.text() for a in help_menu.actions()] == ["关于 MangaProof", "第三方许可…"]
+        assert [a.text() for a in help_menu.actions()] == [
+            "关于 MangaProof", "许可证…", "第三方许可…",
+        ]
     finally:
         window.close()
 

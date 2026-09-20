@@ -17,10 +17,14 @@ from PyInstaller.utils.hooks import collect_submodules
 SPEC_DIR = Path(SPECPATH)
 ROOT = SPEC_DIR.parent
 
-# 随包数据：ico/、font/、以及已构建的原生加速扩展（ctypes 按路径加载）
+# 随包数据：ico/、font/、以及已构建的原生加速扩展（ctypes 按路径加载）；
+# 另收许可文本——GPLv3 §6 要求分发目标码时随附本许可副本与第三方许可清单，
+# 运行时由「帮助 → 许可证…」读取（见 mangaproof/app_license.py）。
 _datas = [
     (str(ROOT / "ico"), "ico"),
     (str(ROOT / "font"), "font"),
+    (str(ROOT / "LICENSE"), "licenses"),
+    (str(ROOT / "THIRD_PARTY_LICENSES.md"), "licenses"),
 ] + [
     (str(p), "mangaproof")
     for p in (ROOT / "mangaproof").glob("_psd_fast.so")

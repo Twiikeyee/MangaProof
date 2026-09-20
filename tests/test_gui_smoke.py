@@ -751,6 +751,42 @@ def test_license_page() -> None:
     print("PASS test_license_page")
 
 
+def test_app_license_page_and_about() -> None:
+    """自身许可（GPL-3.0-only）：全文可离线查看，「关于」给出标识与版权。
+
+    GPLv3 §6 要求分发目标码时随附一份本许可副本，所以「帮助 → 许可证…」
+    必须能在**打包产物里**读到 LICENSE（源码布局下读仓库根的同名文件）。
+    """
+    from mangaproof import __copyright__, __license__
+    from mangaproof.ui.license_dialog import AppLicenseDialog
+
+    dialog = AppLicenseDialog()
+    text = dialog.text_view.toPlainText()
+    assert "GNU GENERAL PUBLIC LICENSE" in text
+    assert "Version 3" in text
+    assert __copyright__ in text, "许可全文里应有本项目的版权行"
+    dialog.close()
+
+    sm = SettingsManager(Path(tempfile.mkdtemp()) / "settings.json")
+    window = MainWindow(sm)
+    captured: dict[str, str] = {}
+
+    def fake_about(parent, title, text):        # noqa: ANN001 - 与 Qt 静态方法签名一致
+        captured["title"], captured["text"] = title, text
+        return QMessageBox.StandardButton.Ok
+
+    with patch.object(QMessageBox, "about", side_effect=fake_about):
+        window._show_about()
+
+    assert captured["title"] == "关于 MangaProof"
+    assert __license__ in captured["text"]
+    assert __copyright__ in captured["text"]
+    assert "帮助 → 许可证…" in captured["text"], "关于框要指明许可证入口"
+    window.close()
+
+    print("PASS test_app_license_page_and_about")
+
+
 def test_full_workflow() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

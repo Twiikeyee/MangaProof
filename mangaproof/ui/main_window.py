@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mangaproof import APP_NAME, __version__
+from mangaproof import APP_NAME, __copyright__, __license__, __version__
 from mangaproof.camera.centering import auto_box_rect, layer_visual_bounds
 from mangaproof.compare.controller import BG_ONLY, ORIGINAL, CompareController, hz_to_interval_ms
 from mangaproof.config.recent import RecentManager
@@ -76,7 +76,7 @@ from mangaproof.ui.file_panel import FilePanel
 from mangaproof.ui.issue_panel import IssuePanel
 from mangaproof.ui.layer_panel import LayerPanel
 from mangaproof.ui.nav_pad import NavPad
-from mangaproof.ui.license_dialog import LicenseDialog
+from mangaproof.ui.license_dialog import AppLicenseDialog, LicenseDialog
 from mangaproof.ui.numbering_worker import (
     KIND_CANCELLED as NUMBERING_CANCELLED,
     NumberingWorker,
@@ -445,6 +445,10 @@ class MainWindow(QMainWindow):
         about_action = QAction("关于 MangaProof", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+        # 本软件自身的许可（GPL-3.0-only）与第三方组件许可分开，两个入口都不占快捷键
+        app_license_action = QAction("许可证…", self)
+        app_license_action.triggered.connect(self._show_app_license)
+        help_menu.addAction(app_license_action)
         license_action = QAction("第三方许可…", self)
         license_action.triggered.connect(self._show_licenses)
         help_menu.addAction(license_action)
@@ -457,9 +461,16 @@ class MainWindow(QMainWindow):
             "漫画翻译质量检查与返修标注工具。<br><br>"
             "独立于 Photoshop：不调用 Photoshop API、不修改 PSD、<br>"
             "Original 直接使用 PSD 自带 merged image。<br><br>"
+            f"<b>许可证：</b>{__license__}（GNU GPL v3.0，仅此版本）<br>"
+            f"{__copyright__}<br>"
+            "许可证全文见「帮助 → 许可证…」（随程序一同分发）。<br><br>"
             "本软件使用小米 MiSans 字体，第三方组件与许可证信息<br>"
             "见「帮助 → 第三方许可」。",
         )
+
+    def _show_app_license(self) -> None:
+        dialog = AppLicenseDialog(self)
+        dialog.exec()
 
     def _show_licenses(self) -> None:
         dialog = LicenseDialog(self)
