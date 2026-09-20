@@ -87,5 +87,13 @@ app = BUNDLE(
         "CFBundleShortVersionString": "1.0.0",
         "NSHumanReadableCopyright": "Copyright (C) 2026 gunfub. Licensed under GPL-3.0-only.",
         "LSMinimumSystemVersion": "11.0",
+        # 系统原生面板（访达式文件选择器）的界面语言跟随 app 的本地化，
+        # 而不是跟随系统语言。PyInstaller 产物没有任何 .lproj，不显式声明的话
+        # macOS 按"只支持开发区域语言"处理，中文系统上给出的是英文面板。
+        # 只声明简体中文；非中文系统由 CFBundleDevelopmentRegion 兜底为英文。
+        "CFBundleLocalizations": ["zh-Hans", "zh-CN"],
+        "CFBundleDevelopmentRegion": "en",
+        # Qt 官方 macOS 模板同样带这一项：允许从系统 framework 取本地化资源
+        "CFBundleAllowMixedLocalizations": True,
     },
 )
