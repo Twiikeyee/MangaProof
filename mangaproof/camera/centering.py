@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """视觉中心定位（需求 §17、§18）。
 
 选择图层后，将图层「视觉中心」（非 Bounds 几何中心）移动到视口中心。

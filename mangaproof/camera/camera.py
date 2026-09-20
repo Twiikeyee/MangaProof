@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Camera 系统（需求 §19）。
 
 Viewer 自行维护 camera_x / camera_y / zoom，不依赖 Photoshop 坐标系。

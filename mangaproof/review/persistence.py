@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """任务持久化与文件身份验证（需求 §5～§10、§58）。
 
 - 单 PSD：同目录同名 <name>.mangaproof.json；

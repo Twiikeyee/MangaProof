@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """后台返修单生成线程（进度框 + 防 GUI 卡死）。
 
 PDF 生成的耗时集中在「逐页提取 merged image → 编码 PNG → 写入 PDF」，

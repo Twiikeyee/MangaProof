@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— typing-extensions（psd-tools 的运行时依赖，纯 Python）
 #
 # 注意：typing-extensions 同时出现在 pyproject 的 dev 依赖组里，但它**确实是

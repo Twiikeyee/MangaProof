@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """自然排序：001.psd < 002.psd < 10.psd，而不是纯字符串排序。"""
 
 from __future__ import annotations

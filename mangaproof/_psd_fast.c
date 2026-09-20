@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 gunfub
+// SPDX-License-Identifier: GPL-3.0-only
+
 /* MangaProof psd 解码加速（纯 C，经 ctypes 加载）。
 
  * mp_delta_decode_8 / mp_delta_decode_16：ZIP_WITH_PREDICTION 的

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """文件 / 文件夹选择器：桌面端与 Android 端在这里分流。
 
 桌面端（零改动）

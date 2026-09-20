@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """日志轮转回归测试：磁盘占用有上界、最旧备份被覆盖删除、启动清理越界文件。
 
 覆盖：

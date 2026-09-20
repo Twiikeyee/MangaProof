@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """解析 uv.lock，输出 Android 打包所需的『运行时依赖闭包』。
 
 为什么要这个脚本

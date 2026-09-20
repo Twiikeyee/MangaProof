@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— psd-tools（核心依赖，纯 Python + 可选 Cython 加速）
 #
 # 与其它三个纯 Python recipe 的三点差异：

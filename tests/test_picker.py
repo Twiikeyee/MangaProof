@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """选择器门面：桌面分支**必须与改造前逐参数一致**，只有 Android 多一个选项。
 
 这是本轮改动的核心约束——"桌面端逻辑不变"。所以这里断言的是**调用参数本身**

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— python3（设备端解释器，钉到 3.11.x）
 #
 # 为什么必须覆盖：Qt 官方 Android wheel 是 **cp311** 构建的，而 wheel 里的原生模块

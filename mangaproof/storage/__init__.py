@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """存储 / 选择器适配层（Android 专有分支集中在这里，桌面端零改动）。
 
 `picker`

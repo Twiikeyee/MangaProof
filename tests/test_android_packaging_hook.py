@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """p4a hook 的本地验证：Java 源安装 + 清单注入 + 入口 Activity 替换。
 
 真机构建跑在 CI（NDK 交叉编译），但 hook 本身是纯 Python，可以、也应该在本地

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """PSDDocument：单个 PSD 的只读文档包装（需求 §2.2、§2.3、§59、§60）。
 
 持有：

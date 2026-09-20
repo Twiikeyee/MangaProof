@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Android 内存策略锁定为激进的测试。
 
 需求：Python 侧，安卓端的内存回收策略只允许「激进」；桌面端三档不变。

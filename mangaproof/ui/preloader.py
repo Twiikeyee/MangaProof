@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """后台 PSD 预加载线程（需求：切换大 PSD 不卡顿）。
 
 两阶段调度（关键优化：切换文件只等 merged，不被背景图/图层提取拖慢）：

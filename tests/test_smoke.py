@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """核心逻辑冒烟测试（无 GUI）：加载、视觉边界、背景选择、相机、持久化验证、PDF。
 
 运行：uv run python -m pytest tests/test_smoke.py -v

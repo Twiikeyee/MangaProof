@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """后台问题编号检查/重排线程（进度框 + 防 GUI 卡死）。
 
 编号扫描是只读操作（见 review/numbering.plan_numbering），放到 QThread 执行，

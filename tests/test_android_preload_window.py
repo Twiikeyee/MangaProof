@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """MainWindow 层面的预加载/驱逐窗口分档测试。
 
 补 task_loader 之外的另两处落点：_schedule_preloads 的候选队列与

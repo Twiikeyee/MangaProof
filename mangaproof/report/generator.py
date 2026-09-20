@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """MangaProof 返修单 PDF 生成（需求 §45～§54）。
 
 - 使用纯 Python PDF 库（reportlab），与 GUI、任务逻辑完全解耦（需求 §47）；

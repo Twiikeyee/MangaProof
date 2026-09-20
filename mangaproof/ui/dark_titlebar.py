@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """原生标题栏暗色化（需求 §28 暗色主题的延伸）。
 
 - Windows：通过 DWM API DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)

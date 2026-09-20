@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """问题面板（需求 §33～§38）。
 
 当前图层的 Issue 列表、状态按钮、添加入口（拖框 / 自定义批注）。

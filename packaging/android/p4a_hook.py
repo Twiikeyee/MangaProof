@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """python-for-android hook：为 MangaProof 注入「进程环境预置」用的 ContentProvider。
 
 这个 provider（`A11yEnvProvider`）在任何 Activity 之前、同一进程内写入两个环境

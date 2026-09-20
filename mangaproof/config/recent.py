@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """最近打开记录：独立 JSON 文件（程序目录/recent.json）。
 
 需求 §68「最近打开任务」。记录刻意**不**混在 settings.json 里：

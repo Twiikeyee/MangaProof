@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— hostpython3（构建期解释器，必须与 python3 同版本）
 #
 # p4a 的 hostpython3 recipe 有**自己的硬编码版本**（develop 分支同为 3.14.2），

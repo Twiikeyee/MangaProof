@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Android 专有界面缩放 +「找回 文件/设置/帮助」的测试。
 
 覆盖：

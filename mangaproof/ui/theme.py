@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """暗色主题（需求 §28）。
 
 专业图像工作环境：深灰主背景、高可读性文字、适度亮度层级、

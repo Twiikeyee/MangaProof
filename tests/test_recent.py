@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """最近打开记录测试：独立 recent.json 存储 + 菜单行为。
 
 覆盖：

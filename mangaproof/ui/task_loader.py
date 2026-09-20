@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """后台任务加载器：打开 PSD/文件夹时把耗时操作放到子线程。
 
 耗时步骤（扫描、抽样 SHA-256 验证、逐个 PSD 解析图层树）全部在

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— reportlab（覆盖 p4a 内置 recipe，因为它已经不可用）
 #
 # 为什么必须覆盖：

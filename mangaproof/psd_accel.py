@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """psd-tools 解码加速的运行时补丁（需求：预加载/提取提速）。
 
 - RLE 解压核心：psd-tools 1.18 官方 wheel 已自带 Cython `_rle` 扩展

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """自动缩放（需求 §20、§20.1）。
 
 比例定义：图层视觉内容的最长边，占 Viewport 对应尺寸的目标比例。

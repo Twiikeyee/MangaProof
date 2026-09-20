@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """问题模型（需求 §33、§63）。
 
 一个失败图层可以拥有多个 Issue，每个 Issue 独立拥有：

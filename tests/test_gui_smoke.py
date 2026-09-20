@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """GUI 冒烟测试（QT_QPA_PLATFORM=offscreen，无需显示器）。
 
 覆盖：打开文件夹 → 自动恢复 → Enter// 状态流转 → 问题红框 →

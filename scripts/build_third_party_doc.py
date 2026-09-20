@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """把「帮助 → 第三方许可」的数据导出为仓库根目录的 THIRD_PARTY_LICENSES.md。
 
 为什么需要这个脚本

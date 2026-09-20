@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Android 浮动方向键（NavPad）：创建条件、置灰规则、直连动作、定位。
 
 对应需求方的三条决策：**B**（Viewer 右下角浮动）+ **①**（直接调用动作方法，

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— attrs（psd-tools 的运行时依赖，纯 Python）
 #
 # 背景：p4a（python-for-android）develop 分支没有 attrs 的官方 recipe

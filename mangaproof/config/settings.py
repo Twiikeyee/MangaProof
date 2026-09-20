@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """程序级设置：settings.json（需求 §20.2、§30、§35、§55）。
 
 软件级设置全部落在 程序目录/settings.json，与任务数据（.mangaproof.json）

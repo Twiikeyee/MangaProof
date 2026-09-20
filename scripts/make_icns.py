@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """生成 macOS .icns 图标（纯 Python，无需 macOS 的 iconutil）。
 
 ICNS 容器格式：'icns' 魔数 + 大端 uint32 总长度，

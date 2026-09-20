@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """返修单文案模板（需求 §45、§50、§54）。"""
 
 REPORT_TITLE = "MangaProof 返修单"

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """第三方许可文件的完整性守卫（程序内页面 ↔ 仓库根导出文件同源）。
 
 覆盖：

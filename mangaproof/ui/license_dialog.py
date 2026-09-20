@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """第三方许可对话框（与「关于」分离）。
 
 左侧组件列表，右侧显示该组件的版本、SPDX 许可证标识、版权声明、

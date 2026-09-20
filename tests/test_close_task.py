@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """关闭当前任务（Ctrl+W /「文件 → 关闭当前任务」）测试。
 
 覆盖：

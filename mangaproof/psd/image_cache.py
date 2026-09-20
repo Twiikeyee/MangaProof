@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """图层像素 LRU 缓存（需求 §59、§60）。
 
 - merged image 与 background image 属于文档长期缓存（由 PSDDocument 持有）；

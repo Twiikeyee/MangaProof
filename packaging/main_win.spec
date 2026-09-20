@@ -1,4 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """MangaProof - Windows PyInstaller 打包配置（onedir）。
 
 控制台策略（与 mangaproof/console.py 配合）：

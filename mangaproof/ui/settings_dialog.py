@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """设置对话框（需求 §20、§30、§35、§46、§49）。
 
 - 图层显示比例（20%～90%）；

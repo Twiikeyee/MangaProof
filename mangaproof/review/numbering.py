@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """问题编号检查与重排（主界面标注修正）。
 
 问题编号（``Issue.issue_no``）在新增问题时取「当前最大值 + 1」：删除问题、

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """导航逻辑（需求 §11、§15、§44）。
 
 - 粗粒度：↑↓ 切换 PSD；

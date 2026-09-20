@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """第三方组件与许可证信息（独立的「第三方许可」页面数据）。
 
 格式遵循业界惯例（Chromium chrome://credits、Flutter LicenseRegistry、

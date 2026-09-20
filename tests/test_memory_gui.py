@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """内存策略 GUI 集成测试（QT_QPA_PLATFORM=offscreen，无需显示器）。
 
 覆盖：打开任务流式扫描（窗口外文档不驻留）、驱逐+重开（监制进度

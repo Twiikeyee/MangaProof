@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """首次使用引导测试：没有配置文件时把设置页面摆到用户面前（不代替决策）。
 
 覆盖：

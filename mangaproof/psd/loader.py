@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """PSD 文件扫描与打开（需求 §4、§5、§59）。
 
 - 文件夹扫描：自然排序（需求 §5.2）；

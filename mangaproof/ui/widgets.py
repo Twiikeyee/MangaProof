@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """通用小部件。
 
 目前只有一件：不响应滚轮的下拉框。

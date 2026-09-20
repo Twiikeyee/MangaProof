@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """主窗口：打开流程、双重导航、快捷键、自动对比、问题、统计、自动保存、返修单。
 
 对应需求：§5～§9、§11～§16、§21～§27、§30～§46、§59、§61、§66。

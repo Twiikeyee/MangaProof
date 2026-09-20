@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 gunfub
+// SPDX-License-Identifier: GPL-3.0-only
+
 package com.mangaproof.a11y;
 
 import android.content.ContentProvider;

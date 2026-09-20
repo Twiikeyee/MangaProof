@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """PSD 文件列表面板（需求 §11.1、§29）。"""
 
 from __future__ import annotations

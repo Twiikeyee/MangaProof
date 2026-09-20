@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """统一程序路径服务（需求 §56、§57）。
 
 所有程序级资源（settings.json、recent.json、logs/ 等）统一通过

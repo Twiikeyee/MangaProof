@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Android 触屏用的方向键模拟（浮动十字键）。
 
 为什么需要

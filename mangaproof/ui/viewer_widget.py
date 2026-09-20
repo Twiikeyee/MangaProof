@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Viewer Canvas（需求 §19、§23、§27、§31、§39）。
 
 - 自维护 Camera（center/zoom），鼠标滚轮上下平移（可在设置中切换为缩放）、

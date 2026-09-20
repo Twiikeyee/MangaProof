@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """构建 mangaproof._psd_fast 原生扩展（纯 C，ctypes 加载，无需 Python.h）。
 
 用法：

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 # MangaProof Android recipe —— charset-normalizer（reportlab 的运行时依赖，纯 Python）
 #
 # charset-normalizer 在 PyPI 上同时发布「mypyc 加速的平台 wheel」与

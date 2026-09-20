@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """通用对话框：问题录入（预制类型 / 自定义批注）、返修单生成。"""
 
 from __future__ import annotations

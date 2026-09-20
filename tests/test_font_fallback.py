@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """字体回退链测试（Android 缺字形的修复机制）。
 
 背景：Android 版 Qt 的平台字体回退几乎是空的

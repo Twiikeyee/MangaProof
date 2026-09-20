@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """开发日志：写入程序目录 logs/ 下，供错误排查使用。
 
 轮转策略（防止日志无限叠加、浪费磁盘与 IO）：

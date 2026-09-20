@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """任务状态模型（需求 §63、§64）。
 
 所有监制信息（通过/未通过、问题、红框、批注、进度）都属于

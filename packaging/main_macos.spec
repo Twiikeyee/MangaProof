@@ -1,4 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """MangaProof - macOS PyInstaller 打包配置（.app bundle）。
 
 控制台策略：macOS 无独立控制台窗口，console=False（windowed）：

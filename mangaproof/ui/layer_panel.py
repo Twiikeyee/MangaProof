@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """图层列表面板（需求 §11.2、§14、§29）。
 
 每行：○ 未监制 / ✓ 已通过 / ✗ 未通过（语义颜色，需求 §28）。

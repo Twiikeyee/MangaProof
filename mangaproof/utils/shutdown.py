@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """进程退出收尾（平台差异集中在这里）。
 
 为什么 Android 上要绕过正常退出流程

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """图层数据模型（需求 §63 LayerInfo）。
 
 只读：MangaProof 绝不修改 PSD 图层（需求 §2.2）。

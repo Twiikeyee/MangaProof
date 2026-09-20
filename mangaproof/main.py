@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """MangaProof 程序入口。
 
 启动顺序：日志 → Android 界面缩放（写 QT_SCALE_FACTOR，需早于 QApplication）

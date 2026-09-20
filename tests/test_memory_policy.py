@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """内存策略相关单元测试：LRU pin/drop/resize、settings.memory_policy、
 任务加载窗口集合。
 

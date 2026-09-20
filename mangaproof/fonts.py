@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """应用统一字体加载（MiSans）。
 
 - 直接运行（python main.py）：查找 程序目录/font/MiSans-Medium.ttf；

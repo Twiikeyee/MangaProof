@@ -4,6 +4,9 @@ version = "1.0.0"
 description = "MangaProof - 漫画翻译质量检查与返修标注工具（独立于 Photoshop 的 PSD QA 工作台）"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "gunfub" }]
 dependencies = [
     "numpy>=2.5.2",
     "psd-tools>=1.18.0",
@@ -15,7 +18,7 @@ dependencies = [
 mangaproof = "mangaproof.main:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

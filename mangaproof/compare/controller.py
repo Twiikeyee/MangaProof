@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """自动对比控制器（需求 §21～§26、§65）。
 
 状态机：ORIGINAL ↔ BG_ONLY。默认每秒切换 4 次（每张停留 250ms，需求 §22），

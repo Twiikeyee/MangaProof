@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 gunfub
+# SPDX-License-Identifier: GPL-3.0-only
+
 """平台判定（供"平台专有行为"使用）。
 
 与 `utils/shutdown.py::is_android()` 的区别（重要，务必分清用途）：
