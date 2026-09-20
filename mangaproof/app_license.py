@@ -1,88 +1,33 @@
 # SPDX-FileCopyrightText: 2026 gunfub
 # SPDX-License-Identifier: GPL-3.0-only
 
-"""本项目自身许可（GPL-3.0-only）文本的定位与读取。
+"""本项目自身许可（GPL-3.0-only）的文本来源。
 
-为什么需要
-----------
-GPLv3 §6 要求分发目标码时**随附一份本许可副本**，因此三个 PyInstaller spec
-都会把仓库根的 `LICENSE` 与 `THIRD_PARTY_LICENSES.md` 打进产物
-（`licenses/` 目录，`sys._MEIPASS` 下）。本模块负责在
+第三方许可页把各组件的许可全文作为常量放在 `mangaproof/third_party.py` 里；
+本软件自身的许可沿用**同一套做法**——`gpl_text.GPL3_LICENSE_TEXT` 是从仓库根
+`LICENSE` 生成的常量（`scripts/build_app_license_text.py`）。好处是：
 
-- 打包产物（`licenses/`，另兼容早期放在包根的情况），
-- 直接运行源码（程序目录 = 仓库根），
-- 源码树（从安装位置反推）
+- 任何产物形态（onedir / `.app` / APK）都能离线查看，运行时不依赖
+  "LICENSE 有没有被打进包、打在哪个目录"；
+- `LICENSE` 仍是唯一数据源，`tests/test_app_license.py` 守卫两者逐字一致。
 
-三种布局下都能找到许可文件，供「帮助 → 许可证…」与「关于」使用。
-
-找不到文件时不抛异常：返回空文本，由调用方给出"请见程序目录下 LICENSE"的提示——
-许可展示缺失不该让程序崩掉。
+`BUNDLE_SUBDIR` / 两个文件名只描述三个 PyInstaller spec 把许可文本放在产物的
+哪个目录（便于拿到压缩包的人直接取用），运行时不读它们。
 """
 
 from __future__ import annotations
 
-import logging
-import sys
-from pathlib import Path
-from typing import Optional
+from mangaproof.gpl_text import GPL3_LICENSE_TEXT
 
-log = logging.getLogger("mangaproof.app_license")
-
-#: 与三个 spec 的 `_datas` 目标目录保持一致
+#: 三个 spec 的 `_datas` 目标目录（产物内 `<bundle>/licenses/…`）
 BUNDLE_SUBDIR = "licenses"
-
 LICENSE_FILE = "LICENSE"
 THIRD_PARTY_FILE = "THIRD_PARTY_LICENSES.md"
 
-
-def _candidate_paths(name: str) -> list[Path]:
-    """按「打包产物 → 程序目录 → 源码树」的顺序给出候选路径。"""
-    candidates: list[Path] = []
-
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        base = Path(meipass)
-        candidates.append(base / BUNDLE_SUBDIR / name)
-        candidates.append(base / name)          # 兼容放在产物包根的情况
-
-    try:
-        from mangaproof.config import paths
-
-        app_dir = paths.get_app_dir()
-    except Exception:                            # pragma: no cover - 环境异常兜底
-        app_dir = None
-    if app_dir:
-        candidates.append(Path(app_dir) / name)
-
-    # 源码树根：mangaproof/app_license.py → 上一级的上一级
-    candidates.append(Path(__file__).resolve().parent.parent / name)
-    return candidates
+#: GPLv3 全文（与仓库根 LICENSE 逐字一致，由测试守卫）
+LICENSE_TEXT = GPL3_LICENSE_TEXT
 
 
-def find_license_file(name: str = LICENSE_FILE) -> Optional[Path]:
-    """返回第一个存在的许可文件路径；都没有则返回 None。"""
-    for path in _candidate_paths(name):
-        if path.is_file():
-            return path
-    log.warning("未找到许可文件 %s（候选：%s）", name, [str(p) for p in _candidate_paths(name)])
-    return None
-
-
-def load_license_text(name: str = LICENSE_FILE) -> str:
-    """读取许可文本；文件缺失或读取失败时返回空串（调用方自行兜底）。"""
-    path = find_license_file(name)
-    if path is None:
-        return ""
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        log.exception("读取许可文件失败：%s", path)
-        return ""
-
-
-def license_location_hint(name: str = LICENSE_FILE) -> str:
-    """给用户看的"许可文件在哪"提示（找不到时说明预期位置）。"""
-    path = find_license_file(name)
-    if path is not None:
-        return str(path)
-    return f"程序目录下的 {name}"
+def license_text() -> str:
+    """程序内展示用的许可全文。"""
+    return LICENSE_TEXT

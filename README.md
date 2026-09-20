@@ -366,9 +366,10 @@ uv run pyinstaller --clean --noconfirm packaging/main_linux.spec
 QT_QPA_PLATFORM=offscreen uv run python -m pytest tests/ -q
 ```
 
-> **对外分发时的许可义务（GPLv3 §6）**：三个平台的打包配置都会把本许可副本与第三方
-> 许可清单收进产物（`licenses/LICENSE`、`licenses/THIRD_PARTY_LICENSES.md`），
-> 安装包用户无需联网即可查阅，「帮助 → 许可证…／第三方许可…」读取的正是这份文件。
+> **对外分发时的许可义务（GPLv3 §6）**：本许可副本与第三方许可清单都会随产物分发
+> （`licenses/LICENSE`、`licenses/THIRD_PARTY_LICENSES.md`）；程序内
+> 「帮助 → 许可证…／第三方许可…」展示的是**代码内置**的同一份全文，
+> 因此任何产物形态（含 Android）都能离线查阅，不依赖文件是否被打进包。
 
 CI（GitHub Actions）覆盖桌面与移动端：
 
@@ -419,7 +420,7 @@ THIRD_PARTY_LICENSES.md  # 第三方组件与许可全文（由 scripts/build_th
 - 本项目以 **GPL-3.0-only**（GNU General Public License v3.0，**仅此版本**）发布，
   Copyright (C) 2026 gunfub，许可全文见 [LICENSE](./LICENSE)；
   各源文件头部带有 `SPDX-License-Identifier: GPL-3.0-only` 标记；
-  程序内可离线查看：**帮助 → 许可证…**；
+  程序内可离线查看：**帮助 → 许可证…**（全文内置在代码里，不依赖外部文件）；
 - 界面与返修单统一使用小米 **MiSans** 字体（`font/MiSans-Medium.ttf`），
   依据《MiSans 字体知识产权许可协议》使用：不改编、不单独分发；字体文件缺失时回退内置宋体，生成不受影响；
   Android 端额外附带 `NotoSansSymbols2` 作为符号回退（该平台无系统字体回退）；

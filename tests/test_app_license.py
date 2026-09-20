@@ -5,9 +5,10 @@
 
 覆盖：
 - 仓库根 `LICENSE` 存在，且是**本项目的**许可声明：带版权行、无 GPL 模板占位符；
-- `app_license.load_license_text()` 在源码布局下能读到许可全文；
-- 三个 PyInstaller spec 都把 `LICENSE` 与 `THIRD_PARTY_LICENSES.md` 收进产物
-  （GPLv3 §6：分发目标码时须随附一份本许可副本与第三方许可清单）；
+- 程序内展示用的 `app_license.license_text()` 与 `LICENSE` **逐字一致**
+  （常量由 scripts/build_app_license_text.py 生成，两边不许各改一份）；
+- 三个 PyInstaller spec 仍把 `LICENSE` 与 `THIRD_PARTY_LICENSES.md` 收进产物
+  （便于拿到安装包的人直接取用，GPLv3 §6）；
 - 版本 / 许可 / 版权常量在 `mangaproof/__init__.py` 与 `pyproject.toml` 之间一致。
 
 运行：QT_QPA_PLATFORM=offscreen uv run python -m pytest tests/test_app_license.py -v
@@ -29,15 +30,18 @@ from mangaproof.app_license import (  # noqa: E402
     BUNDLE_SUBDIR,
     LICENSE_FILE,
     THIRD_PARTY_FILE,
-    find_license_file,
-    load_license_text,
+    license_text,
 )
 
 SPECS = sorted((ROOT / "packaging").glob("*.spec"))
 
 
+def _repo_license() -> str:
+    return (ROOT / LICENSE_FILE).read_text(encoding="utf-8")
+
+
 def test_license_file_carries_project_notice():
-    text = (ROOT / LICENSE_FILE).read_text(encoding="utf-8")
+    text = _repo_license()
     assert "GNU GENERAL PUBLIC LICENSE" in text
     assert "Version 3, 29 June 2007" in text
     # 版权行必须是我们自己的，而不是 GPL 模板的占位符
@@ -46,18 +50,31 @@ def test_license_file_carries_project_notice():
         assert placeholder not in text, f"LICENSE 里仍残留占位符：{placeholder}"
 
 
-def test_load_license_text_reads_repo_license():
-    path = find_license_file(LICENSE_FILE)
-    assert path is not None and path.is_file()
-    text = load_license_text(LICENSE_FILE)
-    assert len(text) > 30_000, "许可全文过短，疑似读到了错误的文件"
+def test_embedded_text_matches_license_file():
+    """程序内展示的全文必须与 LICENSE 同源（生成 + 守卫，不许各改一份）。"""
+    embedded = license_text()
+    assert len(embedded) > 30_000, "内置许可文本过短，疑似生成出错"
+    assert embedded == _repo_license(), (
+        "mangaproof/gpl_text.py 与 LICENSE 不一致，"
+        "请运行：uv run python scripts/build_app_license_text.py"
+    )
+
+
+def test_embedded_text_renders_without_reading_files(monkeypatch, tmp_path):
+    """内置文本不依赖磁盘：程序目录与冻结资源目录都不存在时也必须能取到全文。"""
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "no-such-bundle"), raising=False)
+    monkeypatch.setattr(
+        "mangaproof.config.paths.get_app_dir", lambda: tmp_path / "no-such-app-dir"
+    )
+    monkeypatch.chdir(tmp_path)
+    text = license_text()
     assert "GNU GENERAL PUBLIC LICENSE" in text
-    assert "Version 3" in text
+    assert "Copyright (C) 2026 gunfub" in text
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=[p.name for p in SPECS])
 def test_spec_ships_license_files(spec: Path):
-    """三个平台的产物都要带上许可文本（GPLv3 §6）。"""
+    """三个平台的产物都要带上许可文本（便于再分发者取用，GPLv3 §6）。"""
     text = spec.read_text(encoding="utf-8")
     assert f'ROOT / "{LICENSE_FILE}"' in text, f"{spec.name} 未把 {LICENSE_FILE} 收进产物"
     assert f'ROOT / "{THIRD_PARTY_FILE}"' in text, f"{spec.name} 未把 {THIRD_PARTY_FILE} 收进产物"
@@ -72,24 +89,3 @@ def test_metadata_constants_are_consistent():
     assert project["authors"][0]["name"] in __copyright__
     assert project["license-files"] == [LICENSE_FILE]
     assert __version__ == project["version"]
-
-
-def test_bundle_lookup_order_prefers_meipass(monkeypatch, tmp_path):
-    """打包产物布局：`<sys._MEIPASS>/licenses/LICENSE` 必须优先被找到。"""
-    bundled = tmp_path / BUNDLE_SUBDIR
-    bundled.mkdir()
-    (bundled / LICENSE_FILE).write_text("bundled-license", encoding="utf-8")
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-
-    assert find_license_file(LICENSE_FILE) == bundled / LICENSE_FILE
-    assert load_license_text(LICENSE_FILE) == "bundled-license"
-
-
-def test_missing_license_degrades_gracefully(monkeypatch, tmp_path):
-    """许可文件缺失时返回空串 / 位置提示，不抛异常。"""
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    monkeypatch.setattr(
-        "mangaproof.app_license._candidate_paths", lambda name: [tmp_path / "nope" / name]
-    )
-    assert find_license_file(LICENSE_FILE) is None
-    assert load_license_text(LICENSE_FILE) == ""
