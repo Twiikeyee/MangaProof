@@ -237,11 +237,35 @@ jobs:
             }
           }
           if (-not $ok) { Write-Error "打包失败（详见上方重试信息）"; exit 1 }
-          $zipItem = Get-Item $zip
-          $srcMB = [math]::Round((Get-ChildItem "dist\MangaProof" -Recurse -File |
-            Measure-Object Length -Sum).Sum / 1MB, 1)
-          Write-Host "归档 $zip：$([math]::Round($zipItem.Length / 1MB, 1)) MB（源目录 $srcMB MB）"
-          if ($zipItem.Length -le 0) { Write-Error "归档为空"; exit 1 }
+          if ((Get-Item $zip).Length -le 0) { Write-Error "归档为空"; exit 1 }
+      - name: Verify archive
+        # Compress-Archive 已知会静默跳过隐藏文件/目录（MS 文档已注明），而该 zip
+        # 后续要直接当 Release 资产用；这里逐条比对归档条目与源目录，确认没漏文件。
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          import pathlib, zipfile
+
+          src = pathlib.Path("dist/MangaProof")
+          zips = list(pathlib.Path(".").glob("MangaProof-*-windows-x64.zip"))
+          assert len(zips) == 1, f"期望恰好一个内层 zip，实际：{zips}"
+          zp = zips[0]
+          with zipfile.ZipFile(zp) as z:
+              entries = {n.replace("\\", "/") for n in z.namelist()}
+          want = {
+              f"MangaProof/{p.relative_to(src).as_posix()}"
+              for p in src.rglob("*")
+              if p.is_file()
+          }
+          missing = sorted(want - entries)
+          print(f"{zp.name}：{zp.stat().st_size / 1048576:.1f} MB，"
+                f"归档 {len(entries)} 条 / 源目录 {len(want)} 个文件")
+          if missing:
+              print("缺失条目（前 20）：\n" + "\n".join(missing[:20]))
+              raise SystemExit(f"归档缺少 {len(missing)} 个文件")
+          assert "MangaProof/MangaProof.exe" in entries, "归档内缺少 MangaProof/MangaProof.exe"
+          print("归档内容与源目录一致 ✓")
+          PY
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
