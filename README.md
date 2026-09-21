@@ -395,7 +395,8 @@ CI（GitHub Actions）覆盖桌面与移动端：
 - **`release.yml`**：推送 `v*` 标签或手动触发（补发/重跑），把上面两个工作流的工件汇总成一个 Release。
   前置条件是该标签指向的 commit 上两个构建都是**最新的 success**，且标签与源码版本一致
   （`__version__` / `pyproject.toml` 同步改过再打标签）；发布的资产是解开外层工件包后的单层封装：
-  Windows / macOS 是 zip，Linux 是 tar.gz，Android 是 apk。
+  Windows / macOS 是 zip，Linux 是 tar.gz，Android 是 apk。自动建出的 Release **一律标记为
+  Pre-release**（重跑补传也会先打回 Pre-release），经人工审核后才由人去掉该标记转为正式版。
 
 ## 项目结构
 

@@ -18,6 +18,10 @@ name: Release
 # 发布内容：两个构建的全部工件，排除 accel-windows（Windows 加速扩展的交叉编译
 # 中间产物）。download-artifact 会自动解开外层 zip，剩下的单层封装文件
 # （Windows/macOS 是 zip，Linux 是 tar.gz，Android 是 apk）原样作为 Release 资产。
+#
+# 预发布标记：自动化建出的 Release 一律是 Pre-release（每次重跑补传也会先打回
+# Pre-release），人工审核通过后由人手动去掉该标记 —— 因此自动化产物在审核前
+# 不会成为仓库的 Latest release。
 
 on:
   push:
@@ -254,18 +258,23 @@ jobs:
           mapfile -t files < <(find staged -type f | sort)
           printf '待上传 %d 个资产：\n' "${#files[@]}"
           printf '    %s\n' "${files[@]}"
+          # 自动化产物一律是"待人工审核"态：已存在的 Release 先打回 Pre-release 再补传，
+          # 免得人工放行过的正式版在资产被替换期间仍以正式形态露在外面。
+          # （本流程不使用 draft；若该 tag 存在 draft Release，gh release create 会报已存在。）
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release ${TAG} 已存在 → 覆盖式补传（本工作流可重复执行）"
+            echo "Release ${TAG} 已存在 → 标回 Pre-release 并覆盖式补传（本工作流可重复执行）"
+            gh release edit "$TAG" --prerelease
             gh release upload "$TAG" "${files[@]}" --clobber
           else
             gh release create "$TAG" "${files[@]}" \
               --title "MangaProof ${TAG}" \
               --verify-tag \
+              --prerelease \
               --generate-notes
           fi
           echo "--- Release 现状 ---"
-          gh release view "$TAG" --json url,assets \
-            --jq '"\(.url)", (.assets[] | "    \(.name)  \(.size) 字节")'
+          gh release view "$TAG" --json url,isPrerelease,assets \
+            --jq '"\(.url)  prerelease=\(.isPrerelease)", (.assets[] | "    \(.name)  \(.size) 字节")'
 
       - name: Dry run summary
         if: ${{ inputs.dry_run == true }}
