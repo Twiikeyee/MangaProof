@@ -1,0 +1,78 @@
+name: mirrorchyan_release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        default: ''
+        required: false
+
+jobs:
+  mirrorchyan:
+    runs-on: macos-latest
+    if: ${{ github.repository_owner == 'gunfub' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: win
+            arch: x64
+            filename: 'MangaProof-*-windows-x64.zip'
+          - os: macos
+            arch: arm64
+            filename: 'MangaProof-*-macos-arm64.zip'
+          - os: macos
+            arch: x64
+            filename: 'MangaProof-*-macos-x64.zip'
+          - os: linux
+            arch: arm64
+            filename: 'MangaProof-*-linux-arm64.tar.gz'
+          - os: linux
+            arch: x64
+            filename: 'MangaProof-*-linux-x64.tar.gz'
+
+    steps:
+      - uses: MirrorChyan/uploading-action@v1
+        with:
+          filetype: latest-release
+          filename: ${{ matrix.filename }}
+          mirrorchyan_rid: MangaProof
+          tag: ${{ inputs.tag }}
+
+          os: ${{ matrix.os }}
+          arch: ${{ matrix.arch }}
+
+          owner: gunfub
+          repo: MangaProof
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          upload_token: ${{ secrets.MirrorChyanUploadToken }}
+
+  mirrorchyan_exec:
+    runs-on: macos-latest
+    if: ${{ github.repository_owner == 'gunfub' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: android
+            arch: aarch64
+            filename: 'MangaProof-*-android-aarch64.apk'
+          - os: android
+            arch: x86_64
+            filename: 'MangaProof-*-android-x86_64.apk'
+
+    steps:
+      - uses: MirrorChyan/uploading-action@v1
+        with:
+          filetype: latest-release
+          filename: ${{ matrix.filename }}
+          mirrorchyan_rid: MangaProof_exec
+          tag: ${{ inputs.tag }}
+
+          os: ${{ matrix.os }}
+          arch: ${{ matrix.arch }}
+
+          owner: gunfub
+          repo: MangaProof
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          upload_token: ${{ secrets.MirrorChyanUploadToken }}
