@@ -1,0 +1,272 @@
+name: Release
+
+# 发布流水线：把某个「已通过构建」的 commit 的三端产物挂成一个 GitHub Release。
+#
+# 触发：
+#   · 推送 v* 标签（"创建版本"）
+#   · workflow_dispatch 手动触发（填一个已存在的标签，便于补发/重跑）
+#
+# 前置条件（任一不满足即失败，且不会留下半成品 Release）：
+#   1. 标签去掉前缀 v 后必须等于该 commit 里 mangaproof/__init__.py 的 __version__：
+#      产物名内嵌这个版本号，两者不一致就会做出自相矛盾的 Release；
+#   2. 该 commit 的 Desktop Build（build.yml）与 Android Build（android.yml）
+#      必须成功 —— 取每个 workflow **最新一次**运行，结论不是 success（失败/取消/
+#      超时/启动失败…）即拒绝；更早的失败运行会在日志里列出但不阻断（否则一次
+#      手动触发的失败会把该 commit 的发布永久卡死）。仍在进行中的运行先等待，
+#      超过 BUILD_WAIT_MINUTES 仍未结束则失败退出。
+#
+# 发布内容：两个构建的全部工件，排除 accel-windows（Windows 加速扩展的交叉编译
+# 中间产物）。download-artifact 会自动解开外层 zip，剩下的单层封装文件
+# （Windows/macOS 是 zip，Linux 是 tar.gz，Android 是 apk）原样作为 Release 资产。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的已存在标签（例如 v1.0.0）"
+        required: true
+        type: string
+      dry_run:
+        description: "只校验并下载工件，不创建/更新 Release"
+        type: boolean
+        default: false
+
+# 读其它 workflow 的运行与工件需要 actions: read；建 Release、传资产需要 contents: write。
+permissions:
+  contents: write
+  actions: read
+
+# 同一时间只跑一条发布流水线（不同标签的发布也串行，避免生成发行说明时互相干扰）。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  DESKTOP_WORKFLOW: build.yml
+  ANDROID_WORKFLOW: android.yml
+  BUILD_WAIT_MINUTES: "40"          # 等待同一 commit 上未结束构建的上限
+
+jobs:
+  release:
+    name: Publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout target tag
+        uses: actions/checkout@v7
+        with:
+          # 手动触发时用输入的标签，标签推送时用触发本次运行的标签
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve target
+        id: target
+        shell: bash
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          SHA="$(git rev-parse HEAD)"
+          # 与 build.yml/android.yml 的 Resolve version 步骤同一套解析规则
+          VER="$(sed -nE 's/^__version__ = "([^"]+)".*/\1/p' mangaproof/__init__.py)"
+          if [ -z "$VER" ]; then
+            echo "::error::无法从 mangaproof/__init__.py 解析 __version__，检查该文件第 6 行的写法"
+            exit 1
+          fi
+          if [ "${TAG#v}" != "$VER" ]; then
+            echo "::error::标签与源码版本不一致：标签 ${TAG}，mangaproof/__init__.py 里是 ${VER}"
+            echo "        产物名内嵌源码版本，请先把 __version__ 与 pyproject.toml 一起改成 ${TAG#v} 再打标签"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "目标：标签 ${TAG} → commit ${SHA:0:7}，版本 ${VER}"
+
+      - name: Check builds
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys, time
+
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          SHA = os.environ["SHA"]
+          WAIT_MINUTES = int(os.environ.get("BUILD_WAIT_MINUTES", "40"))
+          WORKFLOWS = {
+              "desktop": os.environ["DESKTOP_WORKFLOW"],
+              "android": os.environ["ANDROID_WORKFLOW"],
+          }
+          # 构建中间产物：Windows 加速扩展的交叉编译工件，不进 Release
+          EXCLUDED_ARTIFACTS = {"accel-windows"}
+
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+
+          def api(path):
+              proc = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if proc.returncode != 0:
+                  fail(f"gh api {path} 调用失败：{proc.stderr.strip()}")
+              return json.loads(proc.stdout)
+
+
+          def runs_of(workflow):
+              url = f"repos/{REPO}/actions/workflows/{workflow}/runs?head_sha={SHA}&per_page=100"
+              return api(url)["workflow_runs"]
+
+
+          def describe(run):
+              return (f"#{run['run_number']} {run['event']} "
+                      f"{run['status']}/{run['conclusion']} {run['html_url']}")
+
+
+          deadline = time.time() + WAIT_MINUTES * 60
+          while True:
+              runs = {key: runs_of(wf) for key, wf in WORKFLOWS.items()}
+              pending = [r for rs in runs.values() for r in rs if r["status"] != "completed"]
+              for key, wf in WORKFLOWS.items():
+                  print(f"--- {wf}：该 commit 上 {len(runs[key])} 次运行 ---")
+                  for r in runs[key]:
+                      print(f"    {describe(r)}")
+              if not pending:
+                  break
+              if time.time() > deadline:
+                  fail(f"等待 {WAIT_MINUTES} 分钟仍有构建未结束：" +
+                       "; ".join(describe(r) for r in pending))
+              print(f"仍有 {len(pending)} 次运行进行中，30 秒后重查…", flush=True)
+              time.sleep(30)
+
+          chosen = {}
+          for key, wf in WORKFLOWS.items():
+              rs = runs[key]
+              if not rs:
+                  fail(f"{wf} 在 commit {SHA[:7]} 上没有运行记录："
+                       f"标签必须打在已推送 master 并触发过构建的 commit 上")
+              latest = max(rs, key=lambda r: r["created_at"])
+              if latest["conclusion"] != "success":
+                  fail(f"{wf} 在 commit {SHA[:7]} 上最新一次运行不是 success"
+                       f"（结论 {latest['conclusion']}）：{latest['html_url']}")
+              others = [r for r in rs if r["id"] != latest["id"]]
+              if others:
+                  print(f"    注：该 commit 上另有 {len(others)} 次更早的运行（不参与判定）")
+              chosen[key] = latest
+              print(f"[OK] {wf} 最新运行 #{latest['run_number']} = success")
+
+          expected = []
+          for key, run in chosen.items():
+              url = f"repos/{REPO}/actions/runs/{run['id']}/artifacts?per_page=100"
+              arts = api(url)["artifacts"]
+              keep = [a for a in arts if a["name"] not in EXCLUDED_ARTIFACTS]
+              expired = [a["name"] for a in keep if a["expired"]]
+              if expired:
+                  fail(f"{key} 运行 #{run['run_number']} 的工件已过期：{', '.join(expired)}"
+                       f"（工件默认保留 90 天，需重新构建该 commit）")
+              if not keep:
+                  fail(f"{key} 运行 #{run['run_number']} 没有可发布的工件")
+              expected += [a["name"] for a in keep]
+              print(f"[OK] {key} 运行 #{run['run_number']} 待发布工件 "
+                    f"{len(keep)} 个：{', '.join(a['name'] for a in keep)}")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{key}_run_id={run['id']}\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"expected_count={len(expected)}\n")
+          print(f"\n合计待发布工件 {len(expected)} 个"
+                f"（已排除 {', '.join(sorted(EXCLUDED_ARTIFACTS))}）")
+          PY
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
+        with:
+          # MangaProof-* 天然不匹配 accel-windows；下载时自动解开外层 zip
+          pattern: MangaProof-*
+          run-id: ${{ steps.check.outputs.desktop_run_id }}
+          github-token: ${{ github.token }}
+          path: staged
+          merge-multiple: true
+
+      - name: Download android artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: MangaProof-*
+          run-id: ${{ steps.check.outputs.android_run_id }}
+          github-token: ${{ github.token }}
+          path: staged
+          merge-multiple: true
+
+      - name: Verify staged assets
+        shell: bash
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+          EXPECTED_COUNT: ${{ steps.check.outputs.expected_count }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, sys
+
+          STAGE = pathlib.Path("staged")
+          VERSION = os.environ["VERSION"]
+          EXPECTED = int(os.environ["EXPECTED_COUNT"])
+          SUFFIXES = (".zip", ".tar.gz", ".apk")
+
+          # 布局无关：merge-multiple 与「按 ID 下载」的落盘层级不同，这里递归取文件
+          files = sorted(p for p in STAGE.rglob("*") if p.is_file())
+          if not files:
+              print("::error::没有下载到任何工件")
+              sys.exit(1)
+
+          problems = []
+          for p in files:
+              rel = p.relative_to(STAGE).as_posix()
+              if not p.name.startswith(f"MangaProof-{VERSION}-"):
+                  problems.append(f"名称不含版本 {VERSION}：{rel}")
+              elif not p.name.endswith(SUFFIXES):
+                  problems.append(f"不是单层封装格式（zip/tar.gz/apk）：{rel}")
+              if "accel" in rel:
+                  problems.append(f"混入构建中间产物：{rel}")
+          if len(files) != EXPECTED:
+              problems.append(f"文件数 {len(files)} 与工件数 {EXPECTED} 不一致（漏下/重复/被工件名过滤掉）")
+
+          if problems:
+              print("::error::待发布资产校验失败")
+              for item in problems:
+                  print(f"    - {item}")
+              sys.exit(1)
+
+          print(f"待发布资产 {len(files)} 个：")
+          for p in files:
+              print(f"    {p.name}  {p.stat().st_size / 1048576:.1f} MB")
+          PY
+
+      - name: Publish release
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          mapfile -t files < <(find staged -type f | sort)
+          printf '待上传 %d 个资产：\n' "${#files[@]}"
+          printf '    %s\n' "${files[@]}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在 → 覆盖式补传（本工作流可重复执行）"
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" \
+              --title "MangaProof ${TAG}" \
+              --verify-tag \
+              --generate-notes
+          fi
+          echo "--- Release 现状 ---"
+          gh release view "$TAG" --json url,assets \
+            --jq '"\(.url)", (.assets[] | "    \(.name)  \(.size) 字节")'
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run == true }}
+        run: echo "::notice::dry_run=true：校验与下载均通过，已跳过 Release 创建/更新"

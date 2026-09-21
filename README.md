@@ -391,7 +391,11 @@ CI（GitHub Actions）覆盖桌面与移动端：
   每平台先做离屏启动冒烟测试再上传；Windows 的 C 加速扩展由 Linux 跑者用 mingw-w64 交叉编译，不依赖 MSVC 环境；
 - **`android.yml`**：推送 `master` 或手动触发，用 PySide6 官方 Android 部署链路构建
   arm64-v8a（真机）与 x86_64（模拟器）两个 ABI 的 APK，并用仓库 keystore 重新签名，产物可直接侧载
-  （固定基于 debug 包重签名：release 包的原生库在真机上不会被解压，当前不可用）。
+  （固定基于 debug 包重签名：release 包的原生库在真机上不会被解压，当前不可用）；
+- **`release.yml`**：推送 `v*` 标签或手动触发（补发/重跑），把上面两个工作流的工件汇总成一个 Release。
+  前置条件是该标签指向的 commit 上两个构建都是**最新的 success**，且标签与源码版本一致
+  （`__version__` / `pyproject.toml` 同步改过再打标签）；发布的资产是解开外层工件包后的单层封装：
+  Windows / macOS 是 zip，Linux 是 tar.gz，Android 是 apk。
 
 ## 项目结构
 
