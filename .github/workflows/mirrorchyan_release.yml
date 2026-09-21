@@ -9,7 +9,7 @@ on:
 
 jobs:
   mirrorchyan:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'gunfub' }}
     strategy:
       fail-fast: false
@@ -48,7 +48,7 @@ jobs:
           upload_token: ${{ secrets.MirrorChyanUploadToken }}
 
   mirrorchyan_exec:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'gunfub' }}
     strategy:
       fail-fast: false
