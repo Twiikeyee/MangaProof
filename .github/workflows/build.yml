@@ -219,51 +219,55 @@ jobs:
           taskkill /PID $($p.Id) /T /F | Out-Null
           Start-Sleep -Seconds 2
       - name: Package artifact
-        # 与 Linux/macOS 对齐：自建内层 zip（保留 dist\MangaProof 顶层目录），
-        # 外层 zip 由 upload-artifact 自动加；重试是为了规避刚构建完的 exe 被占用。
-        shell: pwsh
-        run: |
-          $zip = "MangaProof-${{ steps.version.outputs.version }}-windows-x64.zip"
-          $ok = $false
-          for ($i = 0; $i -lt 10; $i++) {
-            try {
-              Remove-Item $zip -Force -ErrorAction SilentlyContinue
-              Compress-Archive -Path "dist\MangaProof" -DestinationPath $zip -ErrorAction Stop
-              $ok = $true
-              break
-            } catch {
-              Write-Host "打包重试 $($i+1)/10 失败：$($_.Exception.Message)"
-              Start-Sleep -Seconds 1
-            }
-          }
-          if (-not $ok) { Write-Error "打包失败（详见上方重试信息）"; exit 1 }
-          if ((Get-Item $zip).Length -le 0) { Write-Error "归档为空"; exit 1 }
-      - name: Verify archive
-        # Compress-Archive 已知会静默跳过隐藏文件/目录（MS 文档已注明），而该 zip
-        # 后续要直接当 Release 资产用；这里逐条比对归档条目与源目录，确认没漏文件。
+        # 与 Linux/macOS 对齐：自建内层 zip（保留 MangaProof 顶层目录），外层 zip 由
+        # upload-artifact 自动加。这里用 Python 的 zipfile 而不是 Compress-Archive：
+        # 后者会静默跳过隐藏文件、且 .NET 写出的是反斜杠条目标识；Python 两样都没有，
+        # 还能在同一段里直接核对归档与源目录是否逐文件一致。重试是为了规避刚构建完的
+        # exe 被杀软/索引短暂占用（CI 曾实测到）。
         shell: bash
         run: |
           uv run python - <<'PY'
-          import pathlib, zipfile
+          import pathlib, sys, time, zipfile
+
+          # Windows runner 上 stdout 默认走本地代码页（cp1252），中文日志会直接抛
+          # UnicodeEncodeError，这里显式改 UTF-8 并容错。
+          sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
           src = pathlib.Path("dist/MangaProof")
-          zips = list(pathlib.Path(".").glob("MangaProof-*-windows-x64.zip"))
-          assert len(zips) == 1, f"期望恰好一个内层 zip，实际：{zips}"
-          zp = zips[0]
-          with zipfile.ZipFile(zp) as z:
-              entries = {n.replace("\\", "/") for n in z.namelist()}
+          dst = pathlib.Path("MangaProof-${{ steps.version.outputs.version }}-windows-x64.zip")
+
+          def pack() -> None:
+              with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+                  for p in sorted(src.rglob("*")):
+                      if p.is_file():
+                          z.write(p, arcname=f"MangaProof/{p.relative_to(src).as_posix()}")
+
+          for attempt in range(1, 11):
+              try:
+                  pack()
+                  break
+              except OSError as exc:
+                  print(f"打包第 {attempt}/10 次失败：{exc}", flush=True)
+                  dst.unlink(missing_ok=True)
+                  time.sleep(1)
+          else:
+              raise SystemExit("打包失败：重试 10 次仍未成功")
+
           want = {
               f"MangaProof/{p.relative_to(src).as_posix()}"
               for p in src.rglob("*")
               if p.is_file()
           }
+          with zipfile.ZipFile(dst) as z:
+              entries = set(z.namelist())
           missing = sorted(want - entries)
-          print(f"{zp.name}：{zp.stat().st_size / 1048576:.1f} MB，"
+          print(f"{dst.name}：{dst.stat().st_size / 1048576:.1f} MB，"
                 f"归档 {len(entries)} 条 / 源目录 {len(want)} 个文件")
           if missing:
               print("缺失条目（前 20）：\n" + "\n".join(missing[:20]))
               raise SystemExit(f"归档缺少 {len(missing)} 个文件")
-          assert "MangaProof/MangaProof.exe" in entries, "归档内缺少 MangaProof/MangaProof.exe"
+          if "MangaProof/MangaProof.exe" not in entries:
+              raise SystemExit("归档内缺少 MangaProof/MangaProof.exe")
           print("归档内容与源目录一致 ✓")
           PY
       - name: Upload artifact
