@@ -39,9 +39,10 @@ on:
         default: false
 
 # 读其它 workflow 的运行与工件需要 actions: read；建 Release、传资产需要 contents: write。
+# 触发 mirrorchyan workflow 需要 actions: write。
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 # 同一时间只跑一条发布流水线（不同标签的发布也串行，避免生成发行说明时互相干扰）。
 concurrency:
@@ -275,6 +276,15 @@ jobs:
           echo "--- Release 现状 ---"
           gh release view "$TAG" --json url,isPrerelease,assets \
             --jq '"\(.url)  prerelease=\(.isPrerelease)", (.assets[] | "    \(.name)  \(.size) 字节")'
+
+      - name: Trigger MirrorChyanUploading
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: |
+          gh workflow run --repo $GITHUB_REPOSITORY mirrorchyan_release.yml -f tag=${{ steps.target.outputs.tag }}
+          gh workflow run --repo $GITHUB_REPOSITORY mirrorchyan_release_note.yml -f tag=${{ steps.target.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Dry run summary
         if: ${{ inputs.dry_run == true }}
