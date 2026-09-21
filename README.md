@@ -219,7 +219,7 @@ R 拖框圈问题 + 快捷键选类型 + 批注  →  自动跳到下一个未�
 
 | 平台 | 产物 |
 | --- | --- |
-| Windows x64 | `MangaProof-<版本>-windows-x64/`（解压即用，无需安装） |
+| Windows x64 | `MangaProof-<版本>-windows-x64.zip`（解压即用，无需安装） |
 | macOS Intel / Apple Silicon | `MangaProof-<版本>-macos-x64.zip` / `-macos-arm64.zip` |
 | Linux x64 / arm64 | `MangaProof-<版本>-linux-x64.tar.gz` / `-linux-arm64.tar.gz` |
 | Android arm64-v8a / x86_64 | `MangaProof-<版本>-android-aarch64.apk` / `-android-x86_64.apk` |
