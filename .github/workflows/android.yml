@@ -15,8 +15,8 @@ name: Android Build
 #
 # Qt bootstrap 一次只能处理一个 ABI，所以用 matrix **同时跑两个 ABI**：
 # arm64-v8a（aarch64，真机）与 x86_64（模拟器）；两个 APK 分别作为独立 artifact。
-# 备注：若将来要挂 tag 发布，注意与 build.yml 的 release 作业共用同一个 tag，
-# 需把 APK 归并到同一个 Release，避免两个作业抢占同名 Release。
+# 备注：build.yml 目前只上传工件、不创建 Release；将来若由独立的 release.yml 挂 tag 发布，
+# 注意与它共用同一个 tag，需把 APK 归并到同一个 Release，避免两个作业抢占同名 Release。
 on:
   push:
     branches: [master]

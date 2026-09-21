@@ -225,7 +225,7 @@ R 拖框圈问题 + 快捷键选类型 + 批注  →  自动跳到下一个未�
 | Android arm64-v8a / x86_64 | `MangaProof-<版本>-android-aarch64.apk` / `-android-x86_64.apk` |
 
 > 构建产物内已包含编译好的 C 加速扩展，性能最佳。
-> 桌面三端随 [Release](https://github.com/gunfub/MangaProof/releases) 发布（推送 `v*` 标签自动创建）；
+> 桌面三端随 [Release](https://github.com/gunfub/MangaProof/releases) 发布；
 > Android APK 目前只在 [android 工作流](https://github.com/gunfub/MangaProof/actions/workflows/android.yml) 的构建工件中提供。
 
 ### 方式二：从源码运行
@@ -386,7 +386,7 @@ QT_QPA_PLATFORM=offscreen uv run python -m pytest tests/ -q
 
 CI（GitHub Actions）覆盖桌面与移动端：
 
-- **`build.yml`**：推送 `master` 构建并上传工件，推送 `v*` 标签自动创建 Release，也可手动触发。
+- **`build.yml`**：推送 `master` 构建并上传工件，也可手动触发。
   矩阵 5 个平台组合（Windows x64 / Linux x64+arm64 / macOS Intel+Apple Silicon），
   每平台先做离屏启动冒烟测试再上传；Windows 的 C 加速扩展由 Linux 跑者用 mingw-w64 交叉编译，不依赖 MSVC 环境；
 - **`android.yml`**：推送 `master` 或手动触发，用 PySide6 官方 Android 部署链路构建
