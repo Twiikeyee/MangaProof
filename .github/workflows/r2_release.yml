@@ -1,0 +1,513 @@
+name: R2 Release
+
+# R2 发布流水线：把某个「已通过构建、已人工放行」的 Release 的 7 个产物镜像到
+# Cloudflare R2 的 {channel}/ 前缀下，并按 Release Asset 的 digest 生成
+# MangaProof-<version>-sha256.json（需求 §67~§76，规格固化见调研报告 §11.9）。
+#
+# 触发：
+#   · Release 被编辑（release: types: [edited]）—— 与 mirrorchyan_release_note.yml 同一套思路：
+#     Release 先由 release.yml 建为 Pre-release，人工审核后取消 Pre-release 标记正好产生一次
+#     edited；Pre-release 阶段的其他编辑同样触发 edited，故 job 用 !prerelease 过滤掉。
+#     （draft Release 的 created/edited/deleted 不会触发工作流；万一被手动触发，下面的
+#      Release API 校验里还有 draft == false 兜底。）
+#   · workflow_dispatch（可选输入 tag）—— draft/资产补传后需要重跑时的手动兜底。
+#
+# 前置条件（任一不满足即失败，且绝不触碰 R2 上已有的内容）：
+#   1. 标签去掉前缀 v 后必须等于该 commit 里 mangaproof/__init__.py 的 __version__；
+#   2. 该 commit 上 Desktop Build（build.yml）与 Android Build（android.yml）的最新一次运行
+#      必须是 success（仍在进行则等待，超过 BUILD_WAIT_MINUTES 失败）——与 release.yml 同款检查；
+#   3. Release 存在且不是 draft/pre-release，7 个资产齐全、命名符合约定、每个资产都有
+#      sha256:<hex> 形式的 digest（digest 缺失一律失败，需求 §27：不得产出不完整 manifest）；
+#   4. R2 凭据走仓库 Secrets，R2 API Token 需要 Object Read & Write（清理前缀要 List 权限）。
+#
+# 与 MirrorChyan workflow 完全独立（需求 §67/§68）：本文件不声明对 mirrorchyan 作业的
+# 依赖（无 needs），也不读取它的运行结果；两者共有的前置条件各自检查。
+#
+# 强顺序（需求 §71/§72/§74）：校验 → 清理 → 上传。中间多插了一步「先下载到本地」，
+# 免得出现「channel 已清空、但资产下载失败」而把更新源留空。
+#   校验（含本地 sha256 与 Release digest 对账）
+#     → 下载 7 个资产到 r2dist/
+#     → 清空 {channel}/（严格限定前缀，alpha/ 与 beta/ 一律不动）
+#     → 上传 7 个资产 + manifest（manifest 显式 Cache-Control: no-store）
+#     → 带 cache-bust 的 HTTP 复验（需求 §76：不能只看上传命令的退出码）
+
+on:
+  release:
+    types: [edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步到 R2 的已存在标签（例如 v1.0.0）；release 事件触发时忽略"
+        required: false
+        default: ''
+        type: string
+
+# 读 Release 资产用 contents: read；读 build.yml / android.yml 的运行用 actions: read。
+# 本流程只读 GitHub、写 R2，不需要 contents: write。
+permissions:
+  contents: read
+  actions: read
+
+# 独立并发组：与 release.yml 的 release 组互不排队，也与 MirrorChyan 工作流无关。
+# 同一 channel 的两次 R2 发布不能并行（会互相清空/覆盖），故不取消进行中的运行。
+concurrency:
+  group: r2-release
+  cancel-in-progress: false
+
+env:
+  DESKTOP_WORKFLOW: build.yml
+  ANDROID_WORKFLOW: android.yml
+  BUILD_WAIT_MINUTES: "40"          # 等待同一 commit 上未结束构建的上限
+  # bucket 名未在任何需求/调研文档里固化 → 优先取仓库变量 vars.R2_BUCKET 覆盖，
+  # 未设置时回落到默认占位名（换 bucket 只改这一处，或直接在仓库里设变量）。
+  R2_BUCKET: ${{ vars.R2_BUCKET || 'mangaproof' }}
+  # 公网域名（需求 §23：https://download.mangaproof.priloba.com/{channel}/{filename}）
+  R2_PUBLIC_BASE: https://download.mangaproof.priloba.com
+  # R2 是 S3 兼容端点：region 必填但不用（Cloudflare 官方 aws CLI 文档写 auto）
+  AWS_DEFAULT_REGION: auto
+  AWS_EC2_METADATA_DISABLED: "true"      # runner 上没有实例元数据服务，别去探测
+  # AWS CLI v2 较新版本默认「服务端支持就附带 CRC32 校验和」；R2 不需要，
+  # 显式退回「按需计算/按需校验」，避免 S3 兼容层对校验和头的实现差异导致上传被拒。
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+
+jobs:
+  r2:
+    name: Publish to R2
+    # 该镜像预装 AWS CLI v2 与 curl（调研报告 §7.1 实测），无需额外安装步骤
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # 正式更新源只接受「人工放行后的正式 Release」（需求 §69）：workflow_dispatch 没有
+    # release 载荷，!prerelease 恒为真；owner 判断与两个 MirrorChyan workflow 保持一致。
+    if: ${{ github.repository_owner == 'gunfub' && !github.event.release.prerelease && !github.event.release.draft }}
+    steps:
+      - name: Checkout target tag
+        uses: actions/checkout@v7
+        with:
+          # 手动触发用输入的标签，release.edited 用被编辑 Release 的标签（release.yml:67 同款写法）
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::未能确定目标标签：workflow_dispatch 必须填写 tag，release 事件则应带 release.tag_name"
+            exit 1
+          fi
+          SHA="$(git rev-parse HEAD)"
+          # 与 build.yml/android.yml/release.yml 的 Resolve version 步骤同一套解析规则
+          VER="$(sed -nE 's/^__version__ = "([^"]+)".*/\1/p' mangaproof/__init__.py)"
+          if [ -z "$VER" ]; then
+            echo "::error::无法从 mangaproof/__init__.py 解析 __version__，检查该文件第 6 行的写法"
+            exit 1
+          fi
+          if [ "${TAG#v}" != "$VER" ]; then
+            echo "::error::标签与源码版本不一致：标签 ${TAG}，mangaproof/__init__.py 里是 ${VER}"
+            echo "        资产名与 manifest 名都内嵌源码版本，不一致就会发布自相矛盾的内容"
+            exit 1
+          fi
+          # channel 由版本后缀决定（需求 §70）：.alpha → alpha、.beta → beta、否则 stable
+          case "$VER" in
+            *.alpha) CHANNEL=alpha ;;
+            *.beta)  CHANNEL=beta ;;
+            *)       CHANNEL=stable ;;
+          esac
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "目标：标签 ${TAG} → commit ${SHA:0:7}，版本 ${VER}，channel ${CHANNEL}"
+
+      - name: Check builds
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, sys, time
+
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          SHA = os.environ["SHA"]
+          WAIT_MINUTES = int(os.environ.get("BUILD_WAIT_MINUTES", "40"))
+          WORKFLOWS = {
+              "desktop": os.environ["DESKTOP_WORKFLOW"],
+              "android": os.environ["ANDROID_WORKFLOW"],
+          }
+
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+
+          def api(path):
+              proc = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if proc.returncode != 0:
+                  fail(f"gh api {path} 调用失败：{proc.stderr.strip()}")
+              return json.loads(proc.stdout)
+
+
+          def runs_of(workflow):
+              url = f"repos/{REPO}/actions/workflows/{workflow}/runs?head_sha={SHA}&per_page=100"
+              return api(url)["workflow_runs"]
+
+
+          def describe(run):
+              return (f"#{run['run_number']} {run['event']} "
+                      f"{run['status']}/{run['conclusion']} {run['html_url']}")
+
+
+          deadline = time.time() + WAIT_MINUTES * 60
+          while True:
+              runs = {key: runs_of(wf) for key, wf in WORKFLOWS.items()}
+              pending = [r for rs in runs.values() for r in rs if r["status"] != "completed"]
+              for key, wf in WORKFLOWS.items():
+                  print(f"--- {wf}：该 commit 上 {len(runs[key])} 次运行 ---")
+                  for r in runs[key]:
+                      print(f"    {describe(r)}")
+              if not pending:
+                  break
+              if time.time() > deadline:
+                  fail(f"等待 {WAIT_MINUTES} 分钟仍有构建未结束：" +
+                       "; ".join(describe(r) for r in pending))
+              print(f"仍有 {len(pending)} 次运行进行中，30 秒后重查…", flush=True)
+              time.sleep(30)
+
+          for key, wf in WORKFLOWS.items():
+              rs = runs[key]
+              if not rs:
+                  fail(f"{wf} 在 commit {SHA[:7]} 上没有运行记录："
+                       f"标签必须打在已推送 master 并触发过构建的 commit 上")
+              latest = max(rs, key=lambda r: r["created_at"])
+              if latest["conclusion"] != "success":
+                  fail(f"{wf} 在 commit {SHA[:7]} 上最新一次运行不是 success"
+                       f"（结论 {latest['conclusion']}）：{latest['html_url']}")
+              others = [r for r in rs if r["id"] != latest["id"]]
+              if others:
+                  print(f"    注：该 commit 上另有 {len(others)} 次更早的运行（不参与判定）")
+              print(f"[OK] {wf} 最新运行 #{latest['run_number']} = success：{latest['html_url']}")
+          print("\n目标 commit 的两端构建均为 success")
+          PY
+
+      - name: Verify release assets and build manifest
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          TAG = os.environ["TAG"]
+          VERSION = os.environ["VERSION"]
+          OUT_DIR = "r2dist"                 # 待上传目录（7 个资产 + manifest）
+          NAMES_FILE = "asset-names.txt"     # 期望资产清单，供下载/复验步骤复用
+          # 7 个期望资产的 <os>-<arch>.<ext> 部分（需求 §22/§74）
+          SUFFIXES = [
+              "windows-x64.zip",
+              "linux-x64.tar.gz",
+              "linux-arm64.tar.gz",
+              "macos-x64.zip",
+              "macos-arm64.zip",
+              "android-aarch64.apk",
+              "android-x86_64.apk",
+          ]
+          EXPECTED = [f"MangaProof-{VERSION}-{s}" for s in SUFFIXES]
+          IGNORED_HINTS = ("accel",)         # 构建中间产物（如 accel-windows）：不上传
+          DIGEST_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
+
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+
+          def warn(msg):
+              print(f"::warning::{msg}")
+
+
+          # ① Release 必须存在（需求 §71）——tags 端点对 draft 返回 404
+          proc = subprocess.run(
+              ["gh", "api", "-H", "X-GitHub-Api-Version: 2022-11-28",
+               f"repos/{REPO}/releases/tags/{TAG}"],
+              capture_output=True, text=True)
+          if proc.returncode != 0:
+              fail(f"Release {TAG} 不存在或不可读：{proc.stderr.strip()}")
+          release = json.loads(proc.stdout)
+          if release.get("draft") or release.get("prerelease"):
+              fail(f"Release {TAG} 处于 draft/pre-release 状态，正式更新源不接受"
+                   f"（draft={release.get('draft')} prerelease={release.get('prerelease')}）")
+
+          assets = {a["name"]: a for a in release.get("assets", [])}
+          print(f"Release {TAG}：{len(assets)} 个资产")
+          for name in sorted(assets):
+              print(f"    {name}  {assets[name].get('size')} 字节  digest={assets[name].get('digest')}")
+
+          # ② 期望资产齐全（需求 §71：文件名正确、资产完整）
+          missing = [n for n in EXPECTED if n not in assets]
+          if missing:
+              fail("Release 资产不完整，缺少：" + "、".join(missing) +
+                   "（请先在 release.yml 里补齐该 commit 的产物）")
+
+          # ③ 每个期望资产的 digest 必须非空且形如 sha256:<hex>（需求 §27：缺失即失败）
+          manifest = {}
+          for name in EXPECTED:
+              digest = assets[name].get("digest")
+              if not digest:
+                  fail(f"{name} 没有 digest，拒绝生成不完整 manifest（需求 §27）")
+              m = DIGEST_RE.match(digest)
+              if not m:
+                  fail(f"{name} 的 digest 格式不是 sha256:<64 位 hex>：{digest}")
+              if not assets[name].get("size"):
+                  fail(f"{name} 大小为 0 字节，疑似上传中断的中间产物")
+              # 需求 §26：manifest 里是「裸 hex」，故剥掉 sha256: 前缀
+              manifest[name] = m.group(1)
+
+          # ④ 多余的资产：构建中间产物与不认识的资产都只提示、不上传
+          for name in assets:
+              if name in manifest:
+                  continue
+              if any(h in name for h in IGNORED_HINTS):
+                  print(f"    忽略构建中间产物：{name}")
+              else:
+                  warn(f"Release 上的额外资产不在期望清单内，不会被上传到 R2：{name}")
+
+          # ⑤ manifest 文件名按版本动态生成，不得硬编码（需求 §24/§73）
+          manifest_name = f"MangaProof-{VERSION}-sha256.json"
+          os.makedirs(OUT_DIR, exist_ok=True)
+          manifest_path = os.path.join(OUT_DIR, manifest_name)
+          with open(manifest_path, "w", encoding="utf-8") as fh:
+              json.dump(manifest, fh, indent=4, ensure_ascii=False)
+              fh.write("\n")
+          with open(NAMES_FILE, "w", encoding="utf-8") as fh:
+              fh.write("\n".join(EXPECTED) + "\n")
+
+          print(f"\n[OK] 7 个资产齐全且 digest 合法，已生成 {manifest_path}：")
+          print(json.dumps(manifest, indent=4, ensure_ascii=False))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"manifest_name={manifest_name}\n")
+              fh.write(f"manifest_path={manifest_path}\n")
+          PY
+
+      - name: Download release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p r2dist
+          mapfile -t names < asset-names.txt
+          if [ "${#names[@]}" -ne 7 ]; then
+            echo "::error::期望资产清单应为 7 项，实际 ${#names[@]} 项，拒绝继续"
+            exit 1
+          fi
+          printf '待下载 %d 个资产：\n' "${#names[@]}"
+          printf '    %s\n' "${names[@]}"
+          # 逐个精确匹配完整文件名：不会把 accel-* 之类的中间产物一并拖下来
+          for name in "${names[@]}"; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir r2dist --pattern "$name" --clobber
+          done
+          echo "已下载到 r2dist/"
+
+      - name: Verify staged files
+        shell: bash
+        env:
+          MANIFEST_NAME: ${{ steps.verify.outputs.manifest_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, sys
+
+          STAGE = pathlib.Path("r2dist")
+          MANIFEST_NAME = os.environ["MANIFEST_NAME"]
+
+          manifest_file = STAGE / MANIFEST_NAME
+          if not manifest_file.is_file():
+              print(f"::error::本地 manifest {MANIFEST_NAME} 不存在")
+              sys.exit(1)
+          manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+          if len(manifest) != 7:
+              print(f"::error::manifest 应有 7 项，实际 {len(manifest)} 项")
+              sys.exit(1)
+
+          problems = []
+          names = {p.name for p in STAGE.iterdir() if p.is_file()}
+          expected_files = set(manifest) | {MANIFEST_NAME}
+          missing = expected_files - names
+          extra = names - expected_files
+          if missing:
+              problems.append("缺少文件：" + "、".join(sorted(missing)))
+          if extra:
+              problems.append("多出文件：" + "、".join(sorted(extra)))
+
+          # 本地 re-hash 与 Release digest 对账：下载被截断/资产在途中被替换都会在这里拦住，
+          # 从而保证「清理 → 上传」之前手上拿到的就是 Release 上那一份内容
+          for name, digest in manifest.items():
+              path = STAGE / name
+              if not path.is_file():
+                  continue
+              size = path.stat().st_size
+              if size == 0:
+                  problems.append(f"{name} 是 0 字节")
+                  continue
+              h = hashlib.sha256()
+              with path.open("rb") as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                      h.update(chunk)
+              if h.hexdigest() != digest:
+                  problems.append(f"{name} 本地 sha256 与 Release digest 不一致（下载损坏或资产被替换）")
+              else:
+                  print(f"[OK] {name}  {size / 1048576:.1f} MB  sha256 与 Release digest 一致")
+
+          if problems:
+              print("::error::待上传文件校验失败，未触碰 R2")
+              for item in problems:
+                  print(f"    - {item}")
+              sys.exit(1)
+          print(f"\n待上传 {len(manifest) + 1} 个文件：7 个资产 + {MANIFEST_NAME}")
+          PY
+
+      - name: Purge target channel
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          CHANNEL: ${{ steps.target.outputs.channel }}
+        run: |
+          set -euo pipefail
+          # 两道防呆：channel 只能是三个已知值，bucket 名不能带路径分隔符等字符，
+          # 否则 s3:// 目标可能被拼歪、--recursive 的作用域会跑出目标前缀
+          case "$CHANNEL" in
+            alpha|beta|stable) ;;
+            *) echo "::error::channel 取值非法：${CHANNEL}"; exit 1 ;;
+          esac
+          case "$R2_BUCKET" in
+            ""|*[!A-Za-z0-9.-]*) echo "::error::R2_BUCKET 取值非法：${R2_BUCKET}"; exit 1 ;;
+          esac
+          echo "目标：s3://${R2_BUCKET}/${CHANNEL}/（只清这个前缀，alpha/ 与 beta/ 一律不动）"
+          before="$(aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT" || true)"
+          if [ -n "$before" ]; then
+            echo "--- 清理前 ---"
+            printf '%s\n' "$before"
+          else
+            echo "（${CHANNEL}/ 下当前没有对象）"
+          fi
+          aws s3 rm "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT"
+          if aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT" 2>/dev/null | grep -q .; then
+            echo "::error::清理后 ${CHANNEL}/ 下仍有对象，拒绝上传（避免新旧版本混放）"
+            exit 1
+          fi
+          echo "[OK] ${CHANNEL}/ 已清空"
+
+      - name: Upload to R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          CHANNEL: ${{ steps.target.outputs.channel }}
+          MANIFEST_NAME: ${{ steps.verify.outputs.manifest_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find r2dist -maxdepth 1 -type f | sort)
+          if [ "${#files[@]}" -ne 8 ]; then
+            echo "::error::待上传文件应为 8 个（7 个资产 + manifest），实际 ${#files[@]} 个，拒绝继续"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            base="$(basename "$f")"
+            if [ "$base" = "$MANIFEST_NAME" ]; then
+              # manifest 必须永远读到最新副本：Cloudflare 默认 max-age=14400（调研报告 §3.2），
+              # 客户端与 §76 复验都靠 no-store + cache-bust 才不会被旧副本骗到
+              aws s3 cp "$f" "s3://${R2_BUCKET}/${CHANNEL}/${base}" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --content-type application/json \
+                --cache-control "no-store" \
+                --no-progress
+            else
+              aws s3 cp "$f" "s3://${R2_BUCKET}/${CHANNEL}/${base}" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --no-progress
+            fi
+            echo "[OK] 已上传 ${CHANNEL}/${base}"
+          done
+          echo "--- 上传后 s3://${R2_BUCKET}/${CHANNEL}/ ---"
+          aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT"
+
+      - name: Verify uploads over HTTP
+        shell: bash
+        env:
+          CHANNEL: ${{ steps.target.outputs.channel }}
+          MANIFEST_NAME: ${{ steps.verify.outputs.manifest_name }}
+        run: |
+          set -euo pipefail
+          # cache-bust 查询串：让请求落到源站而不是 CDN 缓存（调研报告 §3.2 实测：
+          # 对象与 404 都带 cache-control: max-age=14400，不带就只能读到旧副本/缓存的 404）
+          TS="$(date +%s)"
+          mapfile -t names < asset-names.txt
+          failed=0
+
+          # ① 7 个资产：Range 只取首字节，验证「存在且可读」；CDN 传播/回源偶发失败重试几次
+          for name in "${names[@]}"; do
+            url="${R2_PUBLIC_BASE}/${CHANNEL}/${name}?t=${TS}"
+            ok=""
+            for attempt in 1 2 3 4 5; do
+              if curl -fsS -o /dev/null -r 0-0 "$url"; then ok=1; break; fi
+              echo "第 ${attempt} 次校验 ${CHANNEL}/${name} 未通过，5 秒后重试…"
+              sleep 5
+            done
+            if [ -n "$ok" ]; then
+              echo "[OK] ${R2_PUBLIC_BASE}/${CHANNEL}/${name}"
+            else
+              echo "::error::上传后复验失败：${R2_PUBLIC_BASE}/${CHANNEL}/${name} 不可访问"
+              failed=1
+            fi
+          done
+
+          # ② manifest：带 cache-bust 取全文，并与本地 manifest 逐项比对
+          # （只确认「能访问」不够：旧副本也可能是 200）
+          manifest_url="${R2_PUBLIC_BASE}/${CHANNEL}/${MANIFEST_NAME}"
+          got=""
+          for attempt in 1 2 3 4 5; do
+            if got="$(curl -fsS "${manifest_url}?t=${TS}")" && [ -n "$got" ]; then break; fi
+            got=""
+            echo "第 ${attempt} 次获取 manifest 未通过，5 秒后重试…"
+            sleep 5
+          done
+          if [ -z "$got" ]; then
+            echo "::error::上传后复验失败：${manifest_url} 不可访问或内容为空"
+            exit 1
+          fi
+          printf '%s' "$got" > remote-manifest.json
+          MANIFEST_NAME="$MANIFEST_NAME" python3 - <<'PY'
+          import json, os, pathlib, sys
+
+          name = os.environ["MANIFEST_NAME"]
+          local = json.loads((pathlib.Path("r2dist") / name).read_text(encoding="utf-8"))
+          remote = json.loads(pathlib.Path("remote-manifest.json").read_text(encoding="utf-8"))
+          if remote != local:
+              print("::error::R2 上的 manifest 与本地生成的不一致（疑似读到旧副本）")
+              print(f"    本地：{json.dumps(local, ensure_ascii=False, sort_keys=True)}")
+              print(f"    远端：{json.dumps(remote, ensure_ascii=False, sort_keys=True)}")
+              sys.exit(1)
+          print(f"[OK] {name} 可访问且 7 项 sha256 与本地一致")
+          PY
+
+          if [ "$failed" != 0 ]; then
+            echo "::error::上传后复验未全部通过，请检查 R2 上的对象与 CDN 缓存"
+            exit 1
+          fi
+          echo "上传后复验通过：${CHANNEL}/ 下 7 个资产 + manifest 均可访问"

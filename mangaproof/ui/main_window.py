@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -94,6 +95,7 @@ from mangaproof.ui.report_worker import (
 )
 from mangaproof.ui.settings_dialog import SettingsDialog
 from mangaproof.ui.statistics_panel import StatisticsPanel
+from mangaproof.ui.update_dialog import UpdateDialog
 from mangaproof.ui.task_loader import (
     KIND_CANCELLED,
     KIND_MISMATCH,
@@ -445,6 +447,11 @@ class MainWindow(QMainWindow):
         about_action = QAction("关于 MangaProof", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+        # 需求 §10：「关于 → 更新」——更新入口与"关于"同处帮助菜单，且**不自动触发**，
+        # 只有用户主动点开才检查（不做启动自动检查，需求 §1）。
+        update_action = QAction("检查更新…", self)
+        update_action.triggered.connect(self._show_update_dialog)
+        help_menu.addAction(update_action)
         # 本软件自身的许可（GPL-3.0-only）与第三方组件许可分开，两个入口都不占快捷键
         app_license_action = QAction("许可证…", self)
         app_license_action.triggered.connect(self._show_app_license)
@@ -471,6 +478,58 @@ class MainWindow(QMainWindow):
     def _show_app_license(self) -> None:
         dialog = AppLicenseDialog(self)
         dialog.exec()
+
+    def _show_update_dialog(self) -> None:
+        """「帮助 → 检查更新…」：打开更新页面（需求 §10/§11）。
+
+        - 对话框内部只在点「检查更新」时提交配置（需求 §13），
+          这里负责在提交后落盘；
+        - 用户确认安装时，由本窗口负责"启动安装器 → 确认拉起成功 → 退出"（需求 §46）。
+        """
+        # CDK 明文迁移（需求 §15）：桌面端发现 settings.json 里有明文且 keyring 可用时，
+        # 迁到系统凭据库并删除明文（失败则保留明文，绝不禁用更新功能）。
+        from mangaproof.update import cdk_store
+
+        if cdk_store.migrate_plaintext_cdk(self.settings.update):
+            self._save_settings()
+
+        dialog = UpdateDialog(self.settings, parent=self)
+        dialog.settings_committed.connect(self._save_settings)
+        dialog.install_requested.connect(self._start_update_installer)
+        dialog.exec()
+
+    def _start_update_installer(self, package: object) -> None:
+        """启动更新安装器，成功则退出主程序（需求 §40~§46）。
+
+        顺序不能颠倒：**先确认安装器进程创建成功，再退出主程序**（需求 §46）。
+        启动失败时保持运行并报告错误 —— 否则用户会既没更新、程序也没了。
+        """
+        from mangaproof.update import installer as installer_module
+        from mangaproof.update.errors import InstallerError
+        from mangaproof.update.version import AppVersion
+
+        version = str(AppVersion.parse(__version__))
+        try:
+            invocation = installer_module.prepare_invocation(
+                package=Path(str(package)),
+                version=version,
+                sha256=None,          # 安装器会自己按 --package 重新校验（需求 §53）
+                parent_pid=os.getpid(),
+            )
+            installer_module.launch(invocation)
+        except InstallerError as exc:
+            log.error("启动更新安装器失败：%s", exc)
+            QMessageBox.critical(self, "更新失败", str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - 兜底
+            log.exception("启动更新安装器时出现未预期异常")
+            QMessageBox.critical(self, "更新失败", f"启动安装器失败：\n{exc}")
+            return
+
+        self._saved_update_token = invocation.token
+        log.info("安装器已启动，主程序即将退出以完成更新")
+        # 让对话框先关闭、再走正常的关闭流程（closeEvent 会保存设置并收敛后台线程）
+        QTimer.singleShot(0, self.close)
 
     def _show_licenses(self) -> None:
         dialog = LicenseDialog(self)

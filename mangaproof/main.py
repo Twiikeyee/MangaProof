@@ -96,6 +96,20 @@ def main(argv=None) -> int:
     log = get_logger("main")
     log.info("%s v%s 启动，程序目录：%s", APP_NAME, __version__, app_dir)
 
+    # ---- 更新握手与异常中断恢复（需求 §57/§58/§64）----
+    # 必须在创建 QApplication 之前摘掉 --update-* 参数：Qt 不认识它们。
+    from mangaproof.update.startup import (
+        detect_interrupted_update,
+        mark_update_launch_success,
+        parse_handshake,
+        recovery_message,
+    )
+
+    handshake, qt_argv = parse_handshake(argv)
+    recovery = detect_interrupted_update()
+    if recovery.needs_attention:
+        log.warning("上次更新未完成：%s", recovery.old_dir)
+
     # ---- Android 专有界面缩放（必须在创建 QApplication 之前）----
     # Qt 只在启动时读一次 QT_SCALE_FACTOR（QHighDpiScaling 在 QGuiApplication
     # 初始化时取值），因此这里先算好并写入环境变量；桌面端由平台判定硬保证
@@ -121,9 +135,9 @@ def main(argv=None) -> int:
     )
 
     from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 
-    app = QApplication(argv)
+    app = QApplication(qt_argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setOrganizationName("MangaProof")
@@ -170,6 +184,17 @@ def main(argv=None) -> int:
 
     window = MainWindow(settings_manager)
     window.show()
+
+    # 需求 §57：主程序启动 + 核心初始化 + 旧数据成功加载（settings 在 156 行载入、
+    # recent 在 MainWindow.__init__ 载入、窗口已 show）之后，才主动写成功标记。
+    # 放在 show() 之后而不是更早，是为了让安装器判定的是"新版真的能跑起来"。
+    mark_update_launch_success(handshake)
+
+    if recovery.needs_attention:
+        # 需求 §64：上一次更新没走完 —— 只提示、不擅自改动当前程序
+        QTimer.singleShot(
+            0, lambda: QMessageBox.warning(window, "更新未完成", recovery_message(recovery))
+        )
     # 首次使用（既没有 settings.json 也没有 recent.json）：把设置页面直接打开，
     # 让用户自己过一遍——只展示，不预设、不推荐、不写文件。用 singleShot 让
     # 主窗口先画出来，用户能看到设置是在哪个程序里弹的。

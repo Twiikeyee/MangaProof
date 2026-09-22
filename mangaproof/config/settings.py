@@ -219,6 +219,33 @@ DEFAULT_REPORT_IMAGE_FORMAT = "png"
 JPEG_QUALITY_CHOICES: tuple[int, ...] = (60, 70, 80, 90, 95)
 DEFAULT_JPEG_QUALITY = 80
 
+# ---------------------------------------------------------------------------
+# 自更新设置（需求 §11/§12/§13）
+# ---------------------------------------------------------------------------
+# 默认值（需求 §12）：分支 stable、渠道 Cloudflare R2、无代理、不限速、CDK 为空。
+# 这些值**只在用户点「检查更新」时**才写盘（§13：点「取消」不保存本次未执行检查的修改）。
+UPDATE_BRANCHES: tuple[str, ...] = ("stable", "beta", "alpha")
+DEFAULT_UPDATE_BRANCH = "stable"
+
+#: 下载渠道：Cloudflare R2 / GitHub Release / MirrorChyan（需求 §28）
+UPDATE_CHANNELS: tuple[str, ...] = ("r2", "github", "mirrorchyan")
+DEFAULT_UPDATE_CHANNEL = "r2"
+
+DEFAULT_UPDATE_PROXY = ""
+
+#: 下载限速档位（MB/s）；0 = 不限速（需求 §30）
+#: 仅作用于 GitHub 与 Cloudflare R2；MirrorChyan 不使用该设置。
+SPEED_LIMIT_CHOICES: tuple[int, ...] = (0, 10, 20, 30, 40, 50)
+DEFAULT_UPDATE_SPEED_LIMIT = 0
+
+#: 更新设置里 CDK 明文的键名（仅 keyring 不可用时才出现，需求 §14/§15）。
+#: 与 keyring 的逻辑命名保持一致：service = MangaProof, username = mirrorchyan_cdk。
+UPDATE_CDK_KEY = "mirrorchyan_cdk"
+
+# Cloudflare R2 公网前缀（需求 §23）。放在设置之外的原因：它不是用户可调项，
+# 而是发布侧的事实；写在这里便于 UI/下载器共用，且改一处即可。
+R2_PUBLIC_BASE = "https://download.mangaproof.priloba.com"
+
 # 内存回收策略档位：宽松 / 平衡 / 激进。
 # 各档预算（bg QImage 池字节上限、图层像素 LRU 字节上限）在
 # mangaproof/ui/main_window.py 的 _MEMORY_POLICIES 中定义；
@@ -582,6 +609,73 @@ def reconcile_android_memory_policy(manager: "SettingsManager") -> str | None:
 
 
 @dataclass
+class UpdateSettings:
+    """自更新设置（需求 §11~§15）。
+
+    存储位置：``settings.json`` 的顶层 ``"update"`` 对象（需求 §13 的结构）：::
+
+        {
+            "update": {
+                "branch": "stable",
+                "channel": "r2",
+                "proxy": "",
+                "speed_limit": 0,
+                "mirrorchyan_cdk": ""      # 仅 keyring 不可用时才有明文
+            }
+        }
+
+    ``cdk`` 是**运行时字段**：桌面端优先放系统凭据库（keyring），
+    只有 keyring 实测不可用时才落到这里的明文（§14/§15）。
+    因此它不属于"用户设置"，但必须随设置一起读写，否则迁移逻辑无处落地。
+    """
+
+    branch: str = DEFAULT_UPDATE_BRANCH
+    channel: str = DEFAULT_UPDATE_CHANNEL
+    proxy: str = DEFAULT_UPDATE_PROXY
+    speed_limit: int = DEFAULT_UPDATE_SPEED_LIMIT
+    cdk: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """转成 settings.json 里的 ``update`` 对象。"""
+        return {
+            "branch": self.branch,
+            "channel": self.channel,
+            "proxy": self.proxy,
+            "speed_limit": self.speed_limit,
+            UPDATE_CDK_KEY: self.cdk,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> "UpdateSettings":
+        """从 ``update`` 对象解析；非法值一律回落默认（与项目既有风格一致）。"""
+        s = cls()
+        if not isinstance(raw, dict):
+            return s
+
+        branch = str(raw.get("branch", DEFAULT_UPDATE_BRANCH) or "")
+        s.branch = branch if branch in UPDATE_BRANCHES else DEFAULT_UPDATE_BRANCH
+
+        channel = str(raw.get("channel", DEFAULT_UPDATE_CHANNEL) or "")
+        s.channel = channel if channel in UPDATE_CHANNELS else DEFAULT_UPDATE_CHANNEL
+
+        # 代理必须是字符串：非字符串（例如误写成数字）一律当作"没填"，
+        # 不 str() 转换——那会把 5 变成 "5" 这种看起来像配置、实际发不出去的代理。
+        proxy = raw.get("proxy", DEFAULT_UPDATE_PROXY)
+        s.proxy = proxy.strip() if isinstance(proxy, str) else DEFAULT_UPDATE_PROXY
+
+        try:
+            limit = int(raw.get("speed_limit", DEFAULT_UPDATE_SPEED_LIMIT))
+        except (TypeError, ValueError):
+            limit = DEFAULT_UPDATE_SPEED_LIMIT
+        s.speed_limit = limit if limit in SPEED_LIMIT_CHOICES else DEFAULT_UPDATE_SPEED_LIMIT
+
+        s.cdk = str(raw.get(UPDATE_CDK_KEY, "") or "").strip() if isinstance(
+            raw.get(UPDATE_CDK_KEY, ""), str
+        ) else ""
+        return s
+
+
+@dataclass
 class Settings:
     """运行时设置对象。"""
 
@@ -612,6 +706,8 @@ class Settings:
     memory_policy: str = DEFAULT_MEMORY_POLICY
     # 界面缩放（**Android 专有**，桌面端恒 1.0；改后需重启应用生效）
     ui_scale: float = DEFAULT_UI_SCALE
+    # 自更新设置（需求 §11~§15）：分支/渠道/代理/限速 + keyring 不可用时的明文 CDK
+    update: UpdateSettings = field(default_factory=UpdateSettings)
 
     # -- 派生查询 ----------------------------------------------------------
 
@@ -872,6 +968,10 @@ class SettingsManager:
         # 与实际生效值保持一致；桌面端该值不会被用于缩放（见 resolve_ui_scale）。
         s.ui_scale = clamp_ui_scale(raw.get("ui_scale"), default=default_ui_scale())
 
+        # 自更新设置（需求 §13）：顶层 "update" 对象；缺键/非法值一律回落默认，
+        # 因此旧版 settings.json 无需迁移即可直接读。
+        s.update = UpdateSettings.from_dict(raw.get("update"))
+
         return s
 
     def save(self) -> None:
@@ -899,6 +999,7 @@ class SettingsManager:
                     "issue_types_version": ISSUE_TYPES_VERSION,
                     "memory_policy": self.settings.memory_policy,
                     "ui_scale": self.settings.ui_scale,
+                    "update": self.settings.update.to_dict(),
                 }
                 tmp = self._path.with_suffix(".json.tmp")
                 with open(tmp, "w", encoding="utf-8") as f:
