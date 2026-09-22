@@ -506,3 +506,110 @@ def test_install_request_carries_sha256(qapp, tmp_path):
         assert payload[1] == digest
     finally:
         dlg.close()
+
+
+# -- 取消/关窗时的后台线程收尾（防"卡死一下然后闪退"）------------------------
+
+
+class _HangingWorker:
+    """最小假 worker：永远"还在跑"，用来逼出取消路径。"""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+        self.disowned = False
+        self.waited: list[int] = []
+
+    def isRunning(self) -> bool:      # noqa: N802 - 模仿 QThread 接口
+        return True
+
+    def request_cancel(self) -> None:
+        self.cancelled = True
+
+    def wait(self, ms: int) -> bool:  # noqa: N802
+        self.waited.append(ms)
+        return False                  # 模拟"阻塞在 socket 读上，等不到"
+
+    def disown(self) -> None:
+        self.disowned = True
+
+
+def test_abort_disowns_stuck_workers_instead_of_blocking(qapp, tmp_path):
+    """下载线程卡在网络读上时：发取消、短暂等待、立即脱离（不许长阻塞）。
+
+    这是"窗口消失 → 卡死一小会 → 闪退"的根因回归：
+    - 长等待（原来固定 2000ms）会让主界面卡住；
+    - 不脱离则线程随对话框一起析构 → Qt 报
+      ``QThread: Destroyed while thread is still running`` 并 abort 进程。
+    """
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    try:
+        stuck = _HangingWorker()
+        dlg._download_worker = stuck
+        orphans = dlg._abort_workers()
+
+        assert stuck.cancelled, "必须先发取消"
+        assert stuck.waited and stuck.waited[0] <= 500, \
+            f"等待必须是短等待，实际 {stuck.waited}"
+        assert stuck.disowned, "等不到就必须脱离，否则线程会随窗口一起被析构"
+        assert orphans == [stuck], "脱离出去的线程要交给主窗口托管"
+    finally:
+        dlg.close()
+
+
+def test_abort_ignores_idle_workers(qapp, tmp_path):
+    """没在跑的线程不碰（不 wait、不 disown）。"""
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    try:
+        class _Idle(_HangingWorker):
+            def isRunning(self):      # noqa: N802
+                return False
+
+        idle = _Idle()
+        dlg._check_worker = idle
+        assert dlg._abort_workers() == []
+        assert not idle.cancelled and not idle.disowned
+    finally:
+        dlg.close()
+
+
+def test_cancel_and_close_record_orphans(qapp, tmp_path):
+    """点「取消」与直接关窗都要把脱离的线程记在 _orphaned_workers 上。"""
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+
+    dlg = UpdateDialog(manager.settings)
+    stuck = _HangingWorker()
+    dlg._download_worker = stuck
+    dlg._on_cancel()
+    assert dlg._orphaned_workers == [stuck]
+
+    dlg2 = UpdateDialog(manager.settings)
+    stuck2 = _HangingWorker()
+    dlg2._download_worker = stuck2
+    dlg2.close()
+    assert dlg2._orphaned_workers == [stuck2]
+
+
+def test_worker_cancel_flag_is_shared_and_pending():
+    """三个 worker 都用同一套线程安全取消标志（request_cancel → _cancel_pending）。"""
+    from mangaproof.ui.update_worker import (
+        UpdateCheckWorker,
+        UpdateDownloadWorker,
+    )
+
+    check = UpdateCheckWorker(branch="stable", source="r2", proxy="")
+    assert check._cancel_pending() is False
+    check.request_cancel()
+    assert check._cancel_pending() is True
+
+    # 下载 worker 构造参数较多，只验证它继承了同一套接口（不真的启动线程）
+    assert hasattr(UpdateDownloadWorker, "request_cancel")
+    assert hasattr(UpdateDownloadWorker, "disown")
+    for cls in (UpdateCheckWorker, UpdateDownloadWorker):
+        assert issubclass(cls, __import__(
+            "mangaproof.ui.update_worker", fromlist=["x"]
+        )._AbortableWorker)

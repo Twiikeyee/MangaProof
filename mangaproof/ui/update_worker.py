@@ -20,6 +20,7 @@ UI 需要拿到 :class:`mangaproof.update.errors.UpdateError` 的子类才能给
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -55,7 +56,57 @@ class CheckOutcome:
     size_note: str = ""
 
 
-class UpdateCheckWorker(QThread):
+class _AbortableWorker(QThread):
+    """可以**安全地中断并脱离**的 QThread（更新页三个 worker 的共同基类）。
+
+    为什么需要这层基类（实测故障：下载途中点取消 → 更新窗口消失后主界面卡死
+    一小会然后闪退）：
+
+    1. **取消标志必须线程安全**：``run()`` 在工作线程里读标志，``request_cancel()``
+       在主线程里写。原来写的是裸 ``bool``，GIL 下"没崩"不代表"看得见"
+       —— 工作线程可能长时间读到旧值，取消迟迟不生效（表现为卡一下）。
+    2. **脱离（disown）不能靠 wait() 兜底**：窗口是模态对话框，``exec()`` 返回后
+       主程序若让它析构，作为子对象的 QThread 会触发
+       ``QThread: Destroyed while thread is still running`` —— 这是 Qt 的
+       **致命错误，直接 abort 进程**（闪退）。而网络读一旦阻塞在 socket 上，
+       工作线程可能要等 read 超时（30 秒）才看得到取消标志，等不起。
+       所以：先 ``disconnect()`` 摘掉所有信号（此后不再回写任何 UI，也就不会再
+       触碰即将析构的窗口），再把 QThread 的父子关系解除交给"应用级托管"
+       （见 ``MainWindow._adopt_update_workers``），工作线程在后台自然收尾。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancel_lock = threading.Lock()
+        self._cancel_requested = False
+
+    # -- 取消 --------------------------------------------------------------- #
+
+    def request_cancel(self) -> None:
+        """请求取消（线程安全；可重复调用）。"""
+        with self._cancel_lock:
+            self._cancel_requested = True
+
+    def _cancel_pending(self) -> bool:
+        with self._cancel_lock:
+            return self._cancel_requested
+
+    # -- 脱离 --------------------------------------------------------------- #
+
+    def disown(self) -> None:
+        """摘掉信号并解除父子关系：让本线程**在窗口析构后**还能安全收尾。
+
+        调用方负责持有引用直到 ``finished``（否则 Python 侧回收包装对象，
+        而 Qt 不允许销毁仍在运行的 QThread）。
+        """
+        try:
+            self.disconnect()
+        except (RuntimeError, TypeError):  # pragma: no cover - 无连接/已断开
+            pass
+        self.setParent(None)
+
+
+class UpdateCheckWorker(_AbortableWorker):
     """检查更新（**不带 CDK**，需求 §17）。"""
 
     progress = Signal(str)          # 阶段文案（"正在检查更新……"）
@@ -139,7 +190,7 @@ class UpdateCheckWorker(QThread):
             outcome.size_note = "大小未知，将在下载时显示"
 
 
-class ProxyTestWorker(QThread):
+class ProxyTestWorker(_AbortableWorker):
     """测试代理连通性（需求 §29：必须明确显示成功/失败及错误原因）。"""
 
     finished_with = Signal(bool, str)   # 成功?, 说明文本
@@ -157,7 +208,7 @@ class ProxyTestWorker(QThread):
         self.finished_with.emit(ok, message)
 
 
-class UpdateDownloadWorker(QThread):
+class UpdateDownloadWorker(_AbortableWorker):
     """下载更新包（含 MirrorChyan 的"带 CDK 取下载信息"步骤）。
 
     渠道差异（需求 §28）在这里体现：
@@ -193,10 +244,6 @@ class UpdateDownloadWorker(QThread):
         self._proxy = proxy
         self._speed_limit = speed_limit_mbps
         self._cdk = cdk
-        self._cancel = False
-
-    def request_cancel(self) -> None:
-        self._cancel = True
 
     def run(self) -> None:
         try:
@@ -207,7 +254,7 @@ class UpdateDownloadWorker(QThread):
                 proxy=self._proxy,
                 speed_limit_mbps=self._speed_limit,
                 on_progress=self._on_progress,
-                cancel=lambda: self._cancel,
+                cancel=self._cancel_pending,
             )
             self.succeeded.emit(path)
         except DownloadCancelled:
@@ -241,7 +288,7 @@ class UpdateDownloadWorker(QThread):
         self, done: int, total: int | None, speed: float | None, phase: str
     ) -> None:
         self.progress.emit(done, total, speed, phase)
-        if self._cancel:
+        if self._cancel_pending():
             raise DownloadCancelled()
 
 

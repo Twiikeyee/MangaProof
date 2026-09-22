@@ -497,6 +497,38 @@ class MainWindow(QMainWindow):
         dialog.settings_committed.connect(self._save_settings)
         dialog.install_requested.connect(self._start_update_installer)
         dialog.exec()
+        # 关窗时若有后台线程没能及时退出（典型：下载阻塞在 socket 读上），
+        # 对话框会把它们"脱离"出来。**必须在这里接管**：QThread 绝不能在被
+        # 析构时仍在运行（Qt 会直接 abort 进程 → 闪退），而对话框是局部变量，
+        # 本函数一返回就会被回收。
+        self._adopt_update_workers(dialog)
+
+    def _adopt_update_workers(self, dialog: object) -> None:
+        """接管更新页脱离出来的后台线程，等它们收尾后回收（防闪退）。
+
+        只持引用、不做任何 UI 回调：线程的信号在脱离时已被 ``disown()`` 摘掉，
+        它们剩下的工作就是被取消后退出网络循环，通常在几百毫秒内结束。
+        """
+        workers = list(getattr(dialog, "_orphaned_workers", ()) or ())
+        if not workers:
+            return
+        log.info("接管 %s 个仍在收尾的更新后台线程", len(workers))
+        adopted: list[object] = getattr(self, "_adopted_update_workers", None) or []
+
+        def _drop(worker=workers):
+            for item in worker:
+                if item in adopted:
+                    adopted.remove(item)
+            if not adopted:
+                self._adopted_update_workers = None
+
+        for worker in workers:
+            adopted.append(worker)
+            try:
+                worker.finished.connect(_drop)
+            except (RuntimeError, TypeError):  # pragma: no cover - 已结束/已断开
+                _drop()
+        self._adopted_update_workers = adopted
 
     def _start_update_installer(self, payload: object) -> None:
         """启动更新安装器，成功则退出主程序（需求 §40~§46）。

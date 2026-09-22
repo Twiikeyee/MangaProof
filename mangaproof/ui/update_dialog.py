@@ -92,6 +92,11 @@ log = logging.getLogger("mangaproof.ui.update_dialog")
 #: 取值权衡：够放"发现新版本 + 文件 + 大小"而不用滚动，又不至于让空闲窗口太高。
 STATUS_AREA_HEIGHT = 180
 
+#: 关窗/取消时等待后台线程自行退出的时长（ms）。
+#: 只等"一定很快退出"的线程；等不到就脱离交给主窗口托管，**绝不长时间阻塞 UI**
+#: （原来的 2000ms 等待就是"卡死一小会"的来源）。
+_ABORT_WAIT_MS = 250
+
 #: 渠道显示名（值 → UI 文案）
 CHANNEL_LABELS: dict[str, str] = {
     "r2": "Cloudflare R2",
@@ -139,6 +144,9 @@ class UpdateDialog(QDialog):
         self._package: Path | None = None
         self._package_sha256: str = ""       # 下载后本地算出的 SHA-256（传给安装器复核）
         self._state = "idle"        # idle / checking / checked / no_update / downloading / done
+        #: 关窗时"脱离"出去的线程（信号已摘，等它自己收尾）——主窗口会接管它们，
+        #: 见 MainWindow._adopt_update_workers
+        self._orphaned_workers: list[object] = []
 
         self._build_ui()
         self._load_draft()
@@ -393,16 +401,38 @@ class UpdateDialog(QDialog):
             self.accept()
 
     def _on_cancel(self) -> None:
-        self._abort_workers()
+        self._orphaned_workers = self._abort_workers()
         self.reject()
 
-    def _abort_workers(self) -> None:
-        if self._check_worker is not None and self._check_worker.isRunning():
-            self._check_worker.requestInterruption()
-        if self._download_worker is not None and self._download_worker.isRunning():
-            self._download_worker.request_cancel()
-        if self._proxy_worker is not None and self._proxy_worker.isRunning():
-            self._proxy_worker.wait(2000)
+    def _abort_workers(self) -> list[object]:
+        """请求取消全部后台线程并**安全脱离**，返回仍需托管收尾的线程。
+
+        实测故障：下载途中点取消 → 窗口消失后主界面卡死一小会然后闪退。两个原因：
+
+        1. 原来只对下载线程调 ``request_cancel()``，而取消要等"下一个数据块到达"
+           才生效；网络读一旦阻塞在 socket 上，就要等 read 超时（30 秒）。
+           期间窗口已经 ``accept()`` 关闭、``exec()`` 返回，模态对话框随即析构——
+           作为其子对象的 QThread 仍在运行 → Qt 报
+           ``QThread: Destroyed while thread is still running`` 并**直接 abort**
+           （闪退）。
+        2. 唯一被 ``wait()`` 等待的是代理测试线程，而且固定等 2 秒 ——
+           主线程被堵住，就是"卡死一小会"。
+
+        所以这里改成：**只发取消、短暂等一下、等不到就脱离**。脱离后的线程交给
+        主窗口托管（:meth:`MainWindow._adopt_update_workers`），在后台自然收尾；
+        信号已被 ``disown()`` 摘掉，不会再有回调去碰已析构的窗口。
+        """
+        pending: list[object] = []
+        for worker in (self._check_worker, self._download_worker, self._proxy_worker):
+            if worker is None or not worker.isRunning():
+                continue
+            worker.request_cancel()
+            # 只有"一定能很快退出"的线程值得等：下载线程可能阻塞在 socket 读上
+            if worker.wait(_ABORT_WAIT_MS):
+                continue
+            worker.disown()
+            pending.append(worker)
+        return pending
 
     # -- 检查更新 ----------------------------------------------------------
 
@@ -628,7 +658,7 @@ class UpdateDialog(QDialog):
         return f"更新失败：\n{error}"
 
     def closeEvent(self, event) -> None:      # noqa: N802 - Qt 命名
-        self._abort_workers()
+        self._orphaned_workers = self._abort_workers()
         super().closeEvent(event)
 
     # -- 供主窗口调用 ------------------------------------------------------
