@@ -5,6 +5,11 @@
 
 跑在离屏 Qt 上，不联网、不真的启动 worker（只验界面结构与"保存时机"语义）。
 需要 `qapp` fixture（见 tests/test_android_ui_scale.py 的同名 fixture 定义）。
+
+另有三条**布局**回归（都是实测踩到过的坑）：
+- 下拉框不响应滚轮（与设置页一致）；
+- 「代理」行的输入框左右边界、测试按钮右边界与其他行严格对齐；
+- 进入「检查中」时进度条与状态文案的变化不许压扁表单行高。
 """
 
 from __future__ import annotations
@@ -207,3 +212,113 @@ def test_channel_labels_cover_all_values():
     from mangaproof.config.settings import UPDATE_CHANNELS
 
     assert set(CHANNEL_LABELS) == set(UPDATE_CHANNELS)
+
+
+# -- 布局回归 ---------------------------------------------------------------
+
+
+def _form_layout(dialog):
+    """取出对话框里的 QFormLayout（表单区）。"""
+    from PySide6.QtWidgets import QFormLayout
+
+    for i in range(dialog.layout().count()):
+        item = dialog.layout().itemAt(i)
+        if isinstance(item, QFormLayout):
+            return item
+    raise AssertionError("更新页面里找不到表单布局")
+
+
+def _laid_out(dialog):
+    """让对话框真正走一遍布局（不 show 的话各控件几何值都是 0）。"""
+    from PySide6.QtWidgets import QApplication
+
+    dialog.show()
+    for _ in range(2):
+        QApplication.processEvents()
+    return dialog
+
+
+def _box(dialog, widget):
+    """控件在对话框坐标系里的 ``(左, 右)``（代理行嵌在复合控件里，必须换算）。"""
+    top_left = widget.mapTo(dialog, widget.rect().topLeft())
+    return top_left.x(), top_left.x() + widget.width()
+
+
+def test_combos_ignore_wheel(dialog):
+    """下拉框不许被滚轮改值（与设置页同款 NoWheelComboBox）。
+
+    Fusion 风格默认允许滚轮直接改下拉框的值，误滚改掉分支/渠道后很难察觉，
+    而且这里改的还是"检查更新用哪个分支"。
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    from mangaproof.ui.widgets import NoWheelComboBox
+
+    dlg, _ = dialog
+    for combo in (dlg.branch_combo, dlg.channel_combo, dlg.speed_combo):
+        assert isinstance(combo, NoWheelComboBox)
+        before = combo.currentIndex()
+        event = QWheelEvent(
+            QPoint(5, 5), combo.mapToGlobal(QPoint(5, 5)),
+            QPoint(0, -120), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        )
+        combo.wheelEvent(event)
+        assert combo.currentIndex() == before, "滚轮不该改变下拉框选中项"
+
+
+def test_proxy_row_aligns_with_other_rows(dialog):
+    """「代理」行两端与其他输入行严格对齐（曾经左缩 9px、右缩 9px）。
+
+    复合控件（QWidget 包 QHBoxLayout）自带内容边距，且默认按 sizeHint 摆放，
+    所以必须清零边距 + Expanding，才能贴齐字段列的两端。
+    """
+    dlg, _ = dialog
+    _laid_out(dlg)
+
+    proxy_left, proxy_right = _box(dlg, dlg.proxy_edit)
+    cdk_left, cdk_right = _box(dlg, dlg.cdk_edit)
+    btn_left, btn_right = _box(dlg, dlg.proxy_test_btn)
+    branch_left, _ = _box(dlg, dlg.branch_combo)
+
+    assert proxy_left == cdk_left, "代理输入框左边界要与 CDK 一致"
+    assert proxy_left == branch_left, "代理输入框左边界要与下拉框一致"
+    assert btn_right == cdk_right, "测试代理按钮右边界要与其他输入框一致"
+    assert proxy_right < btn_left, "输入框与按钮不能重叠"
+
+    form = _form_layout(dlg)
+    # 「代理」两个字与 CDK 标签同为右对齐，右边界必须齐平
+    proxy_label = form.labelForField(dlg.proxy_edit.parentWidget())
+    cdk_label = form.labelForField(dlg.cdk_edit)
+    assert proxy_label is not None and cdk_label is not None
+    assert _box(dlg, proxy_label)[1] == _box(dlg, cdk_label)[1]
+
+
+def test_progress_bar_does_not_squeeze_form(dialog):
+    """进入「检查中」时不许压扁表单（曾经「代理」行被压到 12px）。
+
+    Qt 在"窗口大小不变"的前提下重排布局，空间不够时 QFormLayout 会自己压缩
+    行高。修法：进度条常驻占位（空闲禁用置灰）+ 状态区固定高度 + 最小高度一次
+    算准，于是状态切换只改内容，不会重新抢高度。
+    """
+    dlg, _ = dialog
+    _laid_out(dlg)
+    heights_before = [dlg.proxy_edit.height(), dlg.cdk_edit.height()]
+    dialog_height_before = dlg.height()
+
+    dlg.status_label.setText("正在检查更新……")
+    dlg.progress.setRange(0, 0)          # 需求 §31：不确定进度条
+    dlg._show_progress()
+    from PySide6.QtWidgets import QApplication
+    QApplication.processEvents()
+
+    assert dlg.progress.isVisible(), "进度条占位常驻（空闲只是禁用置灰）"
+    assert [dlg.proxy_edit.height(), dlg.cdk_edit.height()] == heights_before, \
+        "代理行被压扁了"
+    assert dlg.height() == dialog_height_before, "窗口高度不该被内容变化改掉"
+
+    dlg._reset_progress()
+    assert not dlg.progress.isEnabled(), "空闲时进度条置灰"
+    assert [dlg.proxy_edit.height(), dlg.cdk_edit.height()] == heights_before

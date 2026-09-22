@@ -16,13 +16,24 @@
     （状态/进度区）
     [ 检查更新 ]                    [ 取消 ]
 
-两条容易做错的约束，这里刻意用代码固化：
+三条容易做错的约束，这里刻意用代码固化：
 
 1. **按钮左右位置固定**（需求 §11.7：「检查更新」在左、「取消」在右）。
    因此**不用** ``QDialogButtonBox`` —— 它会按平台规范重排（macOS 会把主按钮放右侧）。
 2. **只有点「检查更新」才保存配置**（需求 §13）：对话框内部持有 draft，
    点「检查更新」时才提交到 ``settings.update`` 并发 ``settings_committed``
    让主窗口落盘；点「取消」直接丢弃 draft。
+3. **表单区不允许被动态内容压扁**：状态文案可长可短，而 Qt 只会按"窗口大小
+   不变"重新分配高度——空间不够时 QFormLayout 会强行压缩行高，实测「代理」
+   那一行（内含按钮，行高最大）会被压到 12px。对策见
+   :meth:`UpdateDialog._fit_status_height`：状态区固定高度并可滚动、进度条
+   常驻占位、窗口最小高度一次算准，于是表单各行高度恒定。
+
+另外两条纯 UI 约定（与设置页保持一致）：
+
+- 下拉框一律用 :class:`~mangaproof.ui.widgets.NoWheelComboBox`：滚轮误改分支/
+  渠道/限速后很难察觉，改值只走显式交互；
+- 「代理」行两端与其他输入行严格对齐，见 :meth:`UpdateDialog._proxy_row`。
 
 视觉沿用现有 MangaProof 风格（需求 1.1.1）：不写死颜色、不自建样式表，
 对话框自动继承 ``ui/theme.py`` 的全局暗色主题；进度条用 ``QProgressBar``
@@ -36,7 +47,6 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -45,6 +55,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -68,8 +80,17 @@ from mangaproof.update import cdk_store
 from mangaproof.update.errors import UpdateError
 from mangaproof.update.humanize import human_size, human_speed
 from mangaproof.update.models import CheckResult
+from mangaproof.ui.widgets import NoWheelComboBox
 
 log = logging.getLogger("mangaproof.ui.update_dialog")
+
+#: 状态区固定高度（px）：内容超过就在这一块里滚动。
+#: 必须是**固定**高度而不是只设上限：Qt 在窗口大小不变的前提下重排布局，
+#: 后出现的进度条会从状态区"抢"高度，抢不到就去压缩 QFormLayout 的行高——
+#: 实测「代理」那一行（含按钮，行高最大）会被压到 12px，看起来就是"被压扁"。
+#: 固定住状态区，表单各行高度就恒定，对话框最小高度也就能一次算准。
+#: 取值权衡：够放"发现新版本 + 文件 + 大小"而不用滚动，又不至于让空闲窗口太高。
+STATUS_AREA_HEIGHT = 180
 
 #: 渠道显示名（值 → UI 文案）
 CHANNEL_LABELS: dict[str, str] = {
@@ -127,13 +148,19 @@ class UpdateDialog(QDialog):
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        # 字段列一律吃掉剩余宽度：显式声明，避免 macOS 等平台默认策略把控件
+        # 留在 sizeHint 宽度上（那样右边就与其他行对不齐了）
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
 
-        self.branch_combo = QComboBox()
+        self.branch_combo = NoWheelComboBox()
         for value in UPDATE_BRANCHES:
             self.branch_combo.addItem(BRANCH_LABELS.get(value, value), value)
         form.addRow("更新分支", self.branch_combo)
 
-        self.channel_combo = QComboBox()
+        self.channel_combo = NoWheelComboBox()
         for value in UPDATE_CHANNELS:
             self.channel_combo.addItem(CHANNEL_LABELS.get(value, value), value)
         form.addRow("更新渠道", self.channel_combo)
@@ -143,18 +170,23 @@ class UpdateDialog(QDialog):
         self.cdk_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("MirrorChyan CDK", self.cdk_edit)
 
-        proxy_row = QHBoxLayout()
+        # 「代理」行 = 输入框 + 测试按钮，两者贴齐字段列的两端。
+        # 复合控件默认带一圈内容边距、且默认按 sizeHint 摆放（不跟着列宽伸展），
+        # 结果是输入框左边比别的行右 9px、按钮右边比别的行左 9px、整体还短一截。
+        # 对策：内容边距归零 + 水平方向声明 Expanding（见 _proxy_row）。
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setPlaceholderText("留空表示不使用代理；支持 http(s):// 与 socks5://")
-        proxy_row.addWidget(self.proxy_edit, 1)
         self.proxy_test_btn = QPushButton("测试代理")
         self.proxy_test_btn.clicked.connect(self._on_test_proxy)
-        proxy_row.addWidget(self.proxy_test_btn)
-        proxy_widget = QWidget()
-        proxy_widget.setLayout(proxy_row)
-        form.addRow("代理", proxy_widget)
+        # 宽度钉死：文字在「测试代理 / 测试中…」之间来回换，不钉死输入框就会
+        # 跟着一伸一缩（右边界虽然仍对齐，但看着在抖）
+        self.proxy_test_btn.setFixedWidth(
+            max(self.proxy_test_btn.sizeHint().width(),
+                self.proxy_test_btn.minimumSizeHint().width())
+        )
+        form.addRow("代理", self._proxy_row())
 
-        self.speed_combo = QComboBox()
+        self.speed_combo = NoWheelComboBox()
         for value in SPEED_LIMIT_CHOICES:
             self.speed_combo.addItem(_speed_label(value), value)
         form.addRow("下载限速", self.speed_combo)
@@ -171,23 +203,48 @@ class UpdateDialog(QDialog):
         line.setFrameShadow(QFrame.Shadow.Sunken)
         root.addWidget(line)
 
+        # 状态区放在固定高度的滚动容器里：文案长了只让状态区自己滚动，
+        # 绝不反过来压缩上面表单的行高（见 _fit_status_height）。
+        self.status_area = QScrollArea()
+        self.status_area.setWidgetResizable(True)
+        self.status_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.status_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        status_body = QWidget()
+        status_layout = QVBoxLayout(status_body)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(6)
+
         self.status_label = QLabel("选择分支与渠道后点击「检查更新」。")
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        root.addWidget(self.status_label)
-
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setVisible(False)
-        root.addWidget(self.progress)
+        self.status_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        status_layout.addWidget(self.status_label)
 
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
         self.detail_label.setVisible(False)
-        root.addWidget(self.detail_label)
+        status_layout.addWidget(self.detail_label)
+        status_layout.addStretch(1)
+        self.status_area.setWidget(status_body)
+        root.addWidget(self.status_area, 1)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        # 进度条**常驻占位**、空闲时禁用置灰，不做 show/hide 切换：
+        # 隐藏的控件不参与布局，一露头 Qt 就得在现有窗口高度里重新分配空间——
+        # 抢不到高度时 QFormLayout 会去压行高，表现为「代理」那一行被压扁
+        # （实测 30px → 12px）。常驻占位后表单高度恒定，最小高度也一次算准，
+        # 任何状态切换都不可能再挤上面的表单。
+        self.progress.setMinimumHeight(self.progress.sizeHint().height())
+        self.progress.setEnabled(False)
+        root.addWidget(self.progress)
 
         buttons = QHBoxLayout()
         self.primary_btn = QPushButton("检查更新")
@@ -204,6 +261,57 @@ class UpdateDialog(QDialog):
         self.action_row = buttons
 
         self._update_hint()
+        self._fit_status_height()
+
+    # -- 布局辅助 ----------------------------------------------------------
+
+    def _proxy_row(self) -> QWidget:
+        """「代理」行的复合控件：输入框 + 测试按钮。
+
+        QFormLayout 只支持「标签 / 字段」两列，塞不进第三个控件，所以按钮必须
+        和输入框待在同一个字段里。要让它与其他行的边界严格对齐，两个条件缺一不可：
+
+        1. 内容边距归零——默认边距会把输入框左边界推进去、把按钮右边界拉出来；
+        2. 水平方向 ``Expanding``——默认 ``Preferred`` 时 QFormLayout 只按
+           ``sizeHint`` 给宽度，整行会比别的字段短一截（右边对不齐）。
+        """
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self.proxy_edit, 1)
+        row.addWidget(self.proxy_test_btn)
+        widget = QWidget()
+        widget.setLayout(row)
+        widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        return widget
+
+    def _reset_progress(self) -> None:
+        """进度条回到空闲态：禁用置灰、显示 0%（占位始终保留）。"""
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setEnabled(False)
+
+    def _show_progress(self) -> None:
+        """让进度条进入工作态（控件常驻占位，这里只是解除禁用）。"""
+        self.progress.setEnabled(True)
+
+    def _fit_status_height(self) -> None:
+        """状态区高度固定 + 窗口最小高度一次算准（表单永不被压扁）。
+
+        为什么需要它：状态文案（"发现新版本"里带更新说明、失败原因）变化时，
+        Qt 只在窗口大小不变的假设下重排布局——空间不够时 QFormLayout 会自己
+        压缩行高（实测「代理」行被压到 12px）。所以：
+
+        - 状态区高度固定为 :data:`STATUS_AREA_HEIGHT`，文案长了只自己滚动；
+        - 进度条常驻占位（见 :meth:`_build_ui`），最小高度里天然含它的位置，
+          所以「检查中」只是把它点亮，不会中途多出一个控件来抢高度；
+        - 窗口最小高度取布局自己算出来的 ``minimumSize``，再留 8px 余量吸收
+          Qt 内部取整误差。
+        """
+        self.status_area.setFixedHeight(STATUS_AREA_HEIGHT)
+        self.setMinimumHeight(self.layout().minimumSize().height() + 8)
 
     def _load_draft(self) -> None:
         self._select(self.branch_combo, self._draft.branch)
@@ -213,7 +321,7 @@ class UpdateDialog(QDialog):
         self.cdk_edit.setText(cdk_store.load_cdk(self._draft))
 
     @staticmethod
-    def _select(combo: QComboBox, value) -> None:
+    def _select(combo, value) -> None:
         index = combo.findData(value)
         combo.setCurrentIndex(index if index >= 0 else 0)
 
@@ -286,7 +394,7 @@ class UpdateDialog(QDialog):
         self.status_label.setText("正在检查更新……")
         self.detail_label.setVisible(False)
         self.progress.setRange(0, 0)         # 需求 §31：不确定进度条
-        self.progress.setVisible(True)
+        self._show_progress()
 
         worker = UpdateCheckWorker(
             branch=self._draft.branch,
@@ -301,8 +409,7 @@ class UpdateDialog(QDialog):
         worker.start()
 
     def _on_check_ok(self, outcome: CheckOutcome) -> None:
-        self.progress.setVisible(False)
-        self.progress.setRange(0, 100)
+        self._reset_progress()
         self._set_form_enabled(True)
         self._outcome = outcome
 
@@ -345,8 +452,7 @@ class UpdateDialog(QDialog):
         self.primary_btn.setEnabled(True)
 
     def _on_check_failed(self, error: object) -> None:
-        self.progress.setVisible(False)
-        self.progress.setRange(0, 100)
+        self._reset_progress()
         self._set_form_enabled(True)
         self._state = "checked"
         self.primary_btn.setText("检查更新")
@@ -372,7 +478,7 @@ class UpdateDialog(QDialog):
         self.status_label.setText("正在准备下载……")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setVisible(True)
+        self._show_progress()
 
         worker = UpdateDownloadWorker(
             branch=self._draft.branch,
@@ -435,8 +541,7 @@ class UpdateDialog(QDialog):
     def _on_download_failed(self, error: object) -> None:
         from mangaproof.update.downloader import DownloadCancelled
 
-        self.progress.setVisible(False)
-        self.progress.setRange(0, 100)
+        self._reset_progress()
         self._set_form_enabled(True)
         self.detail_label.setVisible(False)
         if isinstance(error, DownloadCancelled):
