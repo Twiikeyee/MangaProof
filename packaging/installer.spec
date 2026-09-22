@@ -45,13 +45,17 @@ if not ENTRY.is_file():  # 构建期强校验：入口缺失直接失败，不�
 _icon = ROOT / "ico" / "ico.ico"
 _icon_arg = str(_icon) if (sys.platform == "win32" and _icon.is_file()) else None
 
-# 安装器只用到 mangaproof 里三个**零依赖**模块（config.user_data /
-# utils.hashing / update.checksum）。显式声明 hiddenimports，避免静态分析
-# 漏掉（它们经由 updater.backup / updater.verify 间接导入）。
+# 安装器只用到 mangaproof 里几个**零依赖**模块（config.user_data /
+# utils.hashing / update.checksum / update.platform_dirs /
+# utils.logging_setup）。显式声明 hiddenimports，避免静态分析漏掉
+# （它们经由 updater.backup / updater.verify / updater.installer 间接导入）。
+# 这几个模块都只 import 标准库，不会把 Qt/psd-tools 拖进 onefile。
 _hiddenimports = [
     "mangaproof.config.user_data",
     "mangaproof.utils.hashing",
     "mangaproof.update.checksum",
+    "mangaproof.update.platform_dirs",
+    "mangaproof.utils.logging_setup",
 ]
 
 # 明确排除主程序的重型依赖：安装器必须"完全独立，不依赖主程序运行环境"（§43），

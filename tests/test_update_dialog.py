@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -434,5 +435,74 @@ def test_proxy_result_goes_to_output_and_clears_it(qapp, tmp_path):
         text = dlg.output_text()
         assert "连接被拒绝" in text
         assert "代理可用" not in text, "上一次的结果要被替换掉"
+    finally:
+        dlg.close()
+
+
+def test_download_progress_shows_size_and_speed(qapp, tmp_path):
+    """下载中必须在进度条下面显示「已下载 / 总量 + 速度」（曾经整行消失）。
+
+    回归点：_clear_output() 在下载开始时会把详情行藏起来，而进度回调只 setText
+    不 setVisible —— 于是数字永远看不见。
+    """
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    try:
+        _laid_out(dlg)
+        dlg._clear_output()                      # 模拟"下载开始"先清输出
+        assert not dlg.detail_label.isVisible()
+
+        dlg._on_download_progress(5 * 1024 * 1024, 100 * 1024 * 1024, 2.5e6, "正在下载")
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        assert dlg.detail_label.isVisible(), "详情行必须重新显示"
+        text = dlg.detail_label.text()
+        assert "5.0 MB" in text and "100.0 MB" in text, text
+        assert "速度" in text, text
+        assert dlg.progress.maximum() == 100 and dlg.progress.value() == 5
+
+        # 无 Content-Length：不确定进度 + "未知"总量，但仍要有速度
+        dlg._on_download_progress(1024 * 1024, None, 2048.0, "正在下载")
+        QApplication.processEvents()
+        assert dlg.progress.minimum() == 0 and dlg.progress.maximum() == 0
+        assert "未知" in dlg.detail_label.text()
+        assert "速度" in dlg.detail_label.text()
+    finally:
+        dlg.close()
+
+
+def test_install_request_carries_sha256(qapp, tmp_path):
+    """点「立即安装并重启」时，SHA-256 必须随信号递给主窗口（需求 §53）。
+
+    否则安装器拿到空 --sha256，只能打一句"未提供 --sha256，本次不做哈希校验"
+    就跳过替换前的复核 —— 而三个下载渠道其实都能给出文件名与 SHA-256。
+    """
+    from PySide6.QtWidgets import QApplication
+
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    try:
+        _laid_out(dlg)
+        package = tmp_path / "MangaProof-1.1.5.alpha-linux-x64.tar.gz"
+        package.write_bytes(b"fake package bytes")
+        dlg._on_download_ok(package)
+        QApplication.processEvents()
+
+        digest = dlg.take_package_sha256()
+        assert len(digest) == 64, "应当是完整的 SHA-256（不再是截断的预览）"
+        assert digest == hashlib.sha256(package.read_bytes()).hexdigest()
+        assert digest in dlg.status_label.text(), "界面也要给出完整哈希供用户核对"
+
+        seen: list[object] = []
+        dlg.install_requested.connect(seen.append)
+        dlg._on_primary()                      # done 状态 → 发安装请求
+        assert seen, "必须发出 install_requested"
+        payload = seen[0]
+        assert isinstance(payload, tuple) and len(payload) == 2
+        assert Path(str(payload[0])) == package
+        assert payload[1] == digest
     finally:
         dlg.close()

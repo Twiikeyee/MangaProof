@@ -262,7 +262,11 @@ def run(options: InstallerOptions) -> int:
     """按是否需要 GUI 选择 UI，并执行安装。"""
 
     def work(reporter) -> int:
-        runtime = Runtime(reporter=reporter, user_kwargs=privilege.child_user_kwargs())
+        runtime = Runtime(
+            reporter=reporter,
+            user_kwargs=privilege.child_user_kwargs(),
+            log_path=_LOG_PATH,          # 收尾时复制进程序目录 logs/（见 _preserve_installer_log）
+        )
         return Installer(options, runtime).run()
 
     if options.cli:

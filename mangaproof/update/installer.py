@@ -50,6 +50,30 @@ class InstallerInvocation:
         return " ".join([str(self.exe), *self.args])
 
 
+def _copy_installer(source: Path, target: Path, *, attempts: int = 5) -> None:
+    """把安装器复制/覆盖到临时目录，带重试。
+
+    覆盖目标可能**正被上一次的安装器占着**：它是个 onefile exe，自己删不掉自己，
+    于是每次更新都是"新副本覆盖旧副本"。这个覆盖在旧安装器刚退出、句柄还没完全
+    释放的瞬间会以 ``WinError 32`` 失败——纯瞬时问题，重试即可。
+    """
+    import time
+
+    last_error: OSError | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            shutil.copy2(source, target)
+            if attempt:
+                log.info("安装器复制在第 %s 次尝试成功：%s", attempt + 1, target)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < max(1, attempts):
+                log.warning("复制安装器失败（第 %s/%s 次）：%s", attempt + 1, attempts, exc)
+                time.sleep(0.2 * (attempt + 1))
+    raise InstallerError(f"复制安装器到临时目录失败：{last_error}")
+
+
 def find_installer() -> Path:
     """在**安装目录**里找安装器（与主程序可执行文件同级）。"""
     module = _platform()
@@ -89,10 +113,7 @@ def prepare_invocation(
 
     target_dir = platform_dirs.installer_dir()
     target = target_dir / source.name
-    try:
-        shutil.copy2(source, target)
-    except OSError as exc:
-        raise InstallerError(f"复制安装器到临时目录失败：{exc}") from exc
+    _copy_installer(source, target)
 
     if not target.is_file():
         raise InstallerError(f"安装器复制后不存在：{target}")

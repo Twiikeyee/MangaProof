@@ -306,3 +306,48 @@ def test_pyinstaller_can_resolve_every_platform_module():
         full = f"mangaproof.update.platform.{name}"
         nodes = graph.import_hook(full)     # 找不到会抛 ImportError
         assert nodes and nodes[0].identifier == full
+
+
+def test_prepare_invocation_passes_sha256_to_the_installer(tmp_path: Path, monkeypatch):
+    """主程序必须把 SHA-256 传下去（需求 §53），不能留空让安装器跳过复核。
+
+    空 --sha256 时安装器只能打"未提供 --sha256，本次不做哈希校验"——
+    而三个渠道其实都能给出文件名与哈希，缺的只是把它一路递过去。
+    """
+    from mangaproof.update import installer as installer_mod
+    from mangaproof.update.platform import PLATFORM_MODULES  # noqa: F401
+
+    exe = tmp_path / "MangaProof-update-installer"
+    exe.write_bytes(b"fake installer")
+    package = tmp_path / "MangaProof-1.1.5.alpha-linux-x64.tar.gz"
+    package.write_bytes(b"pkg")
+
+    monkeypatch.setattr(installer_mod, "find_installer", lambda: exe)
+    monkeypatch.setattr(
+        installer_mod.platform_dirs, "installer_dir", lambda **kw: tmp_path / "tmp-installer"
+    )
+    (tmp_path / "tmp-installer").mkdir(exist_ok=True)
+    monkeypatch.setattr(
+        installer_mod.platform_dirs, "success_marker_path", lambda: tmp_path / "marker.json"
+    )
+    monkeypatch.setattr(
+        installer_mod.platform_dirs, "data_backup_dir", lambda **kw: tmp_path / "backup"
+    )
+    monkeypatch.setattr(
+        installer_mod.platform_dirs, "state_file_path", lambda: tmp_path / "state.json"
+    )
+
+    digest = "a" * 64
+    invocation = installer_mod.prepare_invocation(
+        package=package, version="1.1.5.alpha", sha256=digest, parent_pid=4321
+    )
+    args = invocation.args
+    assert "--sha256" in args
+    assert args[args.index("--sha256") + 1] == digest
+    assert args[args.index("--parent-pid") + 1] == "4321"
+
+    # 没有哈希时也要给出空串（安装器据此判定"跳过并留痕"），而不是缺参数
+    invocation2 = installer_mod.prepare_invocation(
+        package=package, version="1.1.5.alpha", sha256=None
+    )
+    assert invocation2.args[invocation2.args.index("--sha256") + 1] == ""

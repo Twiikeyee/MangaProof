@@ -74,6 +74,15 @@ def _sweep_stale_rotations(log_dir: Path) -> None:
                 pass
 
 
+def logs_dir(app_dir: Path) -> Path:
+    """程序目录下的 ``logs/``（日志与其他诊断产物的统一落点）。
+
+    **本模块只依赖标准库**：安装器（打包时排除 PySide6）也要用它决定
+    "把安装日志放哪儿"，不能因为一个路径拼接就把 Qt 拖进安装器包里。
+    """
+    return Path(app_dir) / "logs"
+
+
 def setup_logging(app_dir: Path) -> logging.Logger:
     """配置根 logger：控制台 + 滚动文件（logs/mangaproof.log）。
 
@@ -84,7 +93,7 @@ def setup_logging(app_dir: Path) -> logging.Logger:
     if _logger_configured:
         return logger
 
-    log_dir = app_dir / "logs"
+    log_dir = logs_dir(app_dir)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError:

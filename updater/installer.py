@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -37,6 +38,8 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from mangaproof.config.user_data import validate_rules
+from mangaproof.update import platform_dirs
+from mangaproof.utils.logging_setup import logs_dir
 
 from updater import archive, backup, privilege, rollback, state as state_mod
 from updater import verify as verify_mod
@@ -52,6 +55,14 @@ PARENT_EXIT_TIMEOUT = 30.0
 POLL_INTERVAL = 0.25
 #: 安装器临时目录名前缀（需求 §40/§36/§37：TEMP|CACHE/MangaProof-update-installer）
 INSTALLER_TEMP_PREFIX = "MangaProof-update-installer"
+
+
+def safe_token(value: str | None) -> str:
+    """把 token/版本号变成可安全用于文件名的片段（供安装日志命名）。"""
+    import re
+
+    text = re.sub(r"[^A-Za-z0-9._-]", "_", (value or "").strip())
+    return (text[:24] or "notoken")
 
 
 class ExitCode(IntEnum):
@@ -234,6 +245,9 @@ class Runtime:
     needs_elevation: Callable[[Path], bool] = privilege.needs_elevation
     remove_tree: Callable[..., bool] = rollback.remove_tree
     replace_path: Callable[..., None] = rollback.replace_path
+    #: 安装器自己的日志文件（``updater/main.py`` 建的那个）。收尾时会被复制到
+    #: 程序目录 ``logs/`` 再连同更新包一起删掉；None = 没有日志可留存。
+    log_path: Path | None = None
     success_timeout: float = SUCCESS_TIMEOUT
     parent_timeout: float = PARENT_EXIT_TIMEOUT
     poll_interval: float = POLL_INTERVAL
@@ -754,6 +768,9 @@ class Installer:
     def _cleanup(self) -> None:
         self._phase("CLEANUP")
         opts = self.options
+        # 先把安装日志搬进程序目录 logs/：它是"这次更新到底做了什么"的唯一记录，
+        # 而它此刻正躺在马上要被删掉的更新包目录里。
+        self._preserve_installer_log()
         # 顺序照 §61：删 .old → 删数据备份 → 删更新包 → 删安装器临时目录 → 删标记
         old = Path(self.state.old_dir)
         self._item(old.name, "删除旧版本")
@@ -769,15 +786,67 @@ class Installer:
             Path(opts.package).unlink(missing_ok=True)
         except OSError as exc:
             self.reporter.log(f"警告：更新包删除失败：{opts.package}（{exc}）")
+        # 更新包目录里剩下的东西（含安装日志）一并清掉：这里没有"正在运行的
+        # 文件"，删不掉才是异常，所以用带重试的 remove_tree 并把失败如实报出来。
+        self._cleanup_package_dir()
         self._cleanup_installer_temp()
         self._item(Path(opts.success_marker).name, "删除成功标记")
         state_mod.remove_marker(opts.success_marker)
 
-    def _cleanup_installer_temp(self) -> None:
-        """删除安装器临时目录（§40/§61）。
+    def _preserve_installer_log(self) -> None:
+        """把安装日志复制进程序目录 ``logs/``（更新包目录随后会被整个删掉）。
 
-        安装器自己是那个目录里的 onefile 程序，Windows 上删不掉正在运行的 exe
-        （调研报告 §5.1），所以这里**只尽力而为**，失败仅记日志。
+        命名 ``installer-<目标版本>-<token前8位>.log``：一次更新一个文件，
+        不会互相覆盖，也不会混进 ``mangaproof.log`` 的轮转序列里。
+        复制失败只是少一份诊断材料，**绝不能因此让更新判失败**。
+        """
+        source = self.rt.log_path
+        if source is None or not Path(source).is_file():
+            return
+        install = Path(self.options.install_dir)
+        target_dir = logs_dir(install)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / (
+                f"installer-{safe_token(self.options.version)}"
+                f"-{safe_token(self.options.token)[:8]}.log"
+            )
+            shutil.copy2(source, target)
+        except OSError as exc:
+            self.reporter.log(f"警告：安装日志留存失败（{exc}）：{source}")
+            return
+        self._item(f"logs/{target.name}", "留存安装日志")
+
+    def _cleanup_package_dir(self) -> None:
+        """清掉更新包目录（更新包本体 + 数据备份 + 成功标记 + 安装日志）。
+
+        安全约束（**别删错东西**）：只删"更新临时目录下那个固定名字的目录"，
+        即 ``TEMP|CACHE/MangaProof-update-package``。绝不照搬 ``--package`` 的父目录
+        —— 单测/嵌入调用时包可能就放在安装目录里，照搬会把整个程序删掉。
+        """
+        canonical = platform_dirs.update_package_dir(create=False)
+        if canonical.name != platform_dirs.PACKAGE_DIRNAME:
+            return                      # 契约变了就宁可不删
+        if not canonical.is_dir():
+            return
+        # 更新包本体此刻应该已经在里面被删过一次了；这里连同日志/备份/标记一起收尾
+        if self.rt.remove_tree(
+            canonical, retries=self.rt.retries, delay=self.rt.retry_delay,
+            sleep=self.rt.sleep,
+        ):
+            self._item(canonical.name, "删除更新包目录")
+        else:
+            self.reporter.log(f"警告：更新包目录删除失败，可手动删除：{canonical}")
+
+    def _cleanup_installer_temp(self) -> None:
+        """删除安装器临时目录（§40/§61）——**尽力而为**，删不掉不是失败。
+
+        Windows 上这个 exe 删不掉自己：running onefile 程序的可执行文件带
+        FILE_SHARE_DELETE 以外的共享模式（而且它删自己的目录），
+        :func:`rollback.remove_tree` 重试几次后会登记"重启后删除"；
+        实在删不掉也无所谓 —— 下一次更新会把新副本覆盖过去（同名同目录），
+        目录永远不会越堆越多。这里只在真的没删掉时把原因写清楚，
+        免得用户看到"未删除"以为更新失败了。
         """
         if not getattr(sys, "frozen", False):
             return
@@ -786,12 +855,17 @@ class Installer:
         if not temp_dir.name.startswith(INSTALLER_TEMP_PREFIX):
             return
         self._item(temp_dir.name, "删除安装器临时目录")
-        self.rt.remove_tree(
+        removed = self.rt.remove_tree(
             exe, retries=2, delay=self.rt.retry_delay, sleep=self.rt.sleep
         )
-        self.rt.remove_tree(
+        removed = self.rt.remove_tree(
             temp_dir, retries=2, delay=self.rt.retry_delay, sleep=self.rt.sleep
-        )
+        ) and removed
+        if not removed:
+            self.reporter.log(
+                f"注：安装器自身的副本暂时无法删除（Windows 上正在运行的 exe 不能"
+                f"删自己），下次更新会直接覆盖：{temp_dir}"
+            )
 
     # -- 失败与回滚（§62/§63） ------------------------------------------ #
     def _handle_failure(self, failure: InstallerFailure) -> int:

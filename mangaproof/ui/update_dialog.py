@@ -116,8 +116,11 @@ class UpdateDialog(QDialog):
 
     #: 用户在对话框里确认了配置（点「检查更新」）→ 主窗口负责写 settings.json
     settings_committed = Signal()
-    #: 更新包已下载并校验通过，请求主程序启动安装器并退出（需求 §46）
-    install_requested = Signal(object)      # Path
+    #: 更新包已下载并校验通过，请求主程序启动安装器并退出（需求 §46）。
+    #: 载荷是 ``(包路径, SHA-256)`` —— 校验值必须随信号一起递出去，因为本对话框
+    #: 在 emit 之后立刻 accept() 关闭，主窗口不能再回来向它要（需求 §53：
+    #: 安装器要拿这个值在替换文件前复核，缺失就只能跳过哈希校验）。
+    install_requested = Signal(object)      # (Path, str)
 
     def __init__(self, settings: Settings, *, parent: QWidget | None = None):
         super().__init__(parent)
@@ -134,6 +137,7 @@ class UpdateDialog(QDialog):
         self._result: CheckResult | None = None
         self._outcome: CheckOutcome | None = None
         self._package: Path | None = None
+        self._package_sha256: str = ""       # 下载后本地算出的 SHA-256（传给安装器复核）
         self._state = "idle"        # idle / checking / checked / no_update / downloading / done
 
         self._build_ui()
@@ -385,7 +389,7 @@ class UpdateDialog(QDialog):
         elif self._state == "done" and self._package is not None:
             # 需求 §46：由主窗口负责"启动安装器 → 确认拉起成功 → 主程序退出"；
             # 先发信号（主窗口可能弹错误框），再关闭本对话框。
-            self.install_requested.emit(self._package)
+            self.install_requested.emit((self._package, self._package_sha256))
             self.accept()
 
     def _on_cancel(self) -> None:
@@ -536,6 +540,10 @@ class UpdateDialog(QDialog):
         parts = [f"{human_size(done)} / {human_size(total_int) if total_int else '未知'}"]
         if isinstance(speed, (int, float)) and speed:
             parts.append(f"速度：{human_speed(float(speed))}")
+        # 详情行是"已下载 / 总量 + 速度"的唯一去处，必须显式可见：
+        # _clear_output() 在下载开始时会把它藏起来（避免上一轮的残留），
+        # 这里只 setText 不 setVisible 的话进度数字就永远看不到了。
+        self.detail_label.setVisible(True)
         self.detail_label.setText("　".join(parts))
 
     def _on_download_ok(self, path: object) -> None:
@@ -545,11 +553,14 @@ class UpdateDialog(QDialog):
         self.progress.setValue(100)
         self._state = "done"
         self._package = Path(str(path))
+        # 这里算出的 SHA-256 不只是给界面看：点「立即安装并重启」时会作为
+        # --sha256 传给安装器，让它在替换文件前再校验一次（需求 §53）。
         digest = checksum.sha256_of(self._package)
+        self._package_sha256 = digest
         self.status_label.setText(
             "更新包已下载并通过校验\n\n"
             f"文件：{self._package.name}\n"
-            f"SHA-256：{digest[:16]}…"
+            f"SHA-256：{digest}"
         )
         self.detail_label.setText(str(self._package))
         self.detail_label.setVisible(True)
@@ -625,6 +636,15 @@ class UpdateDialog(QDialog):
     def take_package(self) -> Path | None:
         """取走已校验的更新包路径（主窗口用它启动安装器）。"""
         return self._package
+
+    def take_package_sha256(self) -> str:
+        """取走更新包的 SHA-256（主窗口作为 ``--sha256`` 传给安装器，需求 §53）。
+
+        渠道侧的哈希可能缺失（MirrorChyan 有时不给），但**本地算出来的这个总有**：
+        它是"下载到手的字节"的指纹，让安装器在替换文件前再校验一次，
+        而不是打一句"未提供 --sha256，本次不做哈希校验"就跳过。
+        """
+        return self._package_sha256
 
 
 __all__ = ["UpdateDialog", "CHANNEL_LABELS", "BRANCH_LABELS"]

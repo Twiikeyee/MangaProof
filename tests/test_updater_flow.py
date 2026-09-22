@@ -474,3 +474,53 @@ def test_dry_run_verify_only_does_not_touch_anything(tmp_path: Path):
     assert before == after
     assert result.info.main_rel == archive.main_executable_rel("linux")
     assert result.sha256 == env.sha256
+
+
+# --------------------------------------------------------------------------- #
+# ⑥ 收尾：安装日志留存 + 更新包目录清理（需求 §53/§61）
+# --------------------------------------------------------------------------- #
+
+
+def test_success_path_preserves_installer_log_then_removes_package_dir(tmp_path: Path):
+    """安装日志先复制进程序目录 logs/，随后整个更新包目录被删掉（含日志原件）。
+
+    留日志的本意是排查用；日志原本躺在更新包目录里，而那个目录要被清理。
+    所以顺序必须是"先留存、后删除"，且留存下来的那份要能读出内容。
+    """
+    env = build_env(tmp_path)
+    log_file = tmp_path / "MangaProof-update-package" / "installer-tok.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("安装器启动：版本=1.1.0.alpha\n失败（退出码 40）：示例\n", encoding="utf-8")
+
+    options = make_options(env)
+    runtime = make_runtime(env, log_path=log_file)
+
+    code = Installer(options, runtime).run()
+    assert code == int(ExitCode.OK), env.reporter.logs
+
+    preserved = list((env.install / "logs").glob("installer-*.log"))
+    assert preserved, f"安装日志没有留存到 logs/：{env.install}"
+    text = preserved[0].read_text(encoding="utf-8")
+    assert "安装器启动" in text
+    # 文件名带版本与 token 片段，一次更新一个文件，互不覆盖
+    assert "1.1.0.alpha" in preserved[0].name
+
+    # 内容留存成功后才允许清掉原件（原目录不是/也曾是更新包目录都无妨）
+    assert (env.install / "MangaProof").is_file(), "程序本体必须仍在"
+
+
+def test_package_dir_is_removed_at_the_end(tmp_path: Path, monkeypatch):
+    """成功收尾时更新包目录被整个删掉（包本体 + 备份 + 标记 + 安装日志）。"""
+    from mangaproof.update import platform_dirs
+
+    env = build_env(tmp_path)
+    # 把"更新临时目录的根"指到 tmp_path，让 canonical 目录落在测试沙箱里
+    monkeypatch.setattr(platform_dirs, "temp_root", lambda: tmp_path)
+    canonical = platform_dirs.update_package_dir()
+    (canonical / "installer-tok.log").write_text("日志", encoding="utf-8")
+    assert canonical.is_dir()
+
+    code = Installer(make_options(env), make_runtime(env)).run()
+    assert code == int(ExitCode.OK), env.reporter.logs
+    assert not canonical.exists(), "更新包目录收尾必须删掉（留日志是先复制再删）"
+    assert (env.install / "MangaProof").is_file(), "程序本体不受影响"

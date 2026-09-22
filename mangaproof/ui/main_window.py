@@ -498,22 +498,27 @@ class MainWindow(QMainWindow):
         dialog.install_requested.connect(self._start_update_installer)
         dialog.exec()
 
-    def _start_update_installer(self, package: object) -> None:
+    def _start_update_installer(self, payload: object) -> None:
         """启动更新安装器，成功则退出主程序（需求 §40~§46）。
 
         顺序不能颠倒：**先确认安装器进程创建成功，再退出主程序**（需求 §46）。
         启动失败时保持运行并报告错误 —— 否则用户会既没更新、程序也没了。
+
+        ``payload`` 是对话框递过来的 ``(包路径, SHA-256)``：哈希必须一路带到安装器
+        （``--sha256``），否则安装器只能打一句"未提供 --sha256，本次不做哈希校验"
+        就跳过复核（需求 §53）。
         """
         from mangaproof.update import installer as installer_module
         from mangaproof.update.errors import InstallerError
         from mangaproof.update.version import AppVersion
 
+        package, sha256 = payload if isinstance(payload, tuple) else (payload, "")
         version = str(AppVersion.parse(__version__))
         try:
             invocation = installer_module.prepare_invocation(
                 package=Path(str(package)),
                 version=version,
-                sha256=None,          # 安装器会自己按 --package 重新校验（需求 §53）
+                sha256=str(sha256 or ""),
                 parent_pid=os.getpid(),
             )
             installer_module.launch(invocation)
