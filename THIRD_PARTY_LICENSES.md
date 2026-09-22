@@ -36,25 +36,43 @@ MangaProof 使用了下列第三方组件。每个条目给出组件名、版本
 | 8 | attrs（psd-tools 依赖） | 26.1.0 | MIT | <https://www.attrs.org/> |
 | 9 | typing-extensions（psd-tools 依赖） | 4.16.0 | PSF-2.0 | <https://github.com/python/typing_extensions> |
 | 10 | charset-normalizer（reportlab 依赖） | 3.5.1 | MIT | <https://github.com/jawah/charset_normalizer> |
-| 11 | PyInstaller（打包工具） | 6.22.2 | GPL-2.0-or-later（bootloader 例外） | <https://pyinstaller.org/> |
-| 12 | altgraph（PyInstaller 依赖） | 0.17.5 | MIT | <https://altgraph.readthedocs.io/> |
-| 13 | pyinstaller-hooks-contrib（PyInstaller hooks 集） | 2026.6 | GPL-2.0-or-later（运行期 hook 部分为 Apache-2.0） | <https://github.com/pyinstaller/pyinstaller-hooks-contrib> |
-| 14 | setuptools（PyInstaller 依赖） | 84.0.0 | MIT | <https://github.com/pypa/setuptools> |
-| 15 | macholib（PyInstaller 依赖，仅 macOS 打包） | 1.16.4 | MIT（Expat） | <https://github.com/ronaldoussoren/macholib> |
-| 16 | pefile（PyInstaller 依赖，仅 Windows 打包） | 2024.8.26 | MIT | <https://github.com/erocarrera/pefile> |
-| 17 | pywin32-ctypes（PyInstaller 依赖，仅 Windows 打包） | 0.2.3 | BSD-3-Clause | <https://github.com/enthought/pywin32-ctypes> |
-| 18 | python-for-android（p4a，Android 打包工具链） | 由 pyside6-android-deploy 安装（仅 Android 打包用） | MIT | <https://github.com/kivy/python-for-android> |
-| 19 | buildozer（Android 打包驱动） | 1.5.0（仅 Android 打包用） | MIT | <https://github.com/kivy/buildozer> |
-| 20 | Cython（编译 p4a recipe） | 0.29.33（仅 Android 打包用） | Apache-2.0 | <https://cython.org/> |
-| 21 | Nuitka（Python → C 编译，供交叉编译） | 4.1.1（仅 Android 打包用） | AGPL-3.0-or-later | <https://nuitka.net/> |
-| 22 | Jinja2（打包模板渲染） | 3.1 | BSD-3-Clause | <https://palletsprojects.com/p/jinja/> |
-| 23 | packaging（版本解析） | 26.3 | Apache-2.0 或 BSD-2-Clause（双许可，任选其一） | <https://github.com/pypa/packaging> |
-| 24 | pkginfo（包元数据查询） | 1.13 | MIT | <https://github.com/pypa/pkginfo> |
-| 25 | tqdm（进度显示） | 4.70 | MPL-2.0 AND MIT | <https://tqdm.github.io/> |
-| 26 | Android SDK（cmdline-tools / build-tools / platform） | API 35 / build-tools（仅 Android 打包用） | Apache-2.0 | <https://developer.android.com/studio> |
-| 27 | Android NDK（r27c） | 27.2.12479018（仅 Android 打包用） | Android NDK License Agreement（专有） | <https://developer.android.com/ndk> |
-| 28 | MiSans 字体 | MiSans-Medium（随软件分发，未做任何修改） | MiSans 字体知识产权许可协议 | <https://hyperos.mi.com/font/> |
-| 29 | Noto Sans Symbols 2 | NotoSansSymbols2-Regular（随软件分发，未做任何修改） | OFL-1.1 | <https://github.com/notofonts/symbols> |
+| 11 | httpx（自更新 HTTP 客户端） | 0.28.1 | BSD-3-Clause | <https://www.python-httpx.org/> |
+| 12 | httpcore（httpx 底层传输） | 1.0.9 | BSD-3-Clause | <https://github.com/encode/httpcore> |
+| 13 | h11（HTTP/1.1 协议实现） | 0.16.0 | MIT | <https://github.com/python-hyper/h11> |
+| 14 | anyio（异步 I/O 抽象） | 4.15.1 | MIT | <https://github.com/agronholm/anyio> |
+| 15 | sniffio（异步库探测） | 1.3.1 | MIT OR Apache-2.0 | <https://github.com/python-trio/sniffio> |
+| 16 | certifi（CA 证书包） | 2026.7.22 | MPL-2.0 | <https://github.com/certifi/python-certifi> |
+| 17 | idna（国际化域名） | 3.20 | BSD-3-Clause | <https://github.com/kjd/idna> |
+| 18 | socksio（SOCKS 代理支持，httpx[socks]） | 1.0.0 | MIT | <https://github.com/sethmlarson/socksio> |
+| 19 | keyring（系统凭据库访问） | 25.7.0 | MIT | <https://github.com/jaraco/keyring> |
+| 20 | jaraco.classes（keyring 依赖） | 3.4.0 | MIT | <https://github.com/jaraco/jaraco.classes> |
+| 21 | jaraco.context（keyring 依赖） | 6.1.2 | MIT | <https://github.com/jaraco/jaraco.context> |
+| 22 | jaraco.functools（keyring 依赖） | 4.6.0 | MIT | <https://github.com/jaraco/jaraco.functools> |
+| 23 | more-itertools（jaraco.functools 依赖） | 11.1.0 | MIT | <https://github.com/more-itertools/more-itertools> |
+| 24 | SecretStorage（keyring 的 Linux 后端） | 3.5.0 | BSD-3-Clause | <https://github.com/mitya57/secretstorage> |
+| 25 | jeepney（SecretStorage 的 D-Bus 实现） | 0.9.0 | MIT | <https://gitlab.com/takluyver/jeepney> |
+| 26 | cryptography（SecretStorage 依赖，仅 Linux 桌面） | 50.0.1 | Apache-2.0 OR BSD-3-Clause | <https://github.com/pyca/cryptography> |
+| 27 | cffi（cryptography 依赖） | 2.1.1 | MIT | <https://cffi.readthedocs.io/> |
+| 28 | pycparser（cffi 依赖） | 3.0 | BSD-3-Clause | <https://github.com/eliben/pycparser> |
+| 29 | PyInstaller（打包工具） | 6.22.2 | GPL-2.0-or-later（bootloader 例外） | <https://pyinstaller.org/> |
+| 30 | altgraph（PyInstaller 依赖） | 0.17.5 | MIT | <https://altgraph.readthedocs.io/> |
+| 31 | pyinstaller-hooks-contrib（PyInstaller hooks 集） | 2026.6 | GPL-2.0-or-later（运行期 hook 部分为 Apache-2.0） | <https://github.com/pyinstaller/pyinstaller-hooks-contrib> |
+| 32 | setuptools（PyInstaller 依赖） | 84.0.0 | MIT | <https://github.com/pypa/setuptools> |
+| 33 | macholib（PyInstaller 依赖，仅 macOS 打包） | 1.16.4 | MIT（Expat） | <https://github.com/ronaldoussoren/macholib> |
+| 34 | pefile（PyInstaller 依赖，仅 Windows 打包） | 2024.8.26 | MIT | <https://github.com/erocarrera/pefile> |
+| 35 | pywin32-ctypes（PyInstaller 依赖，仅 Windows 打包） | 0.2.3 | BSD-3-Clause | <https://github.com/enthought/pywin32-ctypes> |
+| 36 | python-for-android（p4a，Android 打包工具链） | 由 pyside6-android-deploy 安装（仅 Android 打包用） | MIT | <https://github.com/kivy/python-for-android> |
+| 37 | buildozer（Android 打包驱动） | 1.5.0（仅 Android 打包用） | MIT | <https://github.com/kivy/buildozer> |
+| 38 | Cython（编译 p4a recipe） | 0.29.33（仅 Android 打包用） | Apache-2.0 | <https://cython.org/> |
+| 39 | Nuitka（Python → C 编译，供交叉编译） | 4.1.1（仅 Android 打包用） | AGPL-3.0-or-later | <https://nuitka.net/> |
+| 40 | Jinja2（打包模板渲染） | 3.1 | BSD-3-Clause | <https://palletsprojects.com/p/jinja/> |
+| 41 | packaging（版本解析） | 26.3 | Apache-2.0 或 BSD-2-Clause（双许可，任选其一） | <https://github.com/pypa/packaging> |
+| 42 | pkginfo（包元数据查询） | 1.13 | MIT | <https://github.com/pypa/pkginfo> |
+| 43 | tqdm（进度显示） | 4.70 | MPL-2.0 AND MIT | <https://tqdm.github.io/> |
+| 44 | Android SDK（cmdline-tools / build-tools / platform） | API 35 / build-tools（仅 Android 打包用） | Apache-2.0 | <https://developer.android.com/studio> |
+| 45 | Android NDK（r27c） | 27.2.12479018（仅 Android 打包用） | Android NDK License Agreement（专有） | <https://developer.android.com/ndk> |
+| 46 | MiSans 字体 | MiSans-Medium（随软件分发，未做任何修改） | MiSans 字体知识产权许可协议 | <https://hyperos.mi.com/font/> |
+| 47 | Noto Sans Symbols 2 | NotoSansSymbols2-Regular（随软件分发，未做任何修改） | OFL-1.1 | <https://github.com/notofonts/symbols> |
 
 ## 许可全文与声明
 
@@ -395,7 +413,539 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 11. PyInstaller（打包工具）
+### 11. httpx（自更新 HTTP 客户端）
+
+- **版本**：0.28.1
+- **许可证（SPDX）**：BSD-3-Clause
+- **版权**：© 2019 Encode OSS Ltd.
+- **主页**：<https://www.python-httpx.org/>
+
+```text
+BSD 3-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 12. httpcore（httpx 底层传输）
+
+- **版本**：1.0.9
+- **许可证（SPDX）**：BSD-3-Clause
+- **版权**：© 2020 Encode OSS Ltd.
+- **主页**：<https://github.com/encode/httpcore>
+
+```text
+BSD 3-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 13. h11（HTTP/1.1 协议实现）
+
+- **版本**：0.16.0
+- **许可证（SPDX）**：MIT
+- **版权**：© 2016 Nathaniel J. Smith 及贡献者
+- **主页**：<https://github.com/python-hyper/h11>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 14. anyio（异步 I/O 抽象）
+
+- **版本**：4.15.1
+- **许可证（SPDX）**：MIT
+- **版权**：© 2018 Alex Grönholm
+- **主页**：<https://github.com/agronholm/anyio>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 15. sniffio（异步库探测）
+
+- **版本**：1.3.1
+- **许可证（SPDX）**：MIT OR Apache-2.0
+- **版权**：© 2018 Alex Grönholm 及贡献者
+- **主页**：<https://github.com/python-trio/sniffio>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 16. certifi（CA 证书包）
+
+- **版本**：2026.7.22
+- **许可证（SPDX）**：MPL-2.0
+- **版权**：© Kenneth Reitz 及 certifi 贡献者
+- **主页**：<https://github.com/certifi/python-certifi>
+
+```text
+Mozilla Public License 2.0（MPL-2.0）
+
+- 文件级 copyleft：被修改过的 MPL 源文件需继续以 MPL 提供，可与其它许可的
+  代码组合、链接；
+- 需保留版权与许可声明；
+- 软件按"现状"提供，不附带任何担保。
+
+完整许可证文本（官方链接）：
+https://www.mozilla.org/MPL/2.0/
+```
+
+### 17. idna（国际化域名）
+
+- **版本**：3.20
+- **许可证（SPDX）**：BSD-3-Clause
+- **版权**：© 2013-2026 Kim Davies 及贡献者
+- **主页**：<https://github.com/kjd/idna>
+
+```text
+BSD 3-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 18. socksio（SOCKS 代理支持，httpx[socks]）
+
+- **版本**：1.0.0
+- **许可证（SPDX）**：MIT
+- **版权**：© 2020 Seth Michael Larson
+- **主页**：<https://github.com/sethmlarson/socksio>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 19. keyring（系统凭据库访问）
+
+- **版本**：25.7.0
+- **许可证（SPDX）**：MIT
+- **版权**：© 2011-2026 Jason R. Coombs 及贡献者
+- **主页**：<https://github.com/jaraco/keyring>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 20. jaraco.classes（keyring 依赖）
+
+- **版本**：3.4.0
+- **许可证（SPDX）**：MIT
+- **版权**：© Jason R. Coombs
+- **主页**：<https://github.com/jaraco/jaraco.classes>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 21. jaraco.context（keyring 依赖）
+
+- **版本**：6.1.2
+- **许可证（SPDX）**：MIT
+- **版权**：© Jason R. Coombs
+- **主页**：<https://github.com/jaraco/jaraco.context>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 22. jaraco.functools（keyring 依赖）
+
+- **版本**：4.6.0
+- **许可证（SPDX）**：MIT
+- **版权**：© Jason R. Coombs
+- **主页**：<https://github.com/jaraco/jaraco.functools>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 23. more-itertools（jaraco.functools 依赖）
+
+- **版本**：11.1.0
+- **许可证（SPDX）**：MIT
+- **版权**：© 2012 Erik Rose
+- **主页**：<https://github.com/more-itertools/more-itertools>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 24. SecretStorage（keyring 的 Linux 后端）
+
+- **版本**：3.5.0
+- **许可证（SPDX）**：BSD-3-Clause
+- **版权**：© 2012-2026 Dmitry Shachnev
+- **主页**：<https://github.com/mitya57/secretstorage>
+
+```text
+BSD 3-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 25. jeepney（SecretStorage 的 D-Bus 实现）
+
+- **版本**：0.9.0
+- **许可证（SPDX）**：MIT
+- **版权**：© 2017-2026 Thomas Kluyver
+- **主页**：<https://gitlab.com/takluyver/jeepney>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 26. cryptography（SecretStorage 依赖，仅 Linux 桌面）
+
+- **版本**：50.0.1
+- **许可证（SPDX）**：Apache-2.0 OR BSD-3-Clause
+- **版权**：© The Python Cryptographic Authority 及贡献者
+- **主页**：<https://github.com/pyca/cryptography>
+
+```text
+Apache License 2.0（Apache-2.0）
+
+- 允许商业使用、修改与再分发；需保留版权与许可声明，随附 NOTICE 文件（若有）；
+- 分发修改版时需说明改动；
+- 含专利授权；若对贡献者发起专利诉讼，该授权终止；
+- 软件按"现状"提供，不附带任何明示或默示担保。
+
+完整许可证文本（官方链接）：
+https://www.apache.org/licenses/LICENSE-2.0
+```
+
+### 27. cffi（cryptography 依赖）
+
+- **版本**：2.1.1
+- **许可证（SPDX）**：MIT
+- **版权**：© 2013-2026 Armin Rigo 及贡献者
+- **主页**：<https://cffi.readthedocs.io/>
+
+```text
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 28. pycparser（cffi 依赖）
+
+- **版本**：3.0
+- **许可证（SPDX）**：BSD-3-Clause
+- **版权**：© 2008-2026 Eli Bendersky
+- **主页**：<https://github.com/eliben/pycparser>
+
+```text
+BSD 3-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 29. PyInstaller（打包工具）
 
 - **版本**：6.22.2
 - **许可证（SPDX）**：GPL-2.0-or-later（bootloader 例外）
@@ -418,7 +968,7 @@ non-free programs (including commercial ones)."
 https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt
 ```
 
-### 12. altgraph（PyInstaller 依赖）
+### 30. altgraph（PyInstaller 依赖）
 
 - **版本**：0.17.5
 - **许可证（SPDX）**：MIT
@@ -447,7 +997,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 13. pyinstaller-hooks-contrib（PyInstaller hooks 集）
+### 31. pyinstaller-hooks-contrib（PyInstaller hooks 集）
 
 - **版本**：2026.6
 - **许可证（SPDX）**：GPL-2.0-or-later（运行期 hook 部分为 Apache-2.0）
@@ -466,7 +1016,7 @@ https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 https://github.com/pyinstaller/pyinstaller-hooks-contrib/blob/develop/LICENSE
 ```
 
-### 14. setuptools（PyInstaller 依赖）
+### 32. setuptools（PyInstaller 依赖）
 
 - **版本**：84.0.0
 - **许可证（SPDX）**：MIT
@@ -495,7 +1045,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 15. macholib（PyInstaller 依赖，仅 macOS 打包）
+### 33. macholib（PyInstaller 依赖，仅 macOS 打包）
 
 - **版本**：1.16.4
 - **许可证（SPDX）**：MIT（Expat）
@@ -524,7 +1074,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 16. pefile（PyInstaller 依赖，仅 Windows 打包）
+### 34. pefile（PyInstaller 依赖，仅 Windows 打包）
 
 - **版本**：2024.8.26
 - **许可证（SPDX）**：MIT
@@ -553,7 +1103,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 17. pywin32-ctypes（PyInstaller 依赖，仅 Windows 打包）
+### 35. pywin32-ctypes（PyInstaller 依赖，仅 Windows 打包）
 
 - **版本**：0.2.3
 - **许可证（SPDX）**：BSD-3-Clause
@@ -588,7 +1138,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 18. python-for-android（p4a，Android 打包工具链）
+### 36. python-for-android（p4a，Android 打包工具链）
 
 - **版本**：由 pyside6-android-deploy 安装（仅 Android 打包用）
 - **许可证（SPDX）**：MIT
@@ -617,7 +1167,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 19. buildozer（Android 打包驱动）
+### 37. buildozer（Android 打包驱动）
 
 - **版本**：1.5.0（仅 Android 打包用）
 - **许可证（SPDX）**：MIT
@@ -646,7 +1196,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 20. Cython（编译 p4a recipe）
+### 38. Cython（编译 p4a recipe）
 
 - **版本**：0.29.33（仅 Android 打包用）
 - **许可证（SPDX）**：Apache-2.0
@@ -665,7 +1215,7 @@ Apache License 2.0（Apache-2.0）
 https://www.apache.org/licenses/LICENSE-2.0
 ```
 
-### 21. Nuitka（Python → C 编译，供交叉编译）
+### 39. Nuitka（Python → C 编译，供交叉编译）
 
 - **版本**：4.1.1（仅 Android 打包用）
 - **许可证（SPDX）**：AGPL-3.0-or-later
@@ -683,7 +1233,7 @@ GNU Affero General Public License v3（AGPL-3.0-or-later）
 https://www.gnu.org/licenses/agpl-3.0.txt
 ```
 
-### 22. Jinja2（打包模板渲染）
+### 40. Jinja2（打包模板渲染）
 
 - **版本**：3.1
 - **许可证（SPDX）**：BSD-3-Clause
@@ -718,7 +1268,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 23. packaging（版本解析）
+### 41. packaging（版本解析）
 
 - **版本**：26.3
 - **许可证（SPDX）**：Apache-2.0 或 BSD-2-Clause（双许可，任选其一）
@@ -737,7 +1287,7 @@ Apache License 2.0（Apache-2.0）
 https://www.apache.org/licenses/LICENSE-2.0
 ```
 
-### 24. pkginfo（包元数据查询）
+### 42. pkginfo（包元数据查询）
 
 - **版本**：1.13
 - **许可证（SPDX）**：MIT
@@ -766,7 +1316,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 25. tqdm（进度显示）
+### 43. tqdm（进度显示）
 
 - **版本**：4.70
 - **许可证（SPDX）**：MPL-2.0 AND MIT
@@ -785,7 +1335,7 @@ Mozilla Public License 2.0（MPL-2.0）
 https://www.mozilla.org/MPL/2.0/
 ```
 
-### 26. Android SDK（cmdline-tools / build-tools / platform）
+### 44. Android SDK（cmdline-tools / build-tools / platform）
 
 - **版本**：API 35 / build-tools（仅 Android 打包用）
 - **许可证（SPDX）**：Apache-2.0
@@ -803,7 +1353,7 @@ https://developer.android.com/studio/terms
 https://www.apache.org/licenses/LICENSE-2.0
 ```
 
-### 27. Android NDK（r27c）
+### 45. Android NDK（r27c）
 
 - **版本**：27.2.12479018（仅 Android 打包用）
 - **许可证（SPDX）**：Android NDK License Agreement（专有）
@@ -823,7 +1373,7 @@ https://developer.android.com/ndk/downloads
 https://developer.android.com/studio/terms
 ```
 
-### 28. MiSans 字体
+### 46. MiSans 字体
 
 - **版本**：MiSans-Medium（随软件分发，未做任何修改）
 - **许可证（SPDX）**：MiSans 字体知识产权许可协议
@@ -854,7 +1404,7 @@ MiSans 字体知识产权许可协议
 下载地址：https://hyperos.mi.com/font/download
 ```
 
-### 29. Noto Sans Symbols 2
+### 47. Noto Sans Symbols 2
 
 - **版本**：NotoSansSymbols2-Regular（随软件分发，未做任何修改）
 - **许可证（SPDX）**：OFL-1.1

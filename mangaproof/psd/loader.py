@@ -10,11 +10,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
 from typing import List, Optional
 
+from mangaproof.utils import hashing as _hashing
 from mangaproof.utils.natural_sort import natural_sorted
 
 log = logging.getLogger("mangaproof.psd.loader")
@@ -57,19 +57,19 @@ def scan_psd_files(folder: Path, recursive: bool = False) -> List[Path]:
 
 
 def file_size(path: Path) -> int:
-    return path.stat().st_size
+    return _hashing.file_size(path)
 
 
 def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
-    """流式计算完整 SHA-256（避免一次性读入内存）。"""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    """流式计算完整 SHA-256（避免一次性读入内存）。
+
+    实现位于 :mod:`mangaproof.utils.hashing`（零依赖）。自更新安装器是
+    PyInstaller onefile 的**独立程序**（需求 §43），也要做同一种校验，但不能经由
+    本模块导入 —— 那会把 psd_tools / numpy / Pillow 拖进安装器。这里保留同名转发，
+    既让既有调用方（``review/persistence.py`` 用的 ``loader.file_sha256``）不变，
+    也保证全项目只有一份实现。
+    """
+    return _hashing.file_sha256(path, chunk_size)
 
 
 def open_psd_tools(path: Path):

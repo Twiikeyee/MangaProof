@@ -68,6 +68,17 @@ REQUIREMENT_TOKENS = {
     "attrs": "attrs",
     "typing-extensions": "typing-extensions",
     "charset-normalizer": "charset-normalizer",
+    # 自更新系统（需求 §8 统一 httpx）：token 必须与 packaging/android/recipes/
+    # 下的**目录名**一致（p4a 的 Recipe.name 取自目录名，大小写不敏感匹配）。
+    # keyring 及其子树**不在**此表：它们在 analyze_lock_deps.ANDROID_SKIP 里，
+    # 根本不会出现在下面的闭包中（需求 §14：Android 不打包 keyring）。
+    "httpx": "httpx",
+    "httpcore": "httpcore",
+    "h11": "h11",
+    "anyio": "anyio",
+    "certifi": "certifi",
+    "idna": "idna",
+    "socksio": "socksio",
 }
 QT_PACKAGES = {"pyside6", "pyside6-essentials", "pyside6-addons", "shiboken6"}
 

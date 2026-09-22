@@ -47,8 +47,31 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # 已核实的 Android 打包归宿（新增依赖若不在表内即视为 unknown，CI 应失败）
 QT_WHEEL = {"pyside6", "pyside6-essentials", "pyside6-addons", "shiboken6"}
 P4A_OFFICIAL = {"numpy", "pillow", "reportlab"}          # p4a develop 自带 recipe（版本可能偏旧）
-LOCAL_RECIPE = {"attrs", "typing-extensions", "charset-normalizer", "psd-tools"}
+LOCAL_RECIPE = {
+    "attrs", "typing-extensions", "charset-normalizer", "psd-tools",
+    # 自更新系统（需求 §8：更新系统统一使用 httpx）。
+    # p4a develop 只有 httpx 官方 recipe，且其 depends 漏了 anyio；其余依赖包
+    # 在 p4a 里根本没有 recipe（实测 recipes/<name>/__init__.py 全 404）
+    # → 这一整棵树都随项目自带本地 recipe。
+    # 注意：httpx 0.28 起不再依赖 sniffio（旧版才有），列表以 uv.lock 闭包为准。
+    "httpx", "httpcore", "h11", "anyio", "certifi", "idna", "socksio",
+}
 NATIVE = QT_WHEEL | {"numpy", "pillow"}
+
+#: **不打包进 APK** 的运行时依赖（Android 上既不可用也不需要）。
+#:
+#: keyring 及其整棵子树：需求 §14 规定 Android 不打包 keyring，CDK 直接存
+#: settings.json（应用私有目录）。注意 p4a 的 Python 上报 sys.platform == "linux"
+#: （见 mangaproof/utils/platform.py 的说明），因此 keyring 的 Linux 专属依赖
+#: （SecretStorage → cryptography → cffi → pycparser）在 marker 判定下同样"适用"，
+#: 必须在这里显式排除；pywin32-ctypes 只是 keyring 在 Windows 上的依赖。
+#: 名字用 **uv.lock 里的规范化名**（连字符），不是 import 名（jaraco.classes）。
+#: 排除是"剪枝"语义：这些包不进入闭包，也不会继续向下展开。
+ANDROID_SKIP = {
+    "keyring", "jaraco-classes", "jaraco-context", "jaraco-functools",
+    "more-itertools", "secretstorage", "jeepney", "cryptography", "cffi",
+    "pycparser", "pywin32-ctypes",
+}
 
 
 def find_root(packages: list[dict]) -> dict:
@@ -60,19 +83,59 @@ def find_root(packages: list[dict]) -> dict:
     raise SystemExit("[deps] uv.lock 中找不到根项目（source.editable/virtual == '.'）")
 
 
-def reachable(packages: dict[str, dict], starts, *, skip_extras: bool = True) -> set[str]:
-    """从 starts 出发的依赖闭包；skip_extras 时不跟随未被请求的 extra 边。"""
+def _enqueue_deps(
+    packages: dict[str, dict], deps, queue: deque, *, skip_extras: bool = True
+) -> None:
+    """把一组**依赖项字典**展开进队列。
+
+    关键点：uv.lock 里"显式请求的 extra"写作
+    ``{ name = "httpx", extra = ["socks"] }``（本项目的 ``httpx[socks]``）。
+    这种边必须展开成"包本身 + 该 extra 的依赖"，**不能整条跳过** ——
+    跳过会把 httpx 本身也丢掉，最后以"直接依赖未出现在闭包中"报错。
+    """
+    for dep in deps:
+        dep_name = dep["name"]
+        requested = dep.get("extra")
+        if requested:
+            queue.append(dep_name)
+            dep_optional = packages.get(dep_name, {}).get("optional-dependencies") or {}
+            for extra in requested:
+                for opt in dep_optional.get(extra, []):
+                    queue.append(opt["name"])
+            continue
+        if skip_extras and "extra ==" in (dep.get("marker") or ""):
+            continue
+        queue.append(dep_name)
+
+
+def reachable(
+    packages: dict[str, dict],
+    start_deps,
+    *,
+    skip_extras: bool = True,
+    skip: frozenset | set = frozenset(),
+) -> set[str]:
+    """从一组依赖项出发的依赖闭包。
+
+    - ``start_deps`` 是**依赖项字典列表**（可带 ``extra``），不是名字列表：
+      根项目的依赖同样可能带 extra，传名字列表会把 extra 信息丢掉；
+    - ``skip`` 里的包**不进入闭包，也不继续向下展开**（用于"Android 不打包"的子树）；
+    - ``skip_extras`` 表示不跟随**未被请求**的 extra 边。
+    """
     seen: set[str] = set()
-    queue = deque(starts)
+    queue: deque = deque()
+    _enqueue_deps(packages, start_deps, queue, skip_extras=skip_extras)
     while queue:
         name = queue.popleft()
-        if name in seen:
+        if name in seen or name in skip:
             continue
         seen.add(name)
-        for dep in packages.get(name, {}).get("dependencies", []):
-            if skip_extras and (dep.get("extra") or "extra ==" in (dep.get("marker") or "")):
-                continue
-            queue.append(dep["name"])
+        _enqueue_deps(
+            packages,
+            packages.get(name, {}).get("dependencies", []),
+            queue,
+            skip_extras=skip_extras,
+        )
     return seen
 
 
@@ -92,12 +155,17 @@ def analyze(lock_path: Path) -> dict:
     root = find_root(lock["package"])
 
     direct = [d["name"] for d in root.get("dependencies", [])]
-    runtime = reachable(packages, direct) | {root["name"]}
+    # 先算完整闭包，再整体减掉 ANDROID_SKIP —— 这样被排除的包在报告里可见
+    # （若改成"遍历时剪枝"，报告会显示 0 个，等于把排除行为藏起来）。
+    # 注意这里传的是**依赖项字典**（含 extra 信息），不是名字列表。
+    runtime_all = reachable(packages, root.get("dependencies", [])) | {root["name"]}
+    android_skip = sorted(runtime_all & ANDROID_SKIP)
+    runtime = runtime_all - ANDROID_SKIP
 
     group_reach: set[str] = set()
     group_of: dict[str, str] = {}
     for group_name, deps in (root.get("dev-dependencies") or {}).items():
-        for name in reachable(packages, [d["name"] for d in deps]):
+        for name in reachable(packages, deps) - ANDROID_SKIP:
             group_reach.add(name)
             group_of.setdefault(name, group_name)
     group_only = sorted(group_reach - runtime)
@@ -107,7 +175,7 @@ def analyze(lock_path: Path) -> dict:
     leaked = sorted(runtime & set(group_only))
     if leaked:
         raise SystemExit(f"[deps] 运行时闭包混入组专属包：{leaked}")
-    missing = [d for d in direct if d not in runtime]
+    missing = [d for d in direct if d not in runtime and d not in ANDROID_SKIP]
     if missing:
         raise SystemExit(f"[deps] 直接依赖未出现在闭包中：{missing}")
 
@@ -127,6 +195,7 @@ def analyze(lock_path: Path) -> dict:
         "packages": rows,
         "excluded_group_only": group_only,
         "excluded_group_of": {n: group_of[n] for n in group_only},
+        "excluded_android_skip": android_skip,
         "group_overlap_must_package": overlap,
     }
 
@@ -163,6 +232,10 @@ def main() -> int:
         print("\n=== 仅由依赖组引入、不会进 APK 的包 ===")
         for group, names in sorted(groups.items()):
             print(f"  [{group}] " + ", ".join(sorted(names)))
+
+        skipped = result["excluded_android_skip"]
+        print(f"\n=== Android 明确不打包的运行时依赖（{len(skipped)} 个，见 ANDROID_SKIP）===")
+        print("  " + ", ".join(skipped))
 
     unknown = [r["name"] for r in result["packages"] if r["android_action"] == "unknown"]
     if unknown:
