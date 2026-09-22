@@ -203,13 +203,17 @@ class UpdateDialog(QDialog):
         line.setFrameShadow(QFrame.Shadow.Sunken)
         root.addWidget(line)
 
-        # 状态区放在固定高度的滚动容器里：文案长了只让状态区自己滚动，
-        # 绝不反过来压缩上面表单的行高（见 _fit_status_height）。
+        # 状态区（对话框下半的"输出区"）放在**固定高度**的滚动容器里：
+        # 文案再长也只在这里滚动，绝不撑大窗口、更不反过来压缩上面表单的行高
+        # （见 _fit_status_height 与 _clear_output）。
         self.status_area = QScrollArea()
         self.status_area.setWidgetResizable(True)
         self.status_area.setFrameShape(QFrame.Shape.NoFrame)
         self.status_area.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.status_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         status_body = QWidget()
         status_layout = QVBoxLayout(status_body)
@@ -230,7 +234,9 @@ class UpdateDialog(QDialog):
         self.detail_label.setWordWrap(True)
         self.detail_label.setVisible(False)
         status_layout.addWidget(self.detail_label)
-        status_layout.addStretch(1)
+        # 注意：这里**不加** addStretch。加了下方的弹性空间会顶掉滚动条，
+        # 长文案就只能被裁掉、滚不动了；内容比视口矮时由 body 的最小高度决定，
+        # 不会把文字拉散。
         self.status_area.setWidget(status_body)
         root.addWidget(self.status_area, 1)
 
@@ -286,6 +292,18 @@ class UpdateDialog(QDialog):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         return widget
+
+    def _clear_output(self) -> None:
+        """清空下半的"输出区"（状态正文 + 详情行 + 滚动位置）。
+
+        每次开始一个新动作（检查 / 下载 / 测试代理）都先清一遍：
+        否则上一轮的"发现新版本…"会留在下面，用户分不清哪条是这次的结论；
+        滚动位置也一并回到顶部，新文案从第一行开始读。
+        """
+        self.status_label.clear()
+        self.detail_label.clear()
+        self.detail_label.setVisible(False)
+        self.status_area.verticalScrollBar().setValue(0)
 
     def _reset_progress(self) -> None:
         """进度条回到空闲态：禁用置灰、显示 0%（占位始终保留）。"""
@@ -391,8 +409,9 @@ class UpdateDialog(QDialog):
         self._result = None
         self._set_form_enabled(False)
         self.primary_btn.setEnabled(False)
+        self._clear_output()
+        self.cancel_btn.setText("取消")      # 下载完成后这里是「稍后」，新一轮要还原
         self.status_label.setText("正在检查更新……")
-        self.detail_label.setVisible(False)
         self.progress.setRange(0, 0)         # 需求 §31：不确定进度条
         self._show_progress()
 
@@ -474,7 +493,7 @@ class UpdateDialog(QDialog):
         self._state = "downloading"
         self._set_form_enabled(False)
         self.primary_btn.setEnabled(False)
-        self.detail_label.setVisible(True)
+        self._clear_output()
         self.status_label.setText("正在准备下载……")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -533,6 +552,7 @@ class UpdateDialog(QDialog):
             f"SHA-256：{digest[:16]}…"
         )
         self.detail_label.setText(str(self._package))
+        self.detail_label.setVisible(True)
         self.primary_btn.setText("立即安装并重启")
         self.primary_btn.setEnabled(True)
         self._set_form_enabled(False)
@@ -561,6 +581,9 @@ class UpdateDialog(QDialog):
         proxy = self.proxy_edit.text().strip()
         self.proxy_test_btn.setEnabled(False)
         self.proxy_test_btn.setText("测试中…")
+        # 输出区只留本次结果：把上一轮的结论/进度先清掉
+        self._clear_output()
+        self.status_label.setText("正在测试代理……")
         worker = ProxyTestWorker(proxy=proxy, parent=self)
         worker.finished_with.connect(self._on_proxy_result)
         self._proxy_worker = worker
@@ -569,8 +592,7 @@ class UpdateDialog(QDialog):
     def _on_proxy_result(self, ok: bool, message: str) -> None:
         self.proxy_test_btn.setEnabled(True)
         self.proxy_test_btn.setText("测试代理")
-        self.detail_label.setVisible(True)
-        self.detail_label.setText(("✓ " if ok else "✗ ") + message)
+        self.status_label.setText(("✓ " if ok else "✗ ") + message)
 
     # -- 辅助 --------------------------------------------------------------
 
@@ -580,6 +602,13 @@ class UpdateDialog(QDialog):
             self.proxy_edit, self.proxy_test_btn, self.speed_combo,
         ):
             widget.setEnabled(enabled)
+
+    def output_text(self) -> str:
+        """输出区当前全文（供测试断言，也方便日志排查）。"""
+        parts = [self.status_label.text()]
+        if self.detail_label.isVisible() and self.detail_label.text():
+            parts.append(self.detail_label.text())
+        return "\n".join(p for p in parts if p)
 
     @staticmethod
     def _error_text(error: object) -> str:

@@ -322,3 +322,117 @@ def test_progress_bar_does_not_squeeze_form(dialog):
     dlg._reset_progress()
     assert not dlg.progress.isEnabled(), "空闲时进度条置灰"
     assert [dlg.proxy_edit.height(), dlg.cdk_edit.height()] == heights_before
+
+
+def test_output_area_scrolls_instead_of_growing(qapp, tmp_path):
+    """输出区（对话框下半）文案再长也只滚动，不撑大窗口、不裁掉内容。
+
+    更新说明是外部文本（长度不可控），必须能滚：曾经这里没有滚动容器，
+    长说明直接把窗口顶着长；后来换成滚动容器但留了个 addStretch，
+    弹性空间顶掉滚动条，长文案就只剩裁掉、滚不动。
+    """
+    from PySide6.QtWidgets import QApplication
+
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    rows = (dlg.branch_combo, dlg.channel_combo, dlg.cdk_edit,
+            dlg.proxy_edit, dlg.speed_combo)
+    try:
+        _laid_out(dlg)
+        height_before = dlg.height()
+        area_before = dlg.status_area.height()
+        rows_before = [w.height() for w in rows]
+
+        dlg.status_label.setText(
+            "发现新版本\n\n"
+            + "\n".join(f"{i}. 第 {i} 条更新说明，故意写得很长很长。" for i in range(200))
+        )
+        for _ in range(3):
+            QApplication.processEvents()
+
+        scrollbar = dlg.status_area.verticalScrollBar()
+        assert scrollbar.maximum() > 0, "长文案必须产生可滚动范围（有内容被裁掉）"
+        assert scrollbar.pageStep() == dlg.status_area.viewport().height()
+        assert dlg.height() == height_before, "输出区不许把窗口撑大"
+        assert dlg.status_area.height() == area_before, "输出区高度固定"
+        # 上面各行的行高不许因为输出变长而改变（逐行与原值比对：
+        # 行与行之间本来就有 1px 取整差异，不能拿两行互相比）
+        assert [w.height() for w in rows] == rows_before, "表单行高被输出区挤掉了"
+
+        # 用户滚到底，再开始新动作 → 视口回到顶部，且旧内容被清空
+        scrollbar.setValue(scrollbar.maximum())
+        dlg._clear_output()
+        QApplication.processEvents()
+        assert scrollbar.value() == 0, "清空输出后视口要回到顶部"
+        assert dlg.output_text() == ""
+    finally:
+        dlg.close()
+
+
+def test_new_action_clears_previous_output(qapp, tmp_path):
+    """开始新动作时清空上一轮输出（否则分不清哪条是本次结论）。"""
+    from PySide6.QtWidgets import QApplication
+
+    from mangaproof.ui.update_worker import CheckOutcome
+    from mangaproof.update.models import CheckResult, ReleaseInfo
+    from mangaproof.update.version import AppVersion
+
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    try:
+        _laid_out(dlg)
+        result = CheckResult(
+            current=AppVersion.parse("1.0.0"),
+            release=ReleaseInfo(
+                version=AppVersion.parse("v1.1.0"), version_name="v1.1.0",
+                release_note="新增更新功能",
+            ),
+            branch="stable",
+        )
+        dlg._on_check_ok(
+            CheckOutcome(kind="ok", result=result, filename="pkg.tar.gz", filesize=1024)
+        )
+        assert "发现新版本" in dlg.output_text()
+        assert dlg.cancel_btn.text() == "取消"
+
+        # 点「立即更新」：旧结论先被清掉，再写本轮开头文案
+        dlg._result = result
+        dlg._clear_output()
+        dlg.status_label.setText("正在准备下载……")
+        QApplication.processEvents()
+        text = dlg.output_text()
+        assert "发现新版本" not in text
+        assert "正在准备下载……" in text
+
+        # 下载完成后「取消」变「稍后」；状态与文案也要能被下一轮整体清掉
+        dlg.cancel_btn.setText("稍后")
+        dlg._clear_output()
+        QApplication.processEvents()
+        assert dlg.output_text() == ""
+        assert dlg.status_area.verticalScrollBar().value() == 0
+    finally:
+        dlg.close()
+
+
+def test_proxy_result_goes_to_output_and_clears_it(qapp, tmp_path):
+    """测试代理的结果写进输出区，且新一次测试会清掉上一次的结果。"""
+    from PySide6.QtWidgets import QApplication
+
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save()
+    dlg = UpdateDialog(manager.settings)
+    try:
+        _laid_out(dlg)
+        dlg._on_proxy_result(True, "代理可用（耗时 123 ms）")
+        QApplication.processEvents()
+        assert "代理可用" in dlg.output_text()
+
+        dlg._on_proxy_result(False, "连接被拒绝")
+        QApplication.processEvents()
+        text = dlg.output_text()
+        assert "连接被拒绝" in text
+        assert "代理可用" not in text, "上一次的结果要被替换掉"
+    finally:
+        dlg.close()
