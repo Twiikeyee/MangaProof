@@ -16,6 +16,8 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
 
+from mangaproof.update.platform import PLATFORM_MODULES
+
 SPEC_DIR = Path(SPECPATH)
 ROOT = SPEC_DIR.parent
 
@@ -75,7 +77,14 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=_datas,
-    hiddenimports=collect_submodules("psd_tools"),
+    hiddenimports=[
+        # psd-tools 大量惰性导入
+        *collect_submodules("psd_tools"),
+        # 平台模块由 update/platform/__init__.py 里拼接字符串运行时导入，
+        # 静态分析看不见 —— 不显式声明就会打出"点安装报 No module named
+        # 'mangaproof.update.platform.windows'"的残废包（需求 §6/§7）
+        *(f"mangaproof.update.platform.{name}" for name in PLATFORM_MODULES),
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

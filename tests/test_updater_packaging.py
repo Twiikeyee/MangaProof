@@ -3,23 +3,30 @@
 
 """打包与 CLI 契约单测（需求 §43/§45/§46）。
 
-两件事必须**由测试钉住**，否则很容易在后续改动里悄悄退化：
+三件事必须**由测试钉住**，否则很容易在后续改动里悄悄退化：
 
 1. ``packaging/installer.spec`` 是 **onefile + windowed + 不 exclude tkinter**
    （CI 直接按 ``--distpath dist-installer`` 构建，产物名必须对得上）；
-2. CLI 入口的参数名/退出码与主程序侧约定一致，且**不依赖 cwd**。
+2. CLI 入口的参数名/退出码与主程序侧约定一致，且**不依赖 cwd**；
+3. 三份 ``packaging/main_*.spec`` 把 ``mangaproof.update.platform.*`` 声明成
+   hiddenimports —— 它们是拼接字符串的运行时导入，静态分析看不见，漏了就会
+   打出"检查更新能用、点安装报 No module named '…platform.windows'"的残废包。
 """
 
 from __future__ import annotations
 
+import importlib
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
 SPEC = ROOT / "packaging" / "installer.spec"
+MAIN_SPECS = sorted((ROOT / "packaging").glob("main_*.spec"))
 
+from mangaproof.update.platform import PLATFORM_MODULES  # noqa: E402
 from updater import main as updater_main  # noqa: E402
 from updater.installer import ExitCode  # noqa: E402
 
@@ -239,3 +246,63 @@ def test_privilege_run_direct_is_plain_subprocess():
 
     with pytest.raises(privilege.PrivilegeError):
         privilege.run_direct(["false"], runner=lambda *a, **k: Fail(), env={})
+
+
+# -- 主程序 spec：平台模块必须进包 -------------------------------------------
+
+
+def test_platform_module_names_cover_every_branch():
+    """``PLATFORM_MODULES`` 必须与 ``current()`` 可能导入的分支一一对应。
+
+    少一个名字 = 那个平台的更新功能会在"点安装"时才炸（见下面 spec 断言）。
+    """
+    from mangaproof.update import platform as platform_pkg
+
+    pkg_dir = Path(platform_pkg.__file__).parent
+    for name in PLATFORM_MODULES:
+        assert (pkg_dir / f"{name}.py").is_file(), f"{name}.py 不存在"
+        assert importlib.import_module(
+            f"mangaproof.update.platform.{name}"
+        ) is not None
+    # 当前平台的分支必须在名单里（否则本机打包就会漏）
+    assert platform_pkg.current_name() in PLATFORM_MODULES
+    # 模块名不要带包前缀（spec 里会拼），否则拼出来是错的
+    assert all("." not in name for name in PLATFORM_MODULES)
+
+
+@pytest.mark.parametrize("spec_path", MAIN_SPECS, ids=lambda p: p.name)
+def test_main_specs_declare_platform_modules_as_hiddenimports(spec_path: Path):
+    """三份 main_*.spec 都必须把平台模块加进 hiddenimports（本次踩的坑）。
+
+    根因：``mangaproof/update/platform/__init__.py`` 用
+    ``__import__(f"mangaproof.update.platform.{name}", …)`` 做运行时分发，
+    PyInstaller 的静态分析完全看不到这些子模块。1.1.2.alpha 的发布包因此
+    在 Windows 上报 ``No module named 'mangaproof.update.platform.windows'``。
+    """
+    text = spec_path.read_text(encoding="utf-8")
+    assert "from mangaproof.update.platform import PLATFORM_MODULES" in text, (
+        f"{spec_path.name} 没导入 PLATFORM_MODULES（名单必须与代码同源）"
+    )
+    match = re.search(r"hiddenimports\s*=\s*\[(.*?)\]", text, re.S)
+    assert match is not None, f"{spec_path.name} 的 hiddenimports 不是字面量列表"
+    assert "PLATFORM_MODULES" in match.group(1), (
+        f"{spec_path.name} 的 hiddenimports 漏了平台模块"
+    )
+    assert "psd_tools" in match.group(1), "别把 psd-tools 的收集弄丢了"
+
+
+def test_pyinstaller_can_resolve_every_platform_module():
+    """PyInstaller 自己的模块图能找到这四个模块（= 打包时能真的收进去）。
+
+    比字符串断言强一档：这里走 PyInstaller 的 import hook，
+    路径/包结构有问题会直接 ImportError。
+    """
+    pytest.importorskip("PyInstaller")
+    from PyInstaller.depend.analysis import initialize_modgraph
+
+    graph = initialize_modgraph()
+    graph.path.extend(str(p) for p in (ROOT, *sys.path) if p)
+    for name in PLATFORM_MODULES:
+        full = f"mangaproof.update.platform.{name}"
+        nodes = graph.import_hook(full)     # 找不到会抛 ImportError
+        assert nodes and nodes[0].identifier == full

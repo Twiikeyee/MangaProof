@@ -44,6 +44,14 @@ def _module_name() -> str:
     return "linux"
 
 
+#: ``current()`` 可能用到的全部平台模块名（= 本包的子模块）。
+#: **打包必须靠它**：``current()`` 里的导入是拼接出来的运行时导入，
+#: PyInstaller 的静态分析看不到，漏声明就会打出"检查更新能用、点安装就
+#: No module named 'mangaproof.update.platform.windows'"的残废包
+#: （三份 ``packaging/main_*.spec`` 都把它并进 hiddenimports）。
+PLATFORM_MODULES = ("android", "windows", "macos", "linux")
+
+
 def current() -> ModuleType:
     """导入并返回当前平台的模块（唯一入口）。"""
     name = _module_name()
@@ -80,4 +88,10 @@ def probe_writable(directory: Path, *, probe_name: str) -> bool:
         return False
 
 
-__all__ = ["current", "current_name", "probe_writable", "UnsupportedPlatformError"]
+__all__ = [
+    "current",
+    "current_name",
+    "probe_writable",
+    "PLATFORM_MODULES",
+    "UnsupportedPlatformError",
+]
