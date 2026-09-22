@@ -267,7 +267,7 @@ jobs:
         shell: bash
         env:
           MANGAPROOF_INSTALLER: ${{ github.workspace }}/dist-installer/MangaProof-update-installer.exe
-        run: uv run pyinstaller --noconfirm --clean "${{ matrix.spec }}"
+        run: uv run pyinstaller --noconfirm --clean packaging/main_win.spec
       - name: Smoke test
         shell: pwsh
         run: |
