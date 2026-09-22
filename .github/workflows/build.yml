@@ -76,9 +76,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 安装器 GUI 必须是 Tkinter（需求 §43），因此这里**先补齐再断言**。
+          # 实测坑：uv 若复用系统 python3.12（Ubuntu runner 就是这种），
+          # 该解释器默认没有 tkinter，必须装 python3-tk；而 runner 工具缓存里的
+          # python.org 构建自带 tkinter，装了也无害。
           if ! uv run python -c "import tkinter" 2>/dev/null; then
-            echo "::error::当前解释器缺少 tkinter，无法构建 Tkinter 更新安装器（需求 §43）"
-            exit 1
+            echo "当前解释器缺少 tkinter，安装 python3-tk 后重试"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq python3-tk tk
           fi
           uv run python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
       - name: Build update installer
@@ -167,11 +172,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! uv run python -c "import tkinter" 2>/dev/null; then
-            echo "::error::当前解释器缺少 tkinter，无法构建 Tkinter 更新安装器（需求 §43）"
-            exit 1
-          fi
-          uv run python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+          # 安装器 GUI 必须是 Tkinter（需求 §43）：缺了就直接失败并打印真实报错，
+          # 不要用 2>/dev/null 把原因吞掉（否则日志里只剩一句"缺少 tkinter"）。
+          uv run python -c "import tkinter, sys; print('tkinter', tkinter.TkVersion, sys.executable)"
       - name: Build update installer
         shell: bash
         run: |
@@ -250,11 +253,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! uv run python -c "import tkinter" 2>/dev/null; then
-            echo "::error::当前解释器缺少 tkinter，无法构建 Tkinter 更新安装器（需求 §43）"
-            exit 1
-          fi
-          uv run python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+          # 安装器 GUI 必须是 Tkinter（需求 §43）：缺了就直接失败并打印真实报错，
+          # 不要用 2>/dev/null 把原因吞掉（否则日志里只剩一句"缺少 tkinter"）。
+          uv run python -c "import tkinter, sys; print('tkinter', tkinter.TkVersion, sys.executable)"
       - name: Build update installer
         shell: bash
         run: |
