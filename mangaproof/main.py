@@ -107,8 +107,16 @@ def main(argv=None) -> int:
 
     handshake, qt_argv = parse_handshake(argv)
     recovery = detect_interrupted_update()
+    # 关键：**被安装器拉起时不能报"上次更新未完成"**。此时 `.old` 必然还在
+    # （安装器要等新版写出成功标记后才删），marker 也还没写（要等窗口显示后才写），
+    # 这是正常流程的中间态；只有"用户自己启动程序"时才是真的中断残留。
+    recovery_needs_ui = recovery.needs_attention and not handshake.active
     if recovery.needs_attention:
-        log.warning("上次更新未完成：%s", recovery.old_dir)
+        log.info(
+            "更新残留检查：%s（%s）",
+            recovery.old_dir,
+            "本次由安装器拉起，属正常收尾流程" if handshake.active else "需要提示用户",
+        )
 
     # ---- Android 专有界面缩放（必须在创建 QApplication 之前）----
     # Qt 只在启动时读一次 QT_SCALE_FACTOR（QHighDpiScaling 在 QGuiApplication
@@ -190,7 +198,7 @@ def main(argv=None) -> int:
     # 放在 show() 之后而不是更早，是为了让安装器判定的是"新版真的能跑起来"。
     mark_update_launch_success(handshake)
 
-    if recovery.needs_attention:
+    if recovery_needs_ui:
         # 需求 §64：上一次更新没走完 —— 只提示、不擅自改动当前程序
         QTimer.singleShot(
             0, lambda: QMessageBox.warning(window, "更新未完成", recovery_message(recovery))
