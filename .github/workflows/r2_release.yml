@@ -58,9 +58,11 @@ env:
   DESKTOP_WORKFLOW: build.yml
   ANDROID_WORKFLOW: android.yml
   BUILD_WAIT_MINUTES: "40"          # 等待同一 commit 上未结束构建的上限
-  # bucket 名未在任何需求/调研文档里固化 → 优先取仓库变量 vars.R2_BUCKET 覆盖，
-  # 未设置时回落到默认占位名（换 bucket 只改这一处，或直接在仓库里设变量）。
-  R2_BUCKET: ${{ vars.R2_BUCKET || 'mangaproof' }}
+  # 真实 bucket 名（2026-09-22 由需求方确认）：download-mangaproof。
+  # 曾经这里回落到一个我在调研阶段自己拟的占位名 'mangaproof' —— 那不是真实
+  # 存储桶，若仓库未设 vars.R2_BUCKET 就会去操作一个不存在的桶。现已改为真实名，
+  # 并保留 vars.R2_BUCKET 作为显式覆盖（换桶时改这一行或设仓库变量，二选一）。
+  R2_BUCKET: ${{ vars.R2_BUCKET || 'download-mangaproof' }}
   # 公网域名（需求 §23：https://download.mangaproof.priloba.com/{channel}/{filename}）
   R2_PUBLIC_BASE: https://download.mangaproof.priloba.com
   # R2 是 S3 兼容端点：region 必填但不用（Cloudflare 官方 aws CLI 文档写 auto）

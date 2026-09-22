@@ -154,3 +154,11 @@ def test_r2_never_hardcodes_credentials():
     assert "secrets.R2_ACCOUNT_ID" in text
     # 不允许把密钥字面量写进 workflow
     assert not __import__("re").search(r"AKIA[0-9A-Z]{16}", text)
+
+
+def test_r2_default_bucket_is_the_real_one():
+    """曾经默认回落到调研阶段自己拟的占位名 'mangaproof'（不是真实存储桶）。
+    真实桶名 = download-mangaproof（2026-09-22 需求方确认）。"""
+    text = R2.read_text(encoding="utf-8")
+    assert "'download-mangaproof'" in text, "R2_BUCKET 默认值必须是真实桶名"
+    assert "|| 'mangaproof'" not in text, "不得回落到自己拟的占位桶名"
