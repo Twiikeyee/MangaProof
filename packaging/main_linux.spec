@@ -10,6 +10,8 @@
 随包分发的 ico/ico.png；桌面集成见 packaging/linux/mangaproof.desktop。
 """
 
+import os
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -32,6 +34,41 @@ _datas = [
     (str(p), "mangaproof")
     for p in (ROOT / "mangaproof").glob("_psd_fast.pyd")
 ]
+
+# ---------------------------------------------------------------------------
+# 更新安装器：与主程序可执行文件**同级同目录**（需求 1.2.1；调研报告 §11.3）
+# ---------------------------------------------------------------------------
+# 关键点（读 PyInstaller 源码得出，反直觉）：
+#   COLLECT.assemble() 里只有 typecode == "EXECUTABLE"/"PKG" 的条目才落在 dist 根，
+#   其余（含 BINARY）一律进 contents_directory（即 _internal/）；macOS 上 BINARY
+#   还会被 BUNDLE 归到 Contents/Frameworks。所以**不能**走 binaries=(…, ".")。
+#   用裸 TOC 三元组 + "EXECUTABLE" 才能得到：
+#     · Windows/Linux → dist/MangaProof/MangaProof-update-installer[.exe]
+#     · macOS         → MangaProof.app/Contents/MacOS/MangaProof-update-installer
+#   该分支还会自动 chmod 0o755（Linux/macOS 的执行位因此不用手工补）。
+#
+# 安装器先于主程序构建（CI 见 build.yml 的 "Build update installer"），
+# 缺失即**构建失败** —— 绝不允许做出一个"能更新但没安装器"的发布包。
+_installer_name = (
+    "MangaProof-update-installer.exe" if sys.platform == "win32"
+    else "MangaProof-update-installer"
+)
+_installer_candidates = []
+if os.environ.get("MANGAPROOF_INSTALLER"):
+    _installer_candidates.append(Path(os.environ["MANGAPROOF_INSTALLER"]))
+_installer_candidates += [
+    ROOT / "dist-installer" / _installer_name,
+    ROOT / "packaging" / "installer-dist" / _installer_name,
+]
+_installer = next((p for p in _installer_candidates if p.is_file()), None)
+if _installer is None:
+    raise SystemExit(
+        "缺少更新安装器：%s\n"
+        "请先构建：uv run pyinstaller --noconfirm --clean packaging/installer.spec "
+        "--distpath dist-installer\n"
+        "（CI 由 build.yml 上一步构建；也可用环境变量 MANGAPROOF_INSTALLER 指定路径）"
+        % _installer_name
+    )
 
 a = Analysis(
     [str(ROOT / "main.py")],
@@ -70,6 +107,8 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
+    # 更新安装器：dest 名 = 文件名 → 落在 dist 根（macOS 则是 Contents/MacOS）
+    [(_installer_name, str(_installer), "EXECUTABLE")],
     strip=False,
     upx=False,
     upx_exclude=[],

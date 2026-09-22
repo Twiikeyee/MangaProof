@@ -29,6 +29,9 @@ tests/data/out/
 # PyInstaller 构建产物
 build/
 dist/
+# 更新安装器的 PyInstaller 产物（CI 由 build.yml 用 --distpath dist-installer 构建）
+dist-installer/
+build-installer/
 
 # Android 构建产物（pyside6-android-deploy / buildozer 在仓库根落文件）
 pysidedeploy.spec

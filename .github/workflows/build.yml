@@ -69,8 +69,29 @@ jobs:
       - name: Build accel extension
         shell: bash
         run: uv run python scripts/build_accel.py
+      # ---- 更新安装器（需求 §43/§44；调研报告 §11.3）----
+      # 安装器必须**先**构建：主程序的 spec 会把它的可执行文件按 "EXECUTABLE"
+      # 条目收进 onedir 根目录（与主程序可执行文件同级），缺失即构建失败。
+      - name: Ensure tkinter for the installer GUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! uv run python -c "import tkinter" 2>/dev/null; then
+            echo "::error::当前解释器缺少 tkinter，无法构建 Tkinter 更新安装器（需求 §43）"
+            exit 1
+          fi
+          uv run python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+      - name: Build update installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pyinstaller --noconfirm --clean packaging/installer.spec \
+            --distpath dist-installer --workpath build-installer
+          ls -la dist-installer
       - name: Build with PyInstaller
         shell: bash
+        env:
+          MANGAPROOF_INSTALLER: ${{ github.workspace }}/dist-installer/MangaProof-update-installer
         run: uv run pyinstaller --noconfirm --clean "${{ matrix.spec }}"
       - name: Install Qt runtime libs
         run: |
@@ -139,8 +160,29 @@ jobs:
       - name: Build accel extension
         shell: bash
         run: uv run python scripts/build_accel.py
+      # ---- 更新安装器（需求 §43/§44；调研报告 §11.3）----
+      # 安装器必须**先**构建：主程序的 spec 会把它的可执行文件按 "EXECUTABLE"
+      # 条目收进 onedir 根目录（与主程序可执行文件同级），缺失即构建失败。
+      - name: Ensure tkinter for the installer GUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! uv run python -c "import tkinter" 2>/dev/null; then
+            echo "::error::当前解释器缺少 tkinter，无法构建 Tkinter 更新安装器（需求 §43）"
+            exit 1
+          fi
+          uv run python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+      - name: Build update installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pyinstaller --noconfirm --clean packaging/installer.spec \
+            --distpath dist-installer --workpath build-installer
+          ls -la dist-installer
       - name: Build with PyInstaller
         shell: bash
+        env:
+          MANGAPROOF_INSTALLER: ${{ github.workspace }}/dist-installer/MangaProof-update-installer
         run: uv run pyinstaller --noconfirm --clean "${{ matrix.spec }}"
       - name: Smoke test
         shell: bash
@@ -201,9 +243,30 @@ jobs:
             Write-Error "未找到 _psd_fast.pyd"
             exit 1
           }
+      # ---- 更新安装器（需求 §43/§44；调研报告 §11.3）----
+      # 安装器必须**先**构建：主程序的 spec 会把它的可执行文件按 "EXECUTABLE"
+      # 条目收进 onedir 根目录（与主程序可执行文件同级），缺失即构建失败。
+      - name: Ensure tkinter for the installer GUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! uv run python -c "import tkinter" 2>/dev/null; then
+            echo "::error::当前解释器缺少 tkinter，无法构建 Tkinter 更新安装器（需求 §43）"
+            exit 1
+          fi
+          uv run python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+      - name: Build update installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pyinstaller --noconfirm --clean packaging/installer.spec \
+            --distpath dist-installer --workpath build-installer
+          ls -la dist-installer
       - name: Build with PyInstaller
         shell: bash
-        run: uv run pyinstaller --noconfirm --clean packaging/main_win.spec
+        env:
+          MANGAPROOF_INSTALLER: ${{ github.workspace }}/dist-installer/MangaProof-update-installer.exe
+        run: uv run pyinstaller --noconfirm --clean "${{ matrix.spec }}"
       - name: Smoke test
         shell: pwsh
         run: |
