@@ -121,3 +121,36 @@ def test_installer_env_var_points_at_built_binary():
             continue
         expected = ".exe" if job == "build-windows" else "MangaProof-update-installer"
         assert expected in body, f"{job} 的 MANGAPROOF_INSTALLER 指向疑似不对"
+
+
+# --- R2 清理步骤：空前缀 vs 列举失败 必须分开处理 -------------------------
+
+R2 = ROOT / ".github" / "workflows" / "r2_release.yml"
+
+
+def test_r2_purge_distinguishes_empty_prefix_from_errors():
+    """`aws s3 ls` 对空前缀是"无输出 + 退出码 1 + stderr 为空"，
+    对凭据/权限错误则 stderr 有内容。二者混淆会掩盖真实故障
+    （曾把"Access Key 长度 31"伪装成"前缀下没有对象"，随后 rm 又炸一次）。"""
+    text = R2.read_text(encoding="utf-8")
+    assert "无需删除" in text, "空前缀必须走「无需删除」分支"
+    assert "前缀为空" in text, "必须显式区分「列举失败」与「前缀为空」"
+    # 不能再用 `|| true` 无差别吞掉列举结果
+    assert 's3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT" || true' not in text
+
+
+def test_r2_purge_only_deletes_the_target_channel():
+    text = R2.read_text(encoding="utf-8")
+    assert "alpha/ 与 beta/ 一律不动" in text
+    for other in ("alpha", "beta", "stable"):
+        assert f"s3://${{R2_BUCKET}}/{other}" not in text, (
+            f"出现了硬编码的 {other} 前缀删除目标 —— 必须只用 ${{CHANNEL}}"
+        )
+
+
+def test_r2_never_hardcodes_credentials():
+    text = R2.read_text(encoding="utf-8")
+    assert "secrets.R2_ACCESS_KEY_ID" in text and "secrets.R2_SECRET_ACCESS_KEY" in text
+    assert "secrets.R2_ACCOUNT_ID" in text
+    # 不允许把密钥字面量写进 workflow
+    assert not __import__("re").search(r"AKIA[0-9A-Z]{16}", text)

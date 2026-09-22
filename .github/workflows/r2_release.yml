@@ -398,19 +398,48 @@ jobs:
             ""|*[!A-Za-z0-9.-]*) echo "::error::R2_BUCKET 取值非法：${R2_BUCKET}"; exit 1 ;;
           esac
           echo "目标：s3://${R2_BUCKET}/${CHANNEL}/（只清这个前缀，alpha/ 与 beta/ 一律不动）"
-          before="$(aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT" || true)"
-          if [ -n "$before" ]; then
-            echo "--- 清理前 ---"
-            printf '%s\n' "$before"
-          else
-            echo "（${CHANNEL}/ 下当前没有对象）"
-          fi
-          aws s3 rm "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT"
-          if aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT" 2>/dev/null | grep -q .; then
-            echo "::error::清理后 ${CHANNEL}/ 下仍有对象，拒绝上传（避免新旧版本混放）"
+
+          # 列举目标前缀。注意必须把「前缀为空」与「列举失败」分开：
+          #   · 前缀为空：aws s3 ls 无输出、退出码 1、**stderr 为空** → 正常情况，跳过删除；
+          #   · 凭据/权限/网络错误：stderr 有 "An error occurred…" → 必须立刻失败。
+          # 早期版本用 `|| true` 一律当空处理，结果把"Access Key 长度不对"这种错误
+          # 伪装成"（前缀下没有对象）"，随后 rm 又炸一次，报错信息离病因很远。
+          ls_err="$(mktemp)"
+          before="$(aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive \
+            --endpoint-url "$R2_ENDPOINT" 2>"$ls_err")" && ls_rc=0 || ls_rc=$?
+          if [ "$ls_rc" -ne 0 ] && [ -s "$ls_err" ]; then
+            echo "::error::列举 s3://${R2_BUCKET}/${CHANNEL}/ 失败（不是"前缀为空"）："
+            cat "$ls_err"
+            rm -f "$ls_err"
             exit 1
           fi
-          echo "[OK] ${CHANNEL}/ 已清空"
+          rm -f "$ls_err"
+
+          if [ -z "$before" ]; then
+            echo "（${CHANNEL}/ 下当前没有对象 —— 无需删除，直接进入上传）"
+          else
+            echo "--- 清理前 ---"
+            printf '%s\n' "$before"
+            aws s3 rm "s3://${R2_BUCKET}/${CHANNEL}/" --recursive --endpoint-url "$R2_ENDPOINT"
+          fi
+
+          # 删除后复核：同样区分"空"与"错"。空 = 期望状态；有错 = 失败。
+          after_err="$(mktemp)"
+          after="$(aws s3 ls "s3://${R2_BUCKET}/${CHANNEL}/" --recursive \
+            --endpoint-url "$R2_ENDPOINT" 2>"$after_err")" && after_rc=0 || after_rc=$?
+          if [ "$after_rc" -ne 0 ] && [ -s "$after_err" ]; then
+            echo "::error::复核 ${CHANNEL}/ 是否清空时列举失败："
+            cat "$after_err"
+            rm -f "$after_err"
+            exit 1
+          fi
+          rm -f "$after_err"
+          if [ -n "$after" ]; then
+            echo "::error::清理后 ${CHANNEL}/ 下仍有对象，拒绝上传（避免新旧版本混放）"
+            printf '%s\n' "$after"
+            exit 1
+          fi
+          echo "[OK] ${CHANNEL}/ 已清空（或本来就是空的）"
 
       - name: Upload to R2
         shell: bash
