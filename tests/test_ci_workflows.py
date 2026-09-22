@@ -162,3 +162,87 @@ def test_r2_default_bucket_is_the_real_one():
     text = R2.read_text(encoding="utf-8")
     assert "'download-mangaproof'" in text, "R2_BUCKET 默认值必须是真实桶名"
     assert "|| 'mangaproof'" not in text, "不得回落到自己拟的占位桶名"
+
+
+# --- 发布闸门：release 事件 vs 自动 dispatch -------------------------------
+
+WF = ROOT / ".github" / "workflows"
+THREE = ("mirrorchyan_release.yml", "mirrorchyan_release_note.yml", "r2_release.yml")
+
+
+@pytest.mark.parametrize("name", THREE)
+def test_release_workflows_listen_to_edited_and_released(name: str):
+    """人工取消 Pre-release 在 GitHub 上对应 release 的 `released` 动作，不是 `edited`：
+    只监听 edited 会让「人工放行」永远不触发（实测：连一条 skipped 运行都没有）。"""
+    text = (WF / name).read_text(encoding="utf-8")
+    assert "release:" in text
+    assert "types: [edited, released]" in text, f"{name} 必须同时监听 edited 与 released"
+
+
+def test_release_yml_no_longer_dispatches_mirror_workflows():
+    """release.yml 不得再自动 dispatch 两个 mirror 工作流：
+    它在建完 Pre-release 后立刻执行，会绕过 Pre-release 闸门；
+    而且 GITHUB_TOKEN 触发的事件本就不会拉起其它工作流。"""
+    text = (WF / "release.yml").read_text(encoding="utf-8")
+    code_lines = [l for l in text.splitlines() if not l.lstrip().startswith("#")]
+    assert not any("gh workflow run" in l for l in code_lines), (
+        "release.yml 里不应再出现 gh workflow run（注释除外）"
+    )
+    # 该权限只为 dispatch 而加，现在应降级（只看代码行，注释里会提到它）
+    assert not any(l.strip() == "actions: write" for l in code_lines), (
+        "不再 dispatch 其它工作流后应把 actions 降到 read"
+    )
+    assert any(l.strip() == "actions: read" for l in code_lines)
+
+
+@pytest.mark.parametrize("name", ["mirrorchyan_release.yml"])
+def test_mirrorchyan_upload_guards_keep_prerelease_out(name: str):
+    """事件触发时必须要求 !prerelease（预发行保持原行为），手动触发才放行。"""
+    text = (WF / name).read_text(encoding="utf-8")
+    pattern = ("github.repository_owner == 'gunfub' && "
+               "(github.event_name == 'workflow_dispatch' || !github.event.release.prerelease)")
+    assert text.count(pattern) == 2, f"{name} 的两个 job 都要有同一套守卫"
+
+
+@pytest.mark.parametrize("name", THREE)
+def test_event_triggered_tag_comes_from_the_payload(name: str):
+    """事件触发时 tag 必须取自 release 载荷；取 inputs.tag 会得到空串，
+    动作会退化成「最新 Release」，可能同步错版本。"""
+    text = (WF / name).read_text(encoding="utf-8")
+    assert "github.event.release.tag_name" in text, f"{name} 缺少 release 载荷取 tag"
+    assert "inputs.tag" in text, f"{name} 还应保留手动触发的 tag 输入"
+
+
+def test_bash_run_blocks_are_syntactically_valid():
+    """把 run: | 的 bash 块抽出来做 `bash -n`（YAML 合法 ≠ 脚本合法）。
+    跳过 pwsh/powershell 步骤 —— 那些不是 bash，交给 bash 检查必然误报。"""
+    import re
+    import subprocess
+    import tempfile
+
+    checked = 0
+    for path in sorted(WF.glob("*.yml")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() != "run: |":
+                continue
+            # 向上找同一 step 的 shell 声明（最多 6 行内）
+            shell = ""
+            for j in range(max(0, i - 6), i):
+                if lines[j].strip().startswith("shell:"):
+                    shell = lines[j].split(":", 1)[1].strip()
+            if shell and shell not in ("bash", "sh"):
+                continue
+            block: list[str] = []
+            for k in range(i + 1, len(lines)):
+                nxt = lines[k]
+                if nxt.strip() and not nxt.startswith(" " * 10):
+                    break
+                block.append(nxt[10:] if nxt.startswith(" " * 10) else nxt)
+            with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fh:
+                fh.write("\n".join(block))
+                name = fh.name
+            result = subprocess.run(["bash", "-n", name], capture_output=True, text=True)
+            assert result.returncode == 0, f"{path.name} 第 {i + 1} 行的 bash 块语法错误：{result.stderr[:200]}"
+            checked += 1
+    assert checked >= 10, f"只检查到 {checked} 个 bash 块，提取逻辑可能失效"

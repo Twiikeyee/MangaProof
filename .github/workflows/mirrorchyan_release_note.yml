@@ -7,11 +7,15 @@ on:
         default: ''
         required: false
   release:
-    types: [edited]
+    # released = 人工放行（取消 Pre-release）或直接发正式版；edited = 正式版的后续编辑。
+    types: [edited, released]
 
-# version_name 按事件取 tag：workflow_dispatch 用 inputs.tag，release.edited 用被编辑 Release 的 tag_name。
-# Release 先创建为 Pre-release，人工检查后取消 Pre-release 才触发 release.edited；Pre-release 阶段的其他编辑
-# 同样会触发 edited，故两个 job 都用 !prerelease 过滤掉。workflow_dispatch 没有 release 载荷，该条件恒为真。
+# version_name 按事件取 tag：workflow_dispatch 用 inputs.tag，事件触发用 Release 的 tag_name。
+# 守卫语义（与 mirrorchyan_release.yml 保持一致）：
+#   · 事件触发（edited/released）→ 要求 !prerelease：Release 先建为 Pre-release，
+#     人工取消 Pre-release 后才同步说明；Pre-release 阶段的编辑会被挡下（留下 skipped 记录）。
+#   · workflow_dispatch → 无 release 载荷，条件恒为真 = 人工显式放行，这是预期行为
+#     （release.yml 已不再自动 dispatch 本工作流，「恒真」不再等于闸门被绕过）。
 jobs:
   mirrorchyan:
     runs-on: ubuntu-latest

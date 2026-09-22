@@ -1,16 +1,25 @@
 name: mirrorchyan_release
 
+# 触发：release 的 edited / released 由本工作流自己触发，不再依赖 release.yml 代劳。
+#   · released = 预发行被人工放行（取消 Pre-release）或直接发布正式版；
+#   · edited   = 正式 Release 的后续编辑（改说明等）也会同步一次。
+# 守卫策略（两个 job 一致）：
+#   · 事件触发时要求 !prerelease —— Pre-release 阶段保持原行为（什么都不做），
+#     此时会留下一条 skipped 运行记录，这是刻意的、可见的「被闸门挡住」；
+#   · workflow_dispatch 一律放行 —— 手动触发即人工放行，这是唯一的绕过方式。
 on:
   workflow_dispatch:
     inputs:
       tag:
         default: ''
         required: false
+  release:
+    types: [edited, released]
 
 jobs:
   mirrorchyan:
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'gunfub' }}
+    if: ${{ github.repository_owner == 'gunfub' && (github.event_name == 'workflow_dispatch' || !github.event.release.prerelease) }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +46,10 @@ jobs:
           filetype: latest-release
           filename: ${{ matrix.filename }}
           mirrorchyan_rid: MangaProof
-          tag: ${{ inputs.tag }}
+          # 事件触发取被发布/被编辑的 Release 标签；手动触发用输入值。
+          # 不这么写，事件触发下 inputs.tag 为空 → 动作会退化成「最新 Release」，
+          # 可能同步到错误的版本。
+          tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
 
           os: ${{ matrix.os }}
           arch: ${{ matrix.arch }}
@@ -49,7 +61,7 @@ jobs:
 
   mirrorchyan_exec:
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'gunfub' }}
+    if: ${{ github.repository_owner == 'gunfub' && (github.event_name == 'workflow_dispatch' || !github.event.release.prerelease) }}
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +79,10 @@ jobs:
           filetype: latest-release
           filename: ${{ matrix.filename }}
           mirrorchyan_rid: MangaProof_exec
-          tag: ${{ inputs.tag }}
+          # 事件触发取被发布/被编辑的 Release 标签；手动触发用输入值。
+          # 不这么写，事件触发下 inputs.tag 为空 → 动作会退化成「最新 Release」，
+          # 可能同步到错误的版本。
+          tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
 
           os: ${{ matrix.os }}
           arch: ${{ matrix.arch }}

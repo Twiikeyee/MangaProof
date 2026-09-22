@@ -39,10 +39,10 @@ on:
         default: false
 
 # 读其它 workflow 的运行与工件需要 actions: read；建 Release、传资产需要 contents: write。
-# 触发 mirrorchyan workflow 需要 actions: write。
+# 不再需要 actions: write —— 本流程已不再 dispatch 其它工作流（见下方注释）。
 permissions:
   contents: write
-  actions: write
+  actions: read
 
 # 同一时间只跑一条发布流水线（不同标签的发布也串行，避免生成发行说明时互相干扰）。
 concurrency:
@@ -277,14 +277,15 @@ jobs:
           gh release view "$TAG" --json url,isPrerelease,assets \
             --jq '"\(.url)  prerelease=\(.isPrerelease)", (.assets[] | "    \(.name)  \(.size) 字节")'
 
-      - name: Trigger MirrorChyanUploading
-        if: ${{ inputs.dry_run != true }}
-        shell: bash
-        run: |
-          gh workflow run --repo $GITHUB_REPOSITORY mirrorchyan_release.yml -f tag=${{ steps.target.outputs.tag }}
-          gh workflow run --repo $GITHUB_REPOSITORY mirrorchyan_release_note.yml -f tag=${{ steps.target.outputs.tag }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 这里**曾经**会 `gh workflow run` 两个 mirrorchyan 工作流。已移除，原因：
+      #   1. 它在「建完 Pre-release」之后立刻执行，与 release 是否被人工放行无关 →
+      #      预发行阶段就把 MirrorChyan 上传/说明同步跑了，放行闸门形同虚设；
+      #   2. 它走的是 workflow_dispatch，而那两个工作流的 !prerelease 守卫在 dispatch
+      #      路径下没有 release 载荷、条件恒为真，等于没有守卫；
+      #   3. 本流程用 GITHUB_TOKEN 改 release，触发的事件本就不会再拉起其它工作流
+      #      （GitHub 防递归）——「靠事件唤醒」这条路在这里走不通。
+      # 现在改为：MirrorChyan 与 R2 三个工作流各自监听 release 的 edited / released，
+      # 并用自身守卫过滤掉 Pre-release；需要绕过闸门时由人**显式**手动 dispatch。
 
       - name: Dry run summary
         if: ${{ inputs.dry_run == true }}

@@ -33,7 +33,8 @@ name: R2 Release
 
 on:
   release:
-    types: [edited]
+    # released = 人工放行（取消 Pre-release）或直接发正式版；edited = 正式版的后续编辑。
+    types: [edited, released]
   workflow_dispatch:
     inputs:
       tag:
@@ -79,8 +80,10 @@ jobs:
     # 该镜像预装 AWS CLI v2 与 curl（调研报告 §7.1 实测），无需额外安装步骤
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    # 正式更新源只接受「人工放行后的正式 Release」（需求 §69）：workflow_dispatch 没有
-    # release 载荷，!prerelease 恒为真；owner 判断与两个 MirrorChyan workflow 保持一致。
+    # 正式更新源只接受「人工放行后的正式 Release」（需求 §69）：
+    #   · 事件触发（edited/released）→ 要求 !prerelease 且非 draft，Pre-release 阶段什么都不做；
+    #   · workflow_dispatch → 无 release 载荷，两个否定条件恒为真 = 人工显式放行。
+    # owner 判断与两个 MirrorChyan workflow 保持一致。
     if: ${{ github.repository_owner == 'gunfub' && !github.event.release.prerelease && !github.event.release.draft }}
     steps:
       - name: Checkout target tag
