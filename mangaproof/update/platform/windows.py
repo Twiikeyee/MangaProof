@@ -30,6 +30,35 @@ def install_dir() -> Path:
     return Path(sys.executable).resolve().parent
 
 
+def safe_working_dir() -> Path:
+    """启动安装器时该用的工作目录（**绝不能是安装目录**）。
+
+    Windows 不允许重命名"某个正在运行的进程的当前目录"：安装器要做的第一件事
+    就是把 ``S:\\MangaProof`` 改名成 ``S:\\MangaProof.old``，而它自己（或它的
+    子进程）若继承了主程序的 cwd（用户从安装目录双击启动时就是这种情况），
+    这次改名必然失败：:
+
+        [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+        'S:\\MangaProof' -> 'S:\\MangaProof.old'
+
+    （"另一个程序"就是安装器自己 —— 主程序确实退出了，日志里那句
+    "主程序已退出"没错，问题不在退出检测。）因此显式给安装器一个无关目录：
+    优先用户 TEMP；取不到就退到安装目录的**父目录** —— 那层不会被改名，
+    而且子目录被占用不影响父目录改名。
+    """
+    import os
+    import tempfile
+
+    for key in ("TEMP", "TMP"):
+        value = os.environ.get(key)
+        if value and Path(value).is_dir():
+            return Path(value)
+    try:
+        return Path(tempfile.gettempdir())
+    except OSError:  # pragma: no cover - 极端环境
+        return parent_dir()
+
+
 def parent_dir() -> Path:
     """需求 §38：安装目录的父目录（权限检测与解压目标都在这一层）。"""
     return install_dir().parent
@@ -60,15 +89,19 @@ def launch_installer(exe: Path, args: list[str], *, elevate: bool) -> int:
     if not exe.is_file():
         raise FileNotFoundError(f"找不到安装器：{exe}")
 
+    # 工作目录：见 safe_working_dir()。不指定的话安装器会继承主程序的 cwd
+    #（往往就是安装目录），导致它随后的"安装目录改名"以 WinError 32 失败。
+    cwd = str(safe_working_dir())
+
     if not elevate:
-        proc = subprocess.Popen([str(exe), *args], close_fds=True)
+        proc = subprocess.Popen([str(exe), *args], close_fds=True, cwd=cwd)
         log.info("已启动安装器（普通权限），pid=%s", proc.pid)
         return proc.pid
 
-    return _shell_execute_runas(exe, args)
+    return _shell_execute_runas(exe, args, cwd=cwd)
 
 
-def _shell_execute_runas(exe: Path, args: list[str]) -> int:
+def _shell_execute_runas(exe: Path, args: list[str], cwd: str | None = None) -> int:
     """用 ShellExecuteExW(runas) 提权启动，返回 PID（拿不到时为 0）。"""
     import ctypes
     from ctypes import wintypes
@@ -108,7 +141,8 @@ def _shell_execute_runas(exe: Path, args: list[str]) -> int:
     info.lpVerb = "runas"
     info.lpFile = str(exe)
     info.lpParameters = subprocess.list2cmdline(args)
-    info.lpDirectory = str(exe.parent)
+    # 提权进程的工作目录同样不能落在安装目录里（见 safe_working_dir）
+    info.lpDirectory = str(cwd) if cwd else str(exe.parent)
     info.nShow = SW_SHOWNORMAL
 
     if not shell32.ShellExecuteExW(ctypes.byref(info)):

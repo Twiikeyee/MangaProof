@@ -86,6 +86,49 @@ def _schedule_delete_on_reboot(path: Path) -> bool:
         return False
 
 
+def replace_path(
+    source: Path,
+    target: Path,
+    *,
+    retries: int = 5,
+    delay: float = 0.2,
+    sleep: Callable[[float], None] = time.sleep,
+    replace: Callable[[Path, Path], None] = os.replace,
+) -> None:
+    """重命名/移动文件或目录，带重试（Windows 上的共享冲突大多是**瞬时**的）。
+
+    为什么不能直接 ``os.replace``：Windows 会以 ``WinError 32``
+    （共享冲突）拒绝改名，而触发它的东西往往是短命的 —— 杀毒/索引器扫到一半、
+    句柄刚关闭还没完全释放、资源管理器缩略图线程……删除路径本来就有
+    :func:`remove_tree` 的五次重试，改名路径却是"一次定生死"，于是出现
+    "备份校验全过、最后卡在改名"的失败。这里与删除路径保持一致的重试语义。
+
+    :raises OSError: 重试耗尽后把最后一次异常抛给调用方（由调用方决定退出码）
+    """
+    src = Path(source)
+    dst = Path(target)
+    attempts = max(1, retries)
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            replace(src, dst)
+            if attempt:
+                log.info("重命名在第 %s 次尝试成功：%s → %s", attempt + 1, src, dst)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                # 目标已存在时重试没有意义（os.replace 会直接覆盖，到不了这里）
+                log.warning(
+                    "重命名失败（第 %s/%s 次，%s）：%s → %s",
+                    attempt + 1, attempts, exc, src, dst,
+                )
+                sleep(delay * (attempt + 1))     # 线性退避：给占用方一点时间
+    log.error("重命名失败（已重试 %s 次）：%s → %s（%s）", attempts, src, dst, last_error)
+    assert last_error is not None
+    raise last_error
+
+
 def remove_tree(
     path: Path,
     *,
@@ -161,7 +204,7 @@ def rollback(
             parked = install.with_name(install.name + ".new-failed")
             try:
                 remove_tree(parked, retries=1, delay=retry_delay, sleep=sleep)
-                os.replace(install, parked)
+                replace_path(install, parked, retries=retries, delay=retry_delay, sleep=sleep)
                 actions.append(f"{install.name} → {parked.name}（删除失败，已挪走）")
                 log.warning("新版本目录删除失败，已改名为 %s", parked)
             except OSError as exc:
@@ -178,19 +221,12 @@ def rollback(
             on_item(f"{old.name} → {install.name}")
         if on_progress is not None:
             on_progress(1, -1)
-        last_error: Exception | None = None
-        for attempt in range(max(1, retries)):
-            try:
-                os.replace(old, install)
-                last_error = None
-                break
-            except OSError as exc:
-                last_error = exc
-                sleep(retry_delay)
-        if last_error is not None:
+        try:
+            replace_path(old, install, retries=retries, delay=retry_delay, sleep=sleep)
+        except OSError as exc:
             raise RollbackError(
-                f"回滚失败：无法把 {old} 改回 {install}（{last_error}）"
-            ) from last_error
+                f"回滚失败：无法把 {old} 改回 {install}（{exc}）"
+            ) from exc
         actions.append(f"{old.name} → {install.name}")
 
     # 3) 恢复用户数据（复制出去的原件从未被动过，这一步是幂等的保险）
@@ -230,7 +266,7 @@ def recover_interrupted(
         return RecoveryResult("none", "没有发现未完成的更新残留", actions)
 
     if not install.exists():
-        os.replace(old, install)
+        replace_path(old, install, retries=retries, delay=retry_delay, sleep=sleep)
         actions.append(f"{old.name} → {install.name}")
         return RecoveryResult(
             "restored",
@@ -261,7 +297,7 @@ def recover_interrupted(
             f"上次更新未完成，但无法删除新版本目录：{install}；旧版本仍在 {old}"
         )
     actions.append(f"删除未完成的新版本：{install.name}")
-    os.replace(old, install)
+    replace_path(old, install, retries=retries, delay=retry_delay, sleep=sleep)
     actions.append(f"{old.name} → {install.name}")
 
     backup_dir = Path(state.data_backup) if state.data_backup else None
@@ -288,5 +324,6 @@ __all__ = [
     "old_dir_for",
     "recover_interrupted",
     "remove_tree",
+    "replace_path",
     "rollback",
 ]

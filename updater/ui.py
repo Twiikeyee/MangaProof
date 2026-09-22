@@ -67,12 +67,17 @@ FONT_CANDIDATES: tuple[str, ...] = (
     "PingFang SC",
 )
 
-#: 窗口默认尺寸（版式：标题在上、进度区居中、明细在下、主按钮右下角）
-WINDOW_WIDTH = 620
-WINDOW_HEIGHT = 400
+#: 窗口默认尺寸（版式：标题在上、进度区居中、明细在下、主按钮右下角）。
+#: 明细区是**用户唯一的排错依据**（失败时窗口保持打开，让用户截图反馈），
+#: 所以给足高度：640×560 起步，用户还能自己拉大（见 minsize 与 pack expand）。
+WINDOW_WIDTH = 640
+WINDOW_HEIGHT = 560
+#: 明细区最小高度（行数）。用户把窗口拉小时也至少留这么多行，
+#: 免得"关键那行错误"被挤出可视区。
+DETAIL_MIN_LINES = 12
 POLL_INTERVAL_MS = 60
 AUTO_CLOSE_MS = 1500
-LOG_LINES = 200
+LOG_LINES = 500
 
 
 class Reporter:
@@ -382,7 +387,7 @@ class InstallerWindow:
         self.root.title(title)
         self.root.configure(bg=COLOR_BG_MAIN)
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.root.minsize(480, 320)
+        self.root.minsize(520, 420)
         self.family = pick_font_family(self.root)
         if self.family:
             try:
@@ -467,16 +472,27 @@ class InstallerWindow:
         self.item_label.pack(anchor="w", pady=(0, 8), **pad)
 
         # 明细区（失败时保留最后一条操作，便于用户截图反馈）
+        # wrap="char"：Windows 的错误信息又长又没有空格断点（例如带完整路径的
+        # WinError 32 文案），wrap="none" 会把右侧整段截掉——用户截图里就看不到
+        # 关键信息了。按字符换行对中文/长路径都成立（"word" 模式在 CJK 与超长
+        # 无空格串上会退化成不换行，仍然截断）。
+        self.detail_frame = tk.Frame(self.root, bg=COLOR_BG_MAIN)
+        self.detail_frame.pack(fill="both", expand=True, **pad)
         self.detail = tk.Text(
-            self.root, height=7, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_DIM,
-            insertbackground=COLOR_TEXT, relief="flat", highlightthickness=1,
-            highlightbackground=COLOR_BORDER, wrap="none",
+            self.detail_frame, height=DETAIL_MIN_LINES, bg=COLOR_BG_PANEL,
+            fg=COLOR_TEXT_DIM, insertbackground=COLOR_TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=COLOR_BORDER, wrap="char",
         )
+        detail_scroll = tk.Scrollbar(
+            self.detail_frame, orient="vertical", command=self.detail.yview
+        )
+        self.detail.configure(yscrollcommand=detail_scroll.set)
+        detail_scroll.pack(side="right", fill="y")
         font = self._font(9)
         if font:
             self.detail.configure(font=font)
         self.detail.configure(state="disabled")
-        self.detail.pack(fill="both", expand=True, **pad)
+        self.detail.pack(side="left", fill="both", expand=True)
 
         bottom = tk.Frame(self.root, bg=COLOR_BG_MAIN)
         bottom.pack(fill="x", pady=12, **pad)

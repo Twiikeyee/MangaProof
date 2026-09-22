@@ -287,3 +287,68 @@ def test_default_runner_signature_is_subprocess_compatible():
     result = privilege._default_runner(["/bin/sh", "-c", "exit 7"], env=dict(os.environ))
     assert isinstance(result, subprocess.CompletedProcess)
     assert result.returncode == 7
+
+
+# --------------------------------------------------------------------------- #
+# Windows 安装目录改名：安装器的 cwd 不能落在安装目录里
+# --------------------------------------------------------------------------- #
+
+
+def test_ensure_safe_cwd_moves_out_of_install_dir(tmp_path: Path):
+    """cwd 在安装目录（或子目录）里时必须挪走 —— 否则 Windows 改不了名。
+
+    实测故障（1.1.4.alpha Windows 安装）::
+
+        [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+        'S:\\MangaProof' -> 'S:\\MangaProof.old'
+
+    "另一个程序"就是安装器自己：它继承了主程序的 cwd（用户从安装目录双击
+    启动时 cwd 就是安装目录），而 Windows 不允许重命名正在运行进程的当前目录。
+    """
+    install = tmp_path / "MangaProof"
+    (install / "logs").mkdir(parents=True)
+    original = Path.cwd()
+    try:
+        os.chdir(install)                       # 模拟"主程序从安装目录启动"
+        result = privilege.ensure_safe_cwd(install)
+        assert Path.cwd() != install
+        assert install not in Path.cwd().parents
+        assert result == Path.cwd()
+
+        os.chdir(install / "logs")              # 子目录也算"在安装目录里"
+        privilege.ensure_safe_cwd(install)
+        assert Path.cwd() not in (install, install / "logs")
+    finally:
+        os.chdir(original)
+
+
+def test_ensure_safe_cwd_keeps_unrelated_cwd(tmp_path: Path):
+    """cwd 与安装目录无关时**不许**乱动它（避免影响其它相对路径逻辑）。"""
+    install = tmp_path / "install" / "MangaProof"
+    install.mkdir(parents=True)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    original = Path.cwd()
+    try:
+        os.chdir(other)
+        assert privilege.ensure_safe_cwd(install) == other
+        assert Path.cwd() == other
+    finally:
+        os.chdir(original)
+
+
+def test_ensure_safe_cwd_falls_back_to_temp_when_parent_missing(tmp_path: Path):
+    """父目录不可用时退回系统临时目录（不再留在安装目录里）。"""
+    import tempfile
+
+    install = tmp_path / "ghost" / "MangaProof"
+    install.mkdir(parents=True)
+    original = Path.cwd()
+    try:
+        os.chdir(install)
+        result = privilege.ensure_safe_cwd(install)
+        assert result != install
+        assert install not in result.parents
+    finally:
+        os.chdir(original)
+        assert Path(tempfile.gettempdir()).is_dir()

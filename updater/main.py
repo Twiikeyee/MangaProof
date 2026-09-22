@@ -295,6 +295,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(ExitCode.USAGE)
 
     _STATUS_PATH = options.state_path
+    # Windows：cwd 若在安装目录里，第一步"安装目录改名"就会 WinError 32
+    # （见 privilege.ensure_safe_cwd 的说明）。早于任何文件操作执行。
+    if options.platform == "windows":
+        privilege.ensure_safe_cwd(options.install_dir)
     log.info(
         "安装器启动：版本=%s 平台=%s 安装目录=%s 包=%s pid=%s",
         options.version, options.platform, options.install_dir,

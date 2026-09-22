@@ -35,6 +35,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +117,52 @@ def is_admin() -> bool:
         return os.geteuid() == 0
     except AttributeError:  # pragma: no cover - 非 POSIX
         return False
+
+
+def ensure_safe_cwd(install_dir: Path, *, cwd: Path | None = None) -> Path:
+    """把安装器的当前工作目录挪出安装目录（Windows 上必须，需求 §54）。
+
+    Windows **不允许重命名"某个正在运行的进程的当前目录"**。安装器要做的第一件
+    破坏性操作就是把 ``S:\\MangaProof`` 改名成 ``S:\\MangaProof.old``；如果它是被
+    从安装目录启动的主程序拉起来的（用户双击 exe 时 cwd 就是安装目录），它会继承
+    这个 cwd，于是改名必然失败：::
+
+        [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+        'S:\\MangaProof' -> 'S:\\MangaProof.old'
+
+    报错里的"另一个程序"就是安装器自己 —— **主程序确实已经退出**，日志里那句
+    "主程序已退出"是对的，问题不在退出检测。新版主程序已不再把安装目录当 cwd
+    传下去（见 ``update/platform/windows.py`` 的 ``safe_working_dir``），但用户
+    可能拿到的是**旧版主程序**拉起的**新版安装器**，所以这里再兜一道。
+
+    挪到哪儿：安装目录的父目录（那层不会被改名，子目录被占用不影响父目录改名）；
+    父目录不可用时退回系统临时目录。
+
+    :returns: 最终生效的工作目录（没改动时就是原 cwd）。
+    """
+    current = Path(cwd) if cwd is not None else Path.cwd()
+    target_dir = Path(install_dir)
+    try:
+        inside = current == target_dir or target_dir in current.parents
+    except OSError:  # pragma: no cover - 路径异常时按"需要挪"处理
+        inside = True
+    if not inside:
+        return current
+
+    for candidate in (target_dir.parent, Path(tempfile.gettempdir())):
+        try:
+            if candidate.is_dir():
+                os.chdir(candidate)
+                log.info(
+                    "安装器的 cwd 原本在安装目录内（%s），已挪到 %s"
+                    "（否则 Windows 无法重命名安装目录）",
+                    current, candidate,
+                )
+                return candidate
+        except OSError as exc:  # pragma: no cover - 目录不可用
+            log.warning("切换工作目录到 %s 失败：%s", candidate, exc)
+    log.warning("无法把安装器的 cwd 挪出安装目录：%s", current)
+    return current
 
 
 def elevation_probe_path(install_dir: Path) -> Path:

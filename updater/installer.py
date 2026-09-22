@@ -233,6 +233,7 @@ class Runtime:
     is_admin: Callable[[], bool] = privilege.is_admin
     needs_elevation: Callable[[Path], bool] = privilege.needs_elevation
     remove_tree: Callable[..., bool] = rollback.remove_tree
+    replace_path: Callable[..., None] = rollback.replace_path
     success_timeout: float = SUCCESS_TIMEOUT
     parent_timeout: float = PARENT_EXIT_TIMEOUT
     poll_interval: float = POLL_INTERVAL
@@ -568,7 +569,13 @@ class Installer:
         self._item(f"{install.name} → {old.name}", "重命名")
         self.reporter.progress(0, -1)
         try:
-            os.replace(install, old)
+            # 带重试：Windows 的 WinError 32 大多是瞬时占用（杀毒/索引器/句柄
+            # 未完全释放），与删除路径保持同样的五次重试语义
+            self.rt.replace_path(
+                install, old,
+                retries=self.rt.retries, delay=self.rt.retry_delay,
+                sleep=self.rt.sleep,
+            )
         except OSError as exc:
             raise InstallerFailure(
                 ExitCode.REPLACE, f"重命名安装目录失败：{install} → {old}（{exc}）"
@@ -611,7 +618,11 @@ class Installer:
             try:
                 if install.exists():  # 理论上已被 RENAME_OLD 腾空
                     self.rt.remove_tree(install, retries=1, sleep=self.rt.sleep)
-                os.replace(extracted_root, install)
+                self.rt.replace_path(
+                    extracted_root, install,
+                    retries=self.rt.retries, delay=self.rt.retry_delay,
+                    sleep=self.rt.sleep,
+                )
             except OSError as exc:
                 raise InstallerFailure(
                     ExitCode.EXTRACT,
