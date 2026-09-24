@@ -13,6 +13,13 @@
 from __future__ import annotations
 
 import logging
+from typing import List, Optional, Tuple
+
+import numpy as np
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QEvent
+from PySide6.QtGui import (
+    QColor,
+    QImage,
     QPainter,
     QPen,
 )
